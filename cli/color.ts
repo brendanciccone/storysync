@@ -1,11 +1,11 @@
-// CSS colour parsing, shared by snap, diff and tokens.
+// CSS color parsing, shared by snap, diff and tokens.
 //
-// Chromium's getComputedStyle reports a colour in the space it was authored
+// Chromium's getComputedStyle reports a color in the space it was authored
 // in: Tailwind v4's palette as `oklch(0.637 0.237 25.331)`, its opacity
 // modifiers (a color-mix in oklab) as `oklab(0.637 0.214213 0.1014 / 0.5)`, a
 // color-mix in sRGB, HSL or HWB as `color(srgb 1 0 0 / 0.5)`, and so on for
 // lab(), lch() and every color() space. Hex, named, rgb(), hsl() and hwb()
-// colours come back as `rgb()` / `rgba()`. Token sources hold the same forms as
+// colors come back as `rgb()` / `rgba()`. Token sources hold the same forms as
 // written. Everything here turns any of them into the one format snap writes,
 // verify scores and diff compares: sRGB hex, `#rrggbb`, or `#rrggbbaa` when
 // translucent.
@@ -14,8 +14,8 @@
 // conversions"), whose OKLab matrices are Björn Ottosson's.
 
 /**
- * A colour in sRGB: channels gamma-encoded on 0–255 and not yet clipped, so a
- * colour outside sRGB can still be told from one inside it; alpha on 0–1.
+ * A color in sRGB: channels gamma-encoded on 0–255 and not yet clipped, so a
+ * color outside sRGB can still be told from one inside it; alpha on 0–1.
  */
 export interface SrgbColor {
   r: number;
@@ -25,8 +25,8 @@ export interface SrgbColor {
 }
 
 /**
- * Converts any colour a browser can serialise to lowercase `#rrggbb`, or
- * `#rrggbbaa` when it isn't opaque. Null when the value isn't a colour this
+ * Converts any color a browser can serialize to lowercase `#rrggbb`, or
+ * `#rrggbbaa` when it isn't opaque. Null when the value isn't a color this
  * can read, `color-mix()` included: Chromium's computed value is never one,
  * since it resolves the mix.
  *
@@ -47,7 +47,7 @@ export function colorToHex(input: string): string | null {
     const [, r, g, b, a] = hex4;
     return `#${r}${r}${g}${g}${b}${b}${a}${a}`;
   }
-  // Own keys only: `in` would read "constructor" as a colour.
+  // Own keys only: `in` would read "constructor" as a color.
   if (Object.hasOwn(NAMED, s)) return NAMED[s];
 
   const color = parseColorFunction(s);
@@ -55,15 +55,15 @@ export function colorToHex(input: string): string | null {
 }
 
 /**
- * Formats an sRGB colour as snap writes it, clipping each channel to sRGB.
+ * Formats an sRGB color as snap writes it, clipping each channel to sRGB.
  *
  * Clipping is the gamut mapping, and on purpose: Figma's fills are sRGB here,
- * so a colour outside sRGB (a display-p3 red, or one of Tailwind v4's more
+ * so a color outside sRGB (a display-p3 red, or one of Tailwind v4's more
  * saturated oklch shades) has to land on the nearest value a fill can hold.
  * Clipping is also what Chromium paints on an sRGB canvas: red-600,
  * `oklch(57.7% 0.245 27.325)`, is about (0.906, -0.096, 0.042) in sRGB and
  * paints as `#e7000b`. CSS Color 4's own gamut mapping reduces chroma in
- * OKLCH instead, and would give such a colour another hex.
+ * OKLCH instead, and would give such a color another hex.
  */
 export function formatHex(color: SrgbColor): string | null {
   const { r, g, b, alpha } = color;
@@ -90,7 +90,7 @@ const NAMED: Record<string, string> = {
 
 // --- Parsing ------------------------------------------------------------------
 
-/** Parses `name(...)` for every colour function above, or null. */
+/** Parses `name(...)` for every color function above, or null. */
 function parseColorFunction(s: string): SrgbColor | null {
   const fn = s.match(/^([a-z][a-z0-9-]*)\(([^()]*)\)$/);
   if (!fn) return null;

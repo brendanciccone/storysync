@@ -1,0 +1,537 @@
+{
+ "about": "Probe 8a: use_figma responses, a private test Figma file, page \"storysync probe 8a\", 2026-10-13. Call 1 is spikes/figma-probe-8a-1.js, call 2 spikes/figma-probe-8a-2.js. Each response is as use_figma returned it, except that an export's PNG byte-identical to another's is written once and named where it repeats. Call 1: a frame turned NONE keeps strokesIncludedInLayout, which can then not be set to either value, nor itemReverseZIndex, layoutWrap WRAP or counterAxisAlignItems BASELINE; a child of it takes no ABSOLUTE, HUG or FILL. A ring (spread 2, no blur) draws only on a frame that clips and has a visible, opaque fill (opaqueClip: blue at x 10-11); a frame without fills, at opacity 0, or not clipping, draws none. A text that sizes itself is a whole pixel wide, rounded up; at the browser's width it keeps one line, 0.87px narrower it wraps. U+2028 is kept and breaks the line. Call 2: a white fill multiplied draws the ring and leaves the backdrop as it was (#09090b and #f5f5f5 inside); a clear gradient draws none. Call 3 is the build call figma code wrote for fixtures/final/alert, item and empty and two sets made for it (a ring on a frame without a fill, coder's Cancel button; a plus icon in 2px of padding, coder's [&>svg]:p-0.5), its DATA's page set to the probe's, with this change's template (TSUM 032224ef): its response, and what get_metadata and get_screenshot then showed of it, in `seen`.",
+ "call1": {
+  "page": "49:2",
+  "none": {
+   "cloneBefore": {
+    "sil": true,
+    "mode": "VERTICAL"
+   },
+   "setNone": "ok",
+   "read": {
+    "strokesIncludedInLayout": true,
+    "primaryAxisSizingMode": "AUTO",
+    "counterAxisSizingMode": "FIXED",
+    "itemSpacing": 6,
+    "paddingTop": 4,
+    "layoutWrap": "NO_WRAP",
+    "primaryAxisAlignItems": "MIN",
+    "itemReverseZIndex": false
+   },
+   "kids": {
+    "absAfterNone": "ABSOLUTE",
+    "cSizing": [
+     "FIXED",
+     "FIXED"
+    ]
+   },
+   "frame": [
+    [
+     "strokesIncludedInLayout",
+     false,
+     "in set_strokesIncludedInLayout: Can only set strokesIncludedInLayout on nodes with layoutMode !== NONE"
+    ],
+    [
+     "strokesIncludedInLayout",
+     true,
+     "in set_strokesIncludedInLayout: Can only set strokesIncludedInLayout on nodes with layoutMode !== NONE"
+    ],
+    [
+     "layoutWrap",
+     "NO_WRAP",
+     "ok"
+    ],
+    [
+     "layoutWrap",
+     "WRAP",
+     "in set_layoutWrap: Can only set layoutWrap = WRAP on nodes with layoutMode === HORIZONTAL or VERTICAL"
+    ],
+    [
+     "primaryAxisSizingMode",
+     "FIXED",
+     "ok"
+    ],
+    [
+     "primaryAxisSizingMode",
+     "AUTO",
+     "ok"
+    ],
+    [
+     "counterAxisSizingMode",
+     "AUTO",
+     "ok"
+    ],
+    [
+     "primaryAxisAlignItems",
+     "CENTER",
+     "ok"
+    ],
+    [
+     "counterAxisAlignItems",
+     "CENTER",
+     "ok"
+    ],
+    [
+     "counterAxisAlignItems",
+     "BASELINE",
+     "in set_counterAxisAlignItems: counterAxisAlignItems = BASELINE can only be set when layoutMode === HORIZONTAL"
+    ],
+    [
+     "paddingTop",
+     3,
+     "ok"
+    ],
+    [
+     "paddingLeft",
+     3,
+     "ok"
+    ],
+    [
+     "itemSpacing",
+     5,
+     "ok"
+    ],
+    [
+     "counterAxisSpacing",
+     4,
+     "ok"
+    ],
+    [
+     "counterAxisAlignContent",
+     "AUTO",
+     "ok"
+    ],
+    [
+     "itemReverseZIndex",
+     true,
+     "in set_itemReverseZIndex: Can only set itemReverseZIndex on nodes with layoutMode !== NONE"
+    ],
+    [
+     "layoutSizingHorizontal",
+     "HUG",
+     "in set_layoutSizingHorizontal: node must be an auto-layout frame or a child of an auto-layout frame"
+    ],
+    [
+     "layoutSizingHorizontal",
+     "FIXED",
+     "ok"
+    ],
+    [
+     "layoutSizingVertical",
+     "HUG",
+     "in set_layoutSizingVertical: node must be an auto-layout frame or a child of an auto-layout frame"
+    ]
+   ],
+   "child": [
+    [
+     "frame",
+     "layoutPositioning",
+     "ABSOLUTE",
+     "in set_layoutPositioning: Can only set layoutPositioning = ABSOLUTE if the parent node has layoutMode !== NONE"
+    ],
+    [
+     "frame",
+     "layoutPositioning",
+     "AUTO",
+     "ok"
+    ],
+    [
+     "abs",
+     "layoutPositioning",
+     "AUTO",
+     "ok"
+    ],
+    [
+     "frame",
+     "layoutSizingHorizontal",
+     "FILL",
+     "in set_layoutSizingHorizontal: node must be an auto-layout frame or a child of an auto-layout frame"
+    ],
+    [
+     "frame",
+     "layoutSizingHorizontal",
+     "FIXED",
+     "ok"
+    ],
+    [
+     "frame",
+     "layoutSizingHorizontal",
+     "HUG",
+     "in set_layoutSizingHorizontal: node must be an auto-layout frame or a child of an auto-layout frame"
+    ],
+    [
+     "frame",
+     "layoutGrow",
+     1,
+     "ok"
+    ],
+    [
+     "frame",
+     "layoutGrow",
+     0,
+     "ok"
+    ],
+    [
+     "frame",
+     "layoutAlign",
+     "STRETCH",
+     "ok"
+    ],
+    [
+     "frame",
+     "layoutAlign",
+     "INHERIT",
+     "ok"
+    ],
+    [
+     "text",
+     "layoutSizingHorizontal",
+     "HUG",
+     "in set_layoutSizingHorizontal: node must be an auto-layout frame or a child of an auto-layout frame"
+    ],
+    [
+     "text",
+     "layoutSizingHorizontal",
+     "FIXED",
+     "ok"
+    ]
+   ],
+   "fresh": {
+    "read": false,
+    "setFalse": "in set_strokesIncludedInLayout: Can only set strokesIncludedInLayout on nodes with layoutMode !== NONE",
+    "setTrue": "in set_strokesIncludedInLayout: Can only set strokesIncludedInLayout on nodes with layoutMode !== NONE"
+   },
+   "clearFirst": [
+    "ok",
+    "ok",
+    false
+   ]
+  },
+  "ring": {
+   "noFill": {
+    "id": "49:17",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAYAAAChS3wfAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAAlZJREFUeAHt2LtuGkEUBuDfUVosqGmgAqcBpIQWsJIaeAAudUJBSdIAzwBJDTg98ATQLi6AinSAtKnB8ACTPWPFWoQLz6C9iJlPWoSGldj557K754ZZoLB3UJwOAIrTAUBxOgAoTgcAxekAoLj3kHQ8HtHvP2A2e7SOGbwQj8dRqZRQLBYgjUkwzb/s/v4LK5UqzDBm7HA4MC8YhsEaje/8WkzTZDKkAqA/7HR+Mr/odLr8mmQGQngPGA5HSKc/oVb7Cr+o1b4hHA5bS3IAUcIBDAa/rTWXh9/QgNB+JIwJisU+MD96ejpIXdvV3AZvbwOQ4VoA+/0evV4Po9HopH273fLfvOJKAP1+H6lUind2PB4jGo3y76TZbGKxWMAr0g9Cb7XZbNBqtTCfzxEMBnnbdDpFtVrFZDI5OXe5XGK9XqNQuODBRpDjM4BGN5/Pv3SeZLNZHowddb5er/Pf3OT4DKD1HQqFztqZrRpPIdHSGA6HJ0G5wfEZEIlEsNvtztrtHaUAXjvHDY4HkEwm+Zr/v+mRdrt9ss5pP6DpXywW4TbHA6CRpltfJpNBLpfjdwMabdoY7SiERCJx1u44JuiSJ0Gr4/xwisy1Ob4J2rm9wb2FLolBAlWDroVwAOl0GqvVCn5Dr8J3dzGIkgjgI7rdX/AbKtSUy2UIY4Lovfu5JNZlfvFcEvvMZFxUFG00fliFyUfmBar/UUG2VKryzssWRW/oA5Jo2g0GD9ae8AdeoNokHZVKGYGAXEHkogCugX4OgOJ0AFCcDgCK0wFAcToAKE75AP4B0XJwMqWjJasAAAAASUVORK5CYII="
+   },
+   "noFillClip": {
+    "id": "49:20",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "same bytes as noFill"
+   },
+   "clearFill": {
+    "id": "49:23",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "same bytes as noFill"
+   },
+   "clearFillClip": {
+    "id": "49:26",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "same bytes as noFill"
+   },
+   "opaque": {
+    "id": "49:29",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "same bytes as noFill"
+   },
+   "opaqueClip": {
+    "id": "49:32",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAYAAAChS3wfAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAA5JJREFUeAHtmUtME1EUhv8iSAQpNGgkPLRspIhSXhZ2PIImLLR0p8EYTFgpC1a6BHbGFQngykQw+NgVMNFEo2UnFgQqaq0ueAjIS1rkEUToOOc2JW1wMdNkphNmvmTS2zszydzvnnvm5oyO44GKiYHK0QRA5WgCoHI0AVA5mgConFhEiGeRw8iMHyOzHH6tR2czmWXQ4SR/1J6LQWqCDpGgE7sV3vwL9I3v4rXHDyVxIScGVl5EQpw4EaIE0ODvvtnBjJfDztYa5gcfY3VyGKtTw4gGiWkmpJfV4bj5EvuflQLcqY4VJUGUgKcjgZn/45vD564G5OdkoLHxFnJzTUhKSoLcOJ1O2O29eOkYQl79A8Qnp/ORoMPVIhErmxPI0jrH3XiyzQ6zpZprb+/klEJ7ewdnLq3mrj9cYc/nXvALvlfwW4DWPbHkeo6aKgs/8zehFCgK809nYu59D/tPyVkoggVMrwZWyty7HthsVigNmpDfEx9Ye0wKAT9WAgI2FjywWCxQGiaTiU/IQ6y9vCH8vgOzEdLrI0vCsgnw+Xzo6upCb29vWP/U1BQ7Fy1kEdDd3Y3CwkI22L6+PmRnZ7M20dzcjLGxMUSLiLfCQpmcnERLSwtGR0eRkpLC+gYGBlBfXw+HwxF2rcvlwsTEBGprayEXkkcAza7Vat0bPFFRUcHEhEKDb2pqYufkRPIIoPVtMBj29XMhG1CSREvDbreHiZIDySPAaDTC6/Xu6w8dKAn43zVyILmAgoICtuaDSY9obW0NW+eUDyj8bTYb5EZyATTT9OorLy9HZWUlexvQbFNiDIUkmM3mff1SI3kOIGgZUNILvu9Dw5/2BkHa2togN7IICCJ3ghOCVhRFBKytreGgIFjAsaOBMpPeeB5utxtKw+kc4ktkOaydZRB+n2ABhRmBS/XGYnR03IfSoNJYetk11j5lEB7Ygq8sygz8ZpTW4eP3WV5CJ5QCPcsLh3OvOGrNEy5AVFH02Ygfrzy72OKLol8eNaCmwsI2LxZLCeSG8pDb/ZVFo+vbDM7wRdEjfFH0Ys4hXCmSSMDmNnDv7S6mvYGS0yJfH/w52IONeQ+igd5YgmT+SONL43HxSewjye2qQ0g4LFFZnCAJ/Z8CkaAkaOYvn9WJGjwhWkCQ5Q0O/eN+TPs4PiKi82ksNREozoxBAZ+gTSdk+jR20NB2glA5mgCoHE0AVI4mACpH9QL+AUm4PhNbryaHAAAAAElFTkSuQmCC"
+   },
+   "noFillBehind": {
+    "id": "49:35",
+    "set": "ok",
+    "kept": [
+     2,
+     true
+    ],
+    "png": "same bytes as noFill"
+   },
+   "clearFillBehind": {
+    "id": "49:38",
+    "set": "ok",
+    "kept": [
+     2,
+     true
+    ],
+    "png": "same bytes as noFill"
+   },
+   "hiddenFillClip": {
+    "id": "49:41",
+    "set": "ok",
+    "kept": [
+     2,
+     false
+    ],
+    "png": "same bytes as noFill"
+   }
+  },
+  "text": {
+   "rows": [
+    [
+     "Action",
+     44,
+     20,
+     40
+    ],
+    [
+     "Basic Item",
+     70,
+     20,
+     19.25
+    ],
+    [
+     "Home",
+     40,
+     20,
+     40
+    ],
+    [
+     "Components",
+     85,
+     20,
+     40
+    ],
+    [
+     "Breadcrumb",
+     81,
+     20,
+     40
+    ],
+    [
+     "A simple item with title and description.",
+     261,
+     21,
+     42
+    ],
+    [
+     "Upload files to your cloud storage",
+     224
+    ],
+    [
+     "to access them anywhere.",
+     174
+    ],
+    [
+     "Upload files to your cloud storage to",
+     241
+    ]
+   ],
+   "empty": {
+    "atBox": [
+     384,
+     46
+    ],
+    "atInk": [
+     223.86,
+     46
+    ],
+    "sep": [
+     384,
+     46,
+     [
+      "34:8232"
+     ]
+    ],
+    "sepHug": [
+     224,
+     46
+    ]
+   },
+   "value": [
+    475.47,
+    26,
+    "NONE",
+    "CENTER"
+   ]
+  }
+ },
+ "call2": {
+  "rings": {
+   "multiply dark": {
+    "id": "50:3",
+    "fills": [
+     [
+      "SOLID",
+      "MULTIPLY",
+      1
+     ]
+    ],
+    "png": "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAYAAAChS3wfAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAA31JREFUeAHtms9PE0EUx7/9sd1CC20tGORX8KAYpVFRo4leMPEiQa4mePDgQf8Ag/HkTfEf4OLBAybelKAnDTcDKmJM1aQcRChWWm3oYgtsu7t1ZrBYTAzbxp1t3P0kzU53Z7fzvvPem8nbOurqfEVYGCcsji0ALI4tACyOLQAsji0ALI4bVbK7+wzaj/ajtfc8/OFOmMFKPIrMYhTR8RGspRdRDY5Kt8JCXQCRwRvYf+4qaom5Z6NMiMK6VNF9FQlAjT87/AShjh4oGz+wPP0A0ucZSAszMANfywG0nhpC8+EB9p16xOTIQEUiVCRA78XbbOblTAIf7l9BJvkJkpRBPl9AsaiBN6Lohd/vR7htHw5dvgcx0Mo8YfbhTd3P0J0EfSTOS25PjV9e+IhUKglZlk0xniLLG0invyNJxkLHpMpZMsZrJD+d1v0M3QLQuKd8ezeBdGIOq6uVxZqRSJIEKTmPxMsx9r2tt1/3vboFCHRG2DExNYZsNodaI5ORsDr/hrXbjxggAE18lFwyxlyv1igUZJKQX7O2r0n/svzfbIQ0rbo8xE2AIllrVLVABqpsO69pRXLNvKocFwGo4fn8OugkKYpGQmidGb55LV/17P0Lqt4K64XOrqIo8Hi8cDgc7JymqSxm6TpeDhWC9ne5XOCF4R5AjXU63VvGsx91UgOLf/TTiFB5co1vWuLiATudpxspVVUhCOI2oXhguNx/m9FyQ6kYZiVCLgLQzF9KehTq6i6Xu6yPC263QBKlDN4YHgJkrkkCFFnmL806zQmCIGzrRQXZzAMFJgYvOAhA3d0Jr7d+y83L3Z/G/e+2B7zhIkAJ3glOD3ZRFFXAe602Et2W5NJxdmzsOmFKrO6EKNaRElk3a6+QQqledAvwZfYpOzZ2HUMgEESt4ff7SH3wEmtn4gYIsPR2U4C2k0MI7tmLYLB2RKBj2UXqgqXiaHT8ju57XcSdb+npmCN1d099EM2k3hbq7sPawhTZ0WywtVtVFfCG5iFRFBEONzHjD5KiqOBtQOz5KOKvHul+TkVVYU99AH3XJxD6VR5Lkfrg1+kx5JZjMIPGruMIkE8LKY0LYgOL/cm7BpbFKVSEngu192KEzvz7xwa/GCmHlskjg8OsWBrqiMAMsiQsEyQ3LZEEnYq9QDU47H+JWRxbAFgcWwBYHFsAWBxbAFicn/FAThq0LYQ2AAAAAElFTkSuQmCC"
+   },
+   "multiply light": {
+    "id": "50:6",
+    "fills": [
+     [
+      "SOLID",
+      "MULTIPLY",
+      1
+     ]
+    ],
+    "png": "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAYAAAChS3wfAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAA6RJREFUeAHtmk1ME0EYht/lRyLQ1ggm/BggAVpTQRLBCEJQLyYl5eSJlBgOUDgQuXEh8QQcOOGxyAEFEjHxAgUSPGikxhopCVXR1qAtYgF/SH8samypO1NpqDFx29jtxt0n2XR2M7PJ9+4332zfWcbv94cgYlIgciQBIHIkASByJAEgciQBIHLSECevPzGwuhisbKdiZxdJ4bgiRA+NKoicTMQFE+ur8NcfwNyrFNx/kwohcbF0DxplEJmHYhoWmwAk+OumNGx4GQS++bBlnoTHsQSPcwnJICvvBApqdThW1UzPSTZcPReISYSYBLj7LPzkv7tdeDHWjoryfHR2dkCpVEImk4FvLBYLZmaMWHi4jJNto8hQFNBMuFwR5HwPzgLs7DK4di9cMpaHm9DWooVe3wEhMDIygrHbs6jquoPUjGz01AdRnrvHaSznVWDuJUN/P67M4NL504IJnqDX61FRlg/Xkwl6bt1iOI/lLMA7X7jouR5PQKvVQmiQqeh9a6Ft62YCBHjvCf/6t22oqamG0FCpVGxBfkrbn3cTIIDQyc7ORjzwJoDH48Hk5CSMRmPUdafTCbfbjWTBiwDj4+Oora2Fw+Fgl60ZqNVqGjhhcHAQVqsVySLuV2GurK+v0yDNZjMUCgW9ZjKZ0NXVhfn5+ai+RAgiTHNzM/gi4RlAgiIB7QdPaGhoiGTAwX69vb1obGwEnyQ8A8jcPxj8nyDBk9owNTX1177/moRnQHFxMRXhd+RyeaRNBCB9QiH+tygSLkBlZSUWFxejUr6/vz9qnre2tqK7uxstLS3gm4QLQFKapLZGo6FHXV0dvF4v+vr6ovrpdDoq1sDAAPgk4TWAUFRUhNXV1chUODjPDQZDpD00NAS+4UWAffgucFyQTFHEgdfrw/8CZwGO/jId5SVnYLfbITSIO5SVp6JtYo1xhbMAVflhm0leUs06MDcgNKanjaw/2ErbhUe4j+MuQF5Y1cKzOjxf22Srt3BEMBhGsLC4HDFHm5QBzmM5rwJluSFcKA3iwZoM6iujuHmrHS6Xi32h0SbFIPH5vsBms9EHQR6ImjVFCcQUjWWPIEZbnMHwo1TWHQo7Lh9Yf3DTPAH/lg3JQF5SAwV75LHWeHqGjM79nvoADqdzv0ccGyMMZm0MmwnC2xhpYneIYgmewMT7kRSxyWftKdhwp0T8Qr4hK9OpghBbn1gbPCe+P1KM9JWYyJEEgMiRBIDIkQSAyJEEgMj5CYT0VZHHfXiiAAAAAElFTkSuQmCC"
+   },
+   "onePercent dark": {
+    "id": "50:9",
+    "fills": [
+     [
+      "SOLID",
+      "NORMAL",
+      0.009999999776482582
+     ]
+    ],
+    "png": "differs from multiply dark inside the frame only (#0b0b0d over #09090b)"
+   },
+   "onePercent light": {
+    "id": "50:12",
+    "fills": [
+     [
+      "SOLID",
+      "NORMAL",
+      0.009999999776482582
+     ]
+    ],
+    "png": "same bytes as multiply light"
+   },
+   "clearGradient dark": {
+    "id": "50:15",
+    "fills": [
+     [
+      "GRADIENT_LINEAR",
+      "NORMAL",
+      1
+     ]
+    ],
+    "png": "iVBORw0KGgoAAAANSUhEUgAAAEAAAAAwCAYAAAChS3wfAAAACXBIWXMAAAsTAAALEwEAmpwYAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAOdEVYdFNvZnR3YXJlAEZpZ21hnrGWYwAAAjFJREFUeAHtmttu4jAQhv+cOYTDVVlV+/6vttCbJQdU4iTOzriiC5Wq1m5xotqfhISIJezPnrE9SjCfLwc4TAjH8QLgOF4AHMcLgON4AXAcLwCOE8OQMAyxXq+RZTP6ZBgDIVpUVYnTqYYpRgLiOMbDwy90XYvj8a/qyDBI2Ibl53mOzWaDp6cD9aeDLoHJbfDx8TfqukJZFpgCLGC5zLHf/4GUehOhnQPYeNM8T2bwTFEU6Pseq9UKuhgIWNPsnzA1jseCQmIOXbQFpGlCK+CMqdG2DWYz/WT8Y7ZB3di/YE3AQKm271vq6G2mlnKgZ+NV5awI4IEL8QyepK6TKonywF+eCePZ+w6MD0KfhWeX9+c0nSEIAvWblL2KWd7Hr2ER3D6KItji7iuABxuG8evg1Z+GPMDhTTtJooQ6YdrEygr46Hc+RfI+niTZjSgb3F33ezN6PVCWMVYitCKAM/8l6TG81KMovmoT0f0ioUTZwDZ3DwGaa0qAmcr8l1nnnJAkyU0rFvKSB1olwxYWBPByD+mUtnhd5tfLn+P+//cUtrEi4ILtBPcZfEkMBtjeq++J9kiaphklVj+Cr8JCCOiiLeB8PlMFZoupkedLqg9W0EVbABch4zjCdjsdCdwXLsyaFEeNaoK8Z+92OxUOdV2PUiDhPJSmqVqNfHk6HPbqOK1L8JVXZBaLnErjK9WRMeBwZPllWRlXpQP/jpDjeAFwHC8AjuMFwHG8ADiOFwDH+QfqRt/yj1jv/wAAAABJRU5ErkJggg=="
+   },
+   "clearGradient light": {
+    "id": "50:18",
+    "fills": [
+     [
+      "GRADIENT_LINEAR",
+      "NORMAL",
+      1
+     ]
+    ],
+    "png": "no ring, as clearGradient dark"
+   }
+  }
+ },
+ "call3": {
+  "kind": "build",
+  "tpl": 2,
+  "tc": 1,
+  "page": "storysync probe 8a",
+  "sets": [
+   {
+    "id": "51:12",
+    "component": "ui-base-alert",
+    "name": "Alert",
+    "variants": 2,
+    "added": 2,
+    "updated": 0,
+    "migrated": 0,
+    "designerLayers": 0,
+    "rows": 2,
+    "columns": 1,
+    "extra": 0,
+    "overlaps": 0,
+    "absoluteContainers": []
+   },
+   {
+    "id": "51:37",
+    "component": "ui-base-item",
+    "name": "Item",
+    "variants": 3,
+    "added": 3,
+    "updated": 0,
+    "migrated": 0,
+    "designerLayers": 0,
+    "rows": 3,
+    "columns": 1,
+    "extra": 0,
+    "overlaps": 0,
+    "absoluteContainers": []
+   },
+   {
+    "id": "51:38",
+    "component": "ui-base-empty",
+    "name": "Empty",
+    "variants": 1,
+    "added": 1,
+    "updated": 0,
+    "migrated": 0,
+    "designerLayers": 0,
+    "rows": 1,
+    "columns": 1,
+    "extra": 0,
+    "overlaps": 0,
+    "absoluteContainers": []
+   },
+   {
+    "id": "51:48",
+    "component": "probe-ring",
+    "name": "RingProbe",
+    "variants": 1,
+    "added": 1,
+    "updated": 0,
+    "migrated": 0,
+    "designerLayers": 0,
+    "rows": 1,
+    "columns": 1,
+    "extra": 0,
+    "overlaps": 0,
+    "absoluteContainers": []
+   },
+   {
+    "id": "51:51",
+    "component": "probe-icon",
+    "name": "PaddedIcon",
+    "variants": 1,
+    "added": 1,
+    "updated": 0,
+    "migrated": 0,
+    "designerLayers": 0,
+    "rows": 1,
+    "columns": 1,
+    "extra": 0,
+    "overlaps": 0,
+    "absoluteContainers": []
+   }
+  ],
+  "uploads": [],
+  "fonts": {},
+  "unbound": [],
+  "fallbacks": []
+ },
+ "seen": {
+  "alert": "built, both variants; no refusal (the final live test's call threw in set_strokesIncludedInLayout)",
+  "item": "variants 373.65x75, 318.43x56, 361.65x67 (measured 74.25, 55.25, 66.25; the final live test's 96, 74, 88): each description on one line, no fallback",
+  "empty": "screenshot: 'Upload files to your cloud storage' / 'to access them anywhere.', as Storybook breaks it",
+  "ring": "screenshot: #61a6fa at x 18-19 left of the button at 20, the canvas inside it unchanged",
+  "icon": "screenshot: the plus's ink from x 6 to 17 and y 6 to 17 in its 24px frame (measured 6.17 to 17.84; built before, 5 to 19)"
+ }
+}

@@ -95,7 +95,7 @@ test("tokens CLI: --check --strict passes an unchanged config with a commented-o
   });
 });
 
-test("tokens CLI: --json gives each colour's hex, and a baseline from before it still checks clean", () => {
+test("tokens CLI: --json gives each color's hex, and a baseline from before it still checks clean", () => {
   withProject((dir) => {
     writeFileSync(join(dir, "tailwind.config.ts"), tailwind("oklch(63.7% 0.237 25.331)"));
     const created = spawnSync(process.execPath, [CLI, "tokens", "--json"], { cwd: dir, encoding: "utf8" });
@@ -289,8 +289,9 @@ test("tokens CLI: each --source there is still reads that source", () => {
 });
 
 test("tokens CLI: --source auto detects the source, as leaving it out does", () => {
-  // auto is the drift-check action's token_source default, which the README
-  // tells action users to pass on to --source when they write the baseline.
+  // auto is the drift-check action's token_source default, which
+  // docs/reference.md tells action users to pass on to --source when they
+  // write the baseline.
   withProject((dir) => {
     const auto = tokens(dir, "--source", "auto", "--json");
     assert.equal(auto.status, 0, auto.out);
@@ -308,4 +309,129 @@ test("tokens CLI: --source auto detects the source, as leaving it out does", () 
     assert.equal(check.status, 0, check.out);
     assert.match(check.out, /No token drift detected/);
   });
+});
+
+/** shadcn/ui's v4 layout: :root, which detection picks, and @theme inline built from it. */
+const SHADCN_V4 = `@import "tailwindcss";
+@theme inline {
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+}
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+}
+`;
+
+test("tokens CLI: with --source, the text output names the source read, not the one detection picks", () => {
+  // It said "Detected: css (app/globals.css)" and then listed @theme's tokens.
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    const tw = tokens(dir, "--source", "tailwind");
+    assert.equal(tw.status, 0, tw.out);
+    assert.match(tw.out, /Source: tailwind \(app\/globals\.css\), from --source/);
+    assert.doesNotMatch(tw.out, /Detected/);
+
+    assert.match(tokens(dir).out, /Detected: css \(app\/globals\.css\)/);
+
+    // A source that isn't there says so, and why.
+    const theme = tokens(dir, "--source", "theme");
+    assert.doesNotMatch(theme.out, /Detected|Source:/);
+    assert.match(theme.out, /No tokens found\.\n\s+No theme file found/);
+  });
+});
+
+test("tokens CLI: the text output gives each length's px where its value doesn't say it", () => {
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    const r = tokens(dir);
+    assert.equal(r.status, 0, r.out);
+    // --radius is lg too, so it isn't listed again as DEFAULT.
+    assert.match(r.out, /\n {4}sm {23}calc\(0\.625rem - 4px\) = 6px\n {4}lg {23}0\.625rem = 10px\n/);
+    assert.doesNotMatch(r.out, /DEFAULT/);
+  });
+});
+
+test("tokens CLI: --json gives the colors the base styles set, for figma code's bindings", () => {
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), `${SHADCN_V4}:root { --foreground: oklch(0.145 0 0); }\n@layer base { body { @apply bg-background text-foreground; } }\n`);
+    const json = tokens(dir, "--json");
+    assert.equal(json.status, 0, json.out);
+    assert.deepEqual((JSON.parse(json.stdout) as { defaults?: unknown }).defaults, [
+      { property: "color", token: "foreground", from: "app/globals.css, @layer base: body { @apply bg-background text-foreground }" },
+    ]);
+    // None, none written.
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    assert.equal("defaults" in (JSON.parse(tokens(dir, "--json").stdout) as object), false);
+  });
+});
+
+test("tokens CLI: --check says how to update the baseline, and that a newer storysync can read more tokens", () => {
+  withEmptyProject((dir) => {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4);
+    const current = JSON.parse(tokens(dir, "--json").stdout) as { collections: { category: string }[] };
+    // A baseline as storysync 0.3.0 wrote it for shadcn/ui v4: :root's
+    // colors, with --radius uncategorized.
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), JSON.stringify({ ...current, collections: current.collections.filter((c) => c.category === "colors") }));
+    const upgraded = tokens(dir, "--check");
+    assert.equal(upgraded.status, 0, upgraded.out);
+    assert.match(upgraded.out, /\+ radius: sm, lg\n/);
+    assert.match(upgraded.out, /If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
+    assert.equal(tokens(dir, "--check", "--strict").status, 1);
+
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), tokens(dir, "--json").stdout);
+    // A baseline from before, with the radius DEFAULT that repeats lg, still checks clean.
+    const radius = (current.collections as { category: string; tokens: unknown[] }[]).find((c) => c.category === "radius")!;
+    const before = { ...current, collections: current.collections.map((c) => (c === radius ? { ...radius, tokens: [{ name: "DEFAULT", value: "0.625rem", px: 10 }, ...radius.tokens] } : c)) };
+    writeFileSync(join(dir, ".storysync", "tokens-before.json"), JSON.stringify(before));
+    const old = tokens(dir, "--check", "--strict", "--baseline", join(dir, ".storysync", "tokens-before.json"));
+    assert.equal(old.status, 0, old.out);
+    writeFileSync(join(dir, "app", "globals.css"), SHADCN_V4.replace("--radius: 0.625rem", "--radius: 0.5rem"));
+    const changed = tokens(dir, "--check", "--strict");
+    assert.equal(changed.status, 1, changed.out);
+    assert.match(changed.out, /~ radius\/lg: 0\.625rem → 0\.5rem/);
+    assert.match(changed.out, /If the change is intended, update the baseline with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json`\./);
+  });
+});
+
+test("tokens CLI: a dark theme's values are in --json and the text output, and --check names a dark change, or that an earlier baseline left them unchecked", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-tokens-cli-"));
+  const globals = (darkBg: string) => `:root { --background: #ffffff; --muted: #f5f5f5; }\n.dark { --background: ${darkBg}; }\n`;
+  try {
+    mkdirSync(join(dir, "app"));
+    writeFileSync(join(dir, "app", "globals.css"), globals("#0a0a0a"));
+    const json = tokens(dir, "--json");
+    assert.equal(json.status, 0, json.out);
+    const data = JSON.parse(json.stdout) as { modes: string[]; collections: { tokens: { name: string; dark?: { value: string; hex?: string } }[] }[] };
+    assert.deepEqual(data.modes, ["Light", "Dark"]);
+    assert.deepEqual(data.collections[0].tokens.map((t) => [t.name, t.dark]), [["background", { value: "#0a0a0a", hex: "#0a0a0a" }], ["muted", undefined]]);
+
+    const text = tokens(dir);
+    assert.match(text.out, /background\s+#ffffff {3}dark: #0a0a0a\n/);
+    assert.match(text.out, /\n1 with a dark theme value, for a Dark mode beside Light\n/);
+
+    mkdirSync(join(dir, ".storysync"));
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), json.stdout);
+    writeFileSync(join(dir, "app", "globals.css"), globals("#000000"));
+    const changed = tokens(dir, "--check", "--strict");
+    assert.equal(changed.status, 1, changed.out);
+    assert.match(changed.out, /~ colors\/background \(Dark\): #0a0a0a → #000000/);
+
+    // A baseline an earlier storysync wrote has no modes: it checks clean, and says so.
+    const old = JSON.parse(json.stdout) as Record<string, unknown>;
+    delete old.modes;
+    writeFileSync(join(dir, ".storysync", "tokens-baseline.json"), JSON.stringify(old));
+    const unchecked = tokens(dir, "--check", "--strict");
+    assert.equal(unchecked.status, 0, unchecked.out);
+    assert.match(unchecked.out, /No token drift detected\.\nThe baseline at \.storysync\/tokens-baseline\.json was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared\. Recreate it with `mkdir -p -- \.storysync && storysync tokens --json > \.storysync\/tokens-baseline\.json` to check them\./);
+    assert.deepEqual(JSON.parse(tokens(dir, "--check", "--json").stdout), { drift: false, darkNotChecked: true });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

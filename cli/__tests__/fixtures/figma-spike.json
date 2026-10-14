@@ -1,0 +1,445 @@
+{
+  "ranAt": "2026-10-08",
+  "file": "YMBLJKpqw9DobTN6yR8oU0 (Storysync test 2, page 'storysync spike' 41:2)",
+  "returnShape": "object (use_figma returned the plugin's return value as a JSON object; nested JSON strings stay strings)",
+  "probe": {
+    "mode": "probe",
+    "items": {
+      "svg": {
+        "frame": [
+          "FRAME",
+          0,
+          0,
+          16,
+          16,
+          2,
+          true,
+          1
+        ],
+        "kids": [
+          [
+            "VECTOR",
+            1.33,
+            4.67,
+            13.33,
+            4,
+            1.33,
+            "CENTER",
+            1,
+            0
+          ],
+          [
+            "VECTOR",
+            1.33,
+            2.67,
+            13.33,
+            10.67,
+            1.33,
+            "CENTER",
+            1,
+            0
+          ]
+        ],
+        "rescaled": [
+          [
+            "VECTOR",
+            1.33,
+            4.67,
+            13.33,
+            4,
+            1.33,
+            "CENTER",
+            1,
+            0
+          ],
+          [
+            "VECTOR",
+            1.33,
+            2.67,
+            13.33,
+            10.67,
+            1.33,
+            "CENTER",
+            1,
+            0
+          ]
+        ],
+        "group": [
+          "GROUP"
+        ],
+        "expect": 1.33
+      },
+      "shadow": {
+        "unclipped": [
+          1,
+          false
+        ],
+        "clipped": [
+          1,
+          false
+        ]
+      },
+      "text": {
+        "truncated": [
+          "HEIGHT",
+          "ENDING",
+          1,
+          94,
+          20
+        ],
+        "hug": [
+          "WIDTH_AND_HEIGHT",
+          158,
+          17
+        ],
+        "afterResize": [
+          "NONE",
+          60,
+          20
+        ],
+        "chrome": 154.8
+      },
+      "absolute": {
+        "at": {
+          "INSIDE": [
+            48,
+            24,
+            [
+              "AUTO",
+              12,
+              2
+            ],
+            [
+              "AUTO",
+              36,
+              2
+            ],
+            [
+              "ABSOLUTE",
+              3,
+              4
+            ]
+          ],
+          "CENTER": [
+            44,
+            20,
+            [
+              "AUTO",
+              10,
+              0
+            ],
+            [
+              "AUTO",
+              34,
+              0
+            ],
+            [
+              "ABSOLUTE",
+              3,
+              4
+            ]
+          ],
+          "OUTSIDE": [
+            44,
+            20,
+            [
+              "AUTO",
+              10,
+              0
+            ],
+            [
+              "AUTO",
+              34,
+              0
+            ],
+            [
+              "ABSOLUTE",
+              3,
+              4
+            ]
+          ]
+        },
+        "sides": [
+          "mixed",
+          1,
+          0,
+          "OUTSIDE",
+          36
+        ]
+      },
+      "clone": {
+        "root": "size=a",
+        "child": "thumb",
+        "plain": "beside the original",
+        "nested": "PAGE",
+        "variant": "PAGE"
+      },
+      "search": {
+        "k": 6,
+        "kOrNone": 6,
+        "any": 11,
+        "types": [
+          "FRAME"
+        ]
+      },
+      "returned": {
+        "object": true,
+        "nested": "{\"a\":1}"
+      },
+      "time": {
+        "frames": 3214,
+        "texts": 1361,
+        "layout": 6,
+        "height": 4700
+      },
+      "blend": {
+        "blend": "DARKEN",
+        "dash": [
+          3,
+          3
+        ]
+      },
+      "defaults": {
+        "frame": 1,
+        "component": 1,
+        "strokeAlign": [
+          "INSIDE",
+          "CENTER"
+        ],
+        "autoLayout": [
+          "AUTO",
+          "FIXED"
+        ],
+        "text": "WIDTH_AND_HEIGHT"
+      },
+      "sizing": {
+        "fillAlong": {
+          "parent": [
+            100,
+            720,
+            "HUG",
+            "HUG",
+            "AUTO",
+            "AUTO"
+          ],
+          "kids": [
+            [
+              0,
+              0,
+              100,
+              16,
+              "FIXED",
+              "FIXED",
+              0,
+              "INHERIT"
+            ],
+            [
+              0,
+              16,
+              100,
+              688,
+              "FIXED",
+              "FILL",
+              1,
+              "INHERIT"
+            ],
+            [
+              0,
+              704,
+              100,
+              16,
+              "FIXED",
+              "FIXED",
+              0,
+              "INHERIT"
+            ]
+          ]
+        },
+        "growAlong": {
+          "parent": [
+            100,
+            720,
+            "HUG",
+            "HUG",
+            "AUTO",
+            "AUTO"
+          ],
+          "kids": [
+            [
+              0,
+              0,
+              100,
+              16,
+              "FIXED",
+              "FIXED",
+              0,
+              "INHERIT"
+            ],
+            [
+              0,
+              16,
+              100,
+              688,
+              "FIXED",
+              "FILL",
+              1,
+              "INHERIT"
+            ],
+            [
+              0,
+              704,
+              100,
+              16,
+              "FIXED",
+              "FIXED",
+              0,
+              "INHERIT"
+            ]
+          ]
+        },
+        "fillAcross": {
+          "parent": [
+            120,
+            32,
+            "HUG",
+            "HUG",
+            "AUTO",
+            "AUTO"
+          ],
+          "kids": [
+            [
+              0,
+              0,
+              120,
+              16,
+              "FIXED",
+              "FIXED",
+              0,
+              "INHERIT"
+            ],
+            [
+              0,
+              16,
+              120,
+              16,
+              "FILL",
+              "FIXED",
+              0,
+              "STRETCH"
+            ]
+          ]
+        },
+        "fillAcrossAlone": {
+          "parent": [
+            100,
+            16,
+            "HUG",
+            "HUG",
+            "AUTO",
+            "AUTO"
+          ],
+          "kids": [
+            [
+              0,
+              0,
+              100,
+              16,
+              "FILL",
+              "FIXED",
+              0,
+              "STRETCH"
+            ]
+          ]
+        },
+        "textInFixedRow": {
+          "parent": [
+            300,
+            40,
+            "FIXED",
+            "FIXED",
+            "FIXED",
+            "FIXED"
+          ],
+          "kids": [
+            [
+              0,
+              0,
+              300,
+              15,
+              "FILL",
+              "HUG",
+              1,
+              "INHERIT"
+            ]
+          ],
+          "textAutoResize": [
+            "WIDTH_AND_HEIGHT",
+            "HEIGHT"
+          ]
+        },
+        "textInHuggingRow": {
+          "parent": [
+            93,
+            15,
+            "HUG",
+            "HUG",
+            "AUTO",
+            "AUTO"
+          ],
+          "kids": [
+            [
+              0,
+              0,
+              93,
+              15,
+              "FILL",
+              "HUG",
+              1,
+              "INHERIT"
+            ]
+          ],
+          "textAutoResize": [
+            "WIDTH_AND_HEIGHT",
+            "HEIGHT"
+          ]
+        }
+      }
+    },
+    "page": "41:2",
+    "imageNode": "41:557",
+    "ms": 4948
+  },
+  "upload": {
+    "success": true,
+    "imageHash": "0221a8aad9b1a24a8ddb7d59043d07379fc6821d",
+    "sizeBytes": 2186,
+    "contentType": "image/jpeg",
+    "placedOnNodeId": "41:557"
+  },
+  "image": {
+    "mode": "image",
+    "items": {
+      "image": {
+        "hash": "0221a8aad9b1a24a8ddb7d59043d07379fc6821d",
+        "scaleMode": "FILL",
+        "length": 2186,
+        "fnv": "ef9497ae",
+        "size": {
+          "width": 80,
+          "height": 80
+        },
+        "sameBytes": true,
+        "hashIsSha1": true,
+        "sameSize": true,
+        "reused": true,
+        "reuseNodeId": "41:558"
+      }
+    },
+    "page": "41:2",
+    "ms": 98
+  },
+  "notes": [
+    "Call 2 was sent with only the setup and the MODE 'image' branch (the probe branch is skipped for that mode).",
+    "The upload_assets POST response itself carries imageHash, which equals the file's SHA-1."
+  ]
+}

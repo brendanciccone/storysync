@@ -30,20 +30,55 @@
 // saying so, rather than as a page that can't be read.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { VERSION } from "./version.js";
+import { connectWithFallback, isRequestTimeout, requestTimeoutError, DEFAULT_REQUEST_TIMEOUT_MS } from "./mcp-connect.js";
 
 export interface FigmaVariable {
   name: string;
   resolvedType: string;
+  /** Its value in `mode`. */
   value: string;
   collection: string;
+  /** The mode `value` is in: its collection's first, or the one `--mode` named. */
   mode: string;
+  /**
+   * Its value in each of its collection's modes, by mode name, where the
+   * collection has more than one and no one mode was asked for: diff
+   * compares the Dark one with the code's dark theme. Read with each mode
+   * resolved through its aliases, so a Semantic variable aliasing a
+   * palette step takes the step's value in that mode.
+   */
+  modes?: Record<string, string>;
 }
 
 export interface FigmaComponentInfo {
   name: string;
+  /**
+   * The page the set is on. The push puts each Storybook category on a page
+   * of its own, so this is what tells apart the sets of a name two categories
+   * share, `ui/base`'s Button and `ui/radix`'s.
+   */
+  page?: string;
+  /**
+   * A component set, or a component outside any set: the push makes a
+   * component with no variant properties a plain component, since a set of
+   * one unnamed variant is one Figma flags as errored. Left out, a set.
+   */
+  type?: "COMPONENT_SET" | "COMPONENT";
+  /** The node's id in the Figma file. */
+  nodeId?: string;
+  /**
+   * The Storybook ID the push stored on the node, with
+   * `setSharedPluginData('storysync', 'id', ...)`, when it did. It names the
+   * component the node was pushed from wherever a designer moves or renames
+   * it.
+   */
+  storybookId?: string;
+  /**
+   * Why Figma would not give the set's properties, when it would not: it
+   * throws "Component set has existing errors" on a set it flags as broken.
+   */
+  error?: string;
   variantProperties: { name: string; type: string; values: string[] }[];
   variantCount: number;
 }
@@ -120,10 +155,20 @@ async function slice(items, describe, wrap, label) {
  */
 const COMPONENTS_PLUGIN_CODE = `
 function describeComponent(node) {
+  const entry = { name: node.name, type: node.type, nodeId: node.id };
+  const storybookId = node.getSharedPluginData('storysync', 'id');
+  if (storybookId) entry.storybookId = storybookId;
   if (node.type !== 'COMPONENT_SET') {
-    return { name: node.name, variantProperties: [], variantCount: 1 };
+    return { ...entry, variantProperties: [], variantCount: 1 };
   }
-  const defs = node.componentPropertyDefinitions || {};
+  // Figma throws on a set it flags as errored, "Component set has existing
+  // errors": that set is reported as such, rather than failing its page.
+  let defs;
+  try {
+    defs = node.componentPropertyDefinitions || {};
+  } catch (err) {
+    return { ...entry, error: String(err && err.message || err), variantProperties: [], variantCount: node.children.length };
+  }
   const props = [];
   for (const [key, def] of Object.entries(defs)) {
     if (def.type === 'VARIANT') {
@@ -132,7 +177,7 @@ function describeComponent(node) {
       props.push({ name: key, type: 'BOOLEAN', values: ['true', 'false'] });
     }
   }
-  return { name: node.name, variantProperties: props, variantCount: node.children.length };
+  return { ...entry, variantProperties: props, variantCount: node.children.length };
 }
 
 async function readComponents(page, around) {
@@ -194,10 +239,12 @@ function rgbToHex(c) {
   const r = Math.round((c.r || 0) * 255);
   const g = Math.round((c.g || 0) * 255);
   const b = Math.round((c.b || 0) * 255);
-  const a = c.a == null ? 1 : c.a;
+  // The alpha as two more digits when it rounds to less than ff, as tokens
+  // and the audit write a translucent color: 0.999 is ff, so opaque.
+  const a = Math.round((c.a == null ? 1 : c.a) * 255);
   const hex = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
-  if (a >= 1) return hex;
-  return hex + Math.round(a * 255).toString(16).padStart(2, '0');
+  if (a >= 255) return hex;
+  return hex + a.toString(16).padStart(2, '0');
 }
 
 // Every variable in a collection that has the mode asked for, in order, so
@@ -209,24 +256,29 @@ for (const coll of collections) {
   for (const varId of coll.variableIds) all.push({ coll, targetMode, varId });
 }
 
+// A variable's value in a mode, through its aliases, as text.
+async function valueIn(v, mode) {
+  let raw = v.valuesByMode[mode.modeId] ?? v.valuesByMode[Object.keys(v.valuesByMode)[0]];
+  if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'VARIABLE_ALIAS') {
+    const resolved = await resolveAlias(raw.id, mode.modeId, 0);
+    raw = resolved.value;
+  }
+  if (v.resolvedType === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) return rgbToHex(raw);
+  if (v.resolvedType === 'BOOLEAN') return String(Boolean(raw));
+  return String(raw);
+}
+
+// With no mode asked for, a variable of a collection with several modes
+// gives its value in each, by name, for diff to compare the Dark one too.
 async function describe({ coll, targetMode, varId }) {
   const v = await figma.variables.getVariableByIdAsync(varId);
   if (!v) return null;
-  let raw = v.valuesByMode[targetMode.modeId] ?? v.valuesByMode[Object.keys(v.valuesByMode)[0]];
-  let type = v.resolvedType;
-  if (raw && typeof raw === 'object' && 'type' in raw && raw.type === 'VARIABLE_ALIAS') {
-    const resolved = await resolveAlias(raw.id, targetMode.modeId, 0);
-    raw = resolved.value;
+  const entry = { name: v.name, resolvedType: v.resolvedType, value: await valueIn(v, targetMode), collection: coll.name, mode: targetMode.name };
+  if (!MODE_NAME && coll.modes.length > 1) {
+    entry.modes = {};
+    for (const mode of coll.modes) entry.modes[mode.name] = await valueIn(v, mode);
   }
-  let value = '';
-  if (type === 'COLOR' && raw && typeof raw === 'object' && 'r' in raw) {
-    value = rgbToHex(raw);
-  } else if (type === 'BOOLEAN') {
-    value = String(Boolean(raw));
-  } else {
-    value = String(raw);
-  }
-  return { name: v.name, resolvedType: type, value, collection: coll.name, mode: targetMode.name };
+  return entry;
 }
 
 return await slice(
@@ -304,20 +356,20 @@ const isRateLimit = (reason: string) =>
 export class FigmaClient {
   private client: Client | null = null;
   private url: string;
+  // Each use_figma call's limit, as --request-timeout gives it, rather than
+  // the SDK's fixed 60 seconds; and connecting's, as --connect-timeout does.
+  private requestTimeoutMs: number;
+  private connectTimeoutMs: number;
 
-  constructor(url: string) {
+  constructor(url: string, requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, connectTimeoutMs = requestTimeoutMs) {
     this.url = url;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.connectTimeoutMs = connectTimeoutMs;
   }
 
   async connect(): Promise<void> {
     this.client = new Client({ name: "storysync", version: VERSION }, {});
-    const mcpUrl = new URL(this.url);
-
-    try {
-      await this.client.connect(new StreamableHTTPClientTransport(mcpUrl));
-    } catch {
-      await this.client.connect(new SSEClientTransport(mcpUrl));
-    }
+    await connectWithFallback(this.client, new URL(this.url), "Figma", this.connectTimeoutMs);
   }
 
   async disconnect(): Promise<void> {
@@ -360,10 +412,11 @@ export class FigmaClient {
     const components: FigmaComponentInfo[] = [];
     for (const page of pages) {
       try {
-        components.push(...await this.readAll<FigmaComponentInfo>(fileKey, `components on page "${page.name}"`,
+        const read = await this.readAll<FigmaComponentInfo>(fileKey, `components on page "${page.name}"`,
           `Read the component sets and variant properties on page "${page.name}", a slice at a time`,
           (start) => pluginCode({ PAGE_ID: page.id, START: start }, READ_COMPONENTS_PLUGIN_CODE),
-          first?.id === page.id ? first : undefined));
+          first?.id === page.id ? first : undefined);
+        components.push(...read.map((c) => ({ ...c, page: page.name })));
       } catch (err) {
         if (err instanceof FigmaRateLimitError) throw err;
         throw new Error(`Failed to read page "${page.name}" of the Figma file: ${err instanceof Error ? err.message : String(err)}`);
@@ -404,8 +457,9 @@ export class FigmaClient {
       result = await this.client.callTool({
         name: "use_figma",
         arguments: { code, description, fileKey, skillNames: "figma-use" },
-      });
+      }, undefined, { timeout: this.requestTimeoutMs });
     } catch (err) {
+      if (isRequestTimeout(err)) throw requestTimeoutError("Figma", "use_figma", this.requestTimeoutMs);
       // Past the limit, the server may refuse the request itself, with HTTP
       // 429, which the transport's error carries as its code.
       const reason = err instanceof Error ? err.message : String(err);
@@ -437,6 +491,19 @@ export class FigmaClient {
  * JSON-encoded again as a string, or the first object in text around it.
  */
 function parseSlice<T>(texts: string[], label: string): Slice<T> {
+  const value = findToolValue(texts, isSlice);
+  if (value !== undefined) return value as Slice<T>;
+  throw new Error(`Failed to parse Figma ${label} response. The use_figma tool may not return plugin code's return value. Got: ${texts.join("\n").trim().slice(0, 200)}`);
+}
+
+/**
+ * The value plugin code returned, in use_figma's text parts, that `accept`
+ * takes: a whole part as JSON, the same JSON-encoded again as a string, or
+ * the first object in text around it. Undefined when no part holds one.
+ * Exported for the results a push saves from use_figma (figma-results.ts),
+ * which are the same text.
+ */
+export function findToolValue(texts: string[], accept: (value: unknown) => boolean): unknown {
   const parts = texts.map((t) => t.trim());
   const found = parts.map(extractFirstBalancedObject).filter((f): f is string => f !== null && !parts.includes(f));
   for (const candidate of [...parts, ...found]) {
@@ -447,9 +514,9 @@ function parseSlice<T>(texts: string[], label: string): Slice<T> {
     } catch {
       continue;
     }
-    if (isSlice(value)) return value as Slice<T>;
+    if (accept(value)) return value;
   }
-  throw new Error(`Failed to parse Figma ${label} response. The use_figma tool may not return plugin code's return value. Got: ${texts.join("\n").trim().slice(0, 200)}`);
+  return undefined;
 }
 
 function isSlice(value: unknown): boolean {

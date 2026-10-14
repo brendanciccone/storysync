@@ -5,6 +5,10 @@
 // module turns them into the normalized shape the Figma writer consumes.
 
 import { colorToHex } from "./color.js";
+import { isFontKeyword, isStandInFamily, standInDrawn } from "./fonts.js";
+
+// Where they lived before the stand-ins needed them too.
+export { isFontKeyword, isSystemFontAlias } from "./fonts.js";
 import type { FigmaVariantProperty } from "./mapper.js";
 
 // --- Shapes -----------------------------------------------------------------
@@ -29,7 +33,7 @@ export interface BoxShadowLayer {
 
 export interface TextStyles {
   /**
-   * The text's colour as drawn: an `opacity` on the element holding the text,
+   * The text's color as drawn: an `opacity` on the element holding the text,
    * or on one between it and the measured root, is folded into its alpha. The
    * root's own opacity is the frame's `opacity`, not part of this.
    */
@@ -49,6 +53,46 @@ export interface TextStyles {
   textTransform?: string;
   /** In px, a percentage resolved against the text's own font size; absent for none. */
   letterSpacing?: number;
+  /**
+   * How the browser fitted the text into its box, where it didn't sit on
+   * one line at its own width: written only when it wrapped onto more
+   * lines or was cut off, so a styles.json from before it was measured, and
+   * every label on one line, reads and diffs as it did. A live push built
+   * Attachment's vertical title, which `truncate` cuts off at the card's
+   * width, as a text that hugged its 140px and ran 28px past a 120px card.
+   */
+  layout?: TextLayout;
+}
+
+/** See TextStyles.layout. */
+export interface TextLayout {
+  /** The width, in px, the text was laid out in: the content box of the block that holds it. */
+  width: number;
+  /** The lines it drew: 1 for a line cut off, and a line clamp's count for one it clamped. */
+  lines: number;
+  /**
+   * How it was cut off, absent where it drew all of it: `ellipsis` for
+   * `text-overflow: ellipsis`, as Tailwind's `truncate` sets, and for a line
+   * clamp, as `line-clamp-2` sets; `clip` for text cut off flat at its box.
+   */
+  truncation?: "ellipsis" | "clip";
+}
+
+/**
+ * What the page read of how the text fits its box, for normalizeStyles to
+ * make a TextLayout of: the content width of the block that lays the text
+ * out (the text's holder, or its nearest ancestor that isn't inline), the
+ * lines the holder's own text runs over, whether that block's content runs
+ * past it horizontally or vertically where its overflow hides it, its
+ * `text-overflow`, and its line clamp, or null without one.
+ */
+export interface RawTextLayout {
+  width: number;
+  lines: number;
+  overflowsX: boolean;
+  overflowsY: boolean;
+  textOverflow: string;
+  lineClamp: number | null;
 }
 
 export interface NormalizedStyles {
@@ -62,7 +106,7 @@ export interface NormalizedStyles {
   /** The layer under `backgroundImage`, when there is one: seen only where the image is transparent. */
   backgroundColor: string | null;
   /**
-   * The computed `background-image`, its colours as hex: a gradient or image
+   * The computed `background-image`, its colors as hex: a gradient or image
    * painted over `backgroundColor`. A gradient button has a `backgroundColor`
    * of null and is still filled.
    *
@@ -71,6 +115,18 @@ export interface NormalizedStyles {
    * variant whose base has one and it doesn't records null in its delta.
    */
   backgroundImage?: string | null;
+  /**
+   * The computed `background-clip` of the bottom background layer, which
+   * clips `backgroundColor`: `padding-box` stops the fill at the border,
+   * so a transparent or translucent border shows what is behind the element,
+   * where `border-box`, CSS's initial value, paints the fill under it.
+   *
+   * Written only when it is not `border-box`, so a styles.json from before
+   * it was measured, and every element that leaves it as it is, reads and
+   * diffs as it did. A variant whose base has one and it doesn't records
+   * null in its delta, which means `border-box`.
+   */
+  backgroundClip?: string | null;
   color: string | null;
   border: { top: BorderSide | null; right: BorderSide | null; bottom: BorderSide | null; left: BorderSide | null } | null;
   /** Set when all four sides are identical — the common case for Figma strokes. */
@@ -83,6 +139,13 @@ export interface NormalizedStyles {
   /** Set when all four corners are equal — maps to Figma `cornerRadius`. */
   borderRadiusUniform: number | null;
   padding: { top: number; right: number; bottom: number; left: number };
+  /**
+   * The family the browser drew with, as resolveFontFamily picks it out of
+   * the stack: the first that applied, past any other platform's alias for
+   * its UI font. A named font that didn't load is kept, as what the code
+   * asked for, with `fontAvailable` false. It can be a CSS keyword, such as
+   * `system-ui` or `sans-serif`, which names no font Figma has.
+   */
   fontFamily: string;
   fontSize: number;
   fontWeight: number;
@@ -99,11 +162,11 @@ export interface NormalizedStyles {
   boxSizing: string;
   /**
    * Whether the browser could actually render `fontFamily`, or null when
-   * undetermined.
+   * undetermined, or when `fontFamily` is a CSS keyword, which always
+   * resolves to some face.
    *
-   * `fontFamily` is the *declared* first family, not the resolved one, so a
-   * project naming a font it never loaded would otherwise measure and score as
-   * though that font were used while rendering a fallback. Recording
+   * A project naming a font it never loaded would otherwise measure and score
+   * as though that font were used while rendering a fallback. Recording
    * availability keeps the substitution visible instead of silent.
    */
   fontAvailable: boolean | null;
@@ -113,7 +176,7 @@ export interface NormalizedStyles {
 export const CAPTURED_PROPERTIES: readonly string[] = [
   "display", "flex-direction", "align-items", "justify-content",
   "row-gap", "column-gap",
-  "background-color", "background-image", "color", "opacity",
+  "background-color", "background-image", "background-clip", "color", "opacity",
   "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
   "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
   "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
@@ -133,11 +196,16 @@ export const TEXT_PROPERTIES: readonly string[] = [
   "color", "font-family", "font-size", "font-weight", "text-transform", "letter-spacing",
 ];
 
-/** What snap-browser reads off a Storybook wrapper to decide whether to look past it. */
+/**
+ * What snap-browser reads off a Storybook wrapper to decide whether to look
+ * past it, and off the story's elements, and their ::before and ::after, to
+ * decide whether anything in its root draws.
+ */
 export const WRAPPER_PROPERTIES: readonly string[] = [
   "display", "background-color", "background-image", "box-shadow",
   "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
   "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "outline-style", "outline-width", "outline-color",
 ];
 
 // --- Scalar helpers ---------------------------------------------------------
@@ -168,7 +236,7 @@ function pxOrZero(value: string | undefined): number {
  * null. `getComputedStyle` reports an absent background as `rgba(0, 0, 0, 0)`,
  * which is meaningfully "no fill" rather than "transparent black".
  *
- * Chromium reports a colour in the space it was written in, so Tailwind v4's
+ * Chromium reports a color in the space it was written in, so Tailwind v4's
  * `oklch(...)` palette, its `oklab(... / 0.5)` opacity modifiers and every
  * `color(...)` space all come through here; colorToHex converts each to sRGB.
  * One it couldn't read would come back null, and null is "no fill": a red
@@ -186,8 +254,8 @@ export function normalizeColor(value: string | undefined): string | null {
 }
 
 /**
- * Whether a colour has zero alpha. Read off the hex, since normalizeColor's
- * null can't tell a transparent colour from one it couldn't read.
+ * Whether a color has zero alpha. Read off the hex, since normalizeColor's
+ * null can't tell a transparent color from one it couldn't read.
  */
 export function isFullyTransparent(value: string | undefined): boolean {
   const hex = colorToHex(value ?? "");
@@ -197,11 +265,78 @@ export function isFullyTransparent(value: string | undefined): boolean {
 /** First family in a font stack, with quotes stripped. */
 export function firstFontFamily(value: string | undefined): string {
   if (!value) return "";
-  const first = value.split(",")[0]?.trim() ?? "";
-  return first.replace(/^['"]|['"]$/g, "");
+  const first = (value.split(",")[0]?.trim() ?? "").replace(/^['"]|['"]$/g, "");
+  // A stand-in snap drew (fonts.ts), by the name Figma has it under.
+  return standInDrawn(first) ?? first;
 }
 
-function normalizeFontWeight(value: string | undefined): number {
+// --- Fonts ------------------------------------------------------------------
+
+/**
+ * An element's computed font stack, with each family's quotes stripped, and
+ * whether the browser drew with it, as snap-browser probed it in the page:
+ * true when it applied, false when the browser passed over it, null when that
+ * couldn't be told, as for a generic family, which always resolves to some face.
+ */
+export interface FontProbe {
+  families: string[];
+  applied: (boolean | null)[];
+}
+
+/**
+ * The family snap records for an element, and whether the browser could
+ * render it.
+ *
+ * `getComputedStyle` gives the stack as written, so its first family is what
+ * the code asked for, not what was drawn. Tailwind v4's default stack opens
+ * `-apple-system, BlinkMacSystemFont`, and Chrome implements neither name as
+ * written: it skips the first and draws the second as `system-ui`. Recording
+ * the first family put `-apple-system` on every component, with a warning
+ * that it failed to load and a fontFamily drift no Figma font could clear.
+ *
+ * So aliases the browser passed over are skipped, and the first family it
+ * drew with is recorded. A named font it passed over ahead of any alias or
+ * keyword is kept, with `available: false`: it is what the code meant to
+ * draw, and its absence is worth saying. Once the stack has named an alias
+ * or keyword, it is a list of each platform's spelling of its own font, and
+ * a named font missing there is one for another platform: Tailwind's mono
+ * stack, `ui-monospace, SFMono-Regular, Menlo, ...`, draws Menlo in Chrome
+ * on macOS, and SFMono-Regular, which Chrome there doesn't see, is not a font
+ * the code failed to load. A keyword is available as null, since there is no
+ * font to have been missing.
+ *
+ * Where snap drew the text in a stand-in (fonts.ts), the stand-in is what
+ * was drawn, recorded by the name Figma has it under, and what the rest of
+ * the stack would have drawn is `asked`.
+ */
+export function resolveFontFamily(probe: FontProbe): { family: string; available: boolean | null; asked?: string } {
+  let platformList = false;
+  for (const [index, family] of probe.families.entries()) {
+    const applied = probe.applied[index] ?? null;
+    // A stand-in snap put ahead of the stack (fonts.ts): the family Figma
+    // sets the text in, drawn, and what the rest of the stack drew, asked.
+    const drawn = standInDrawn(family);
+    if (drawn) {
+      if (applied === false) continue;
+      // Past the stand-in's own families: Inter has two (fonts.ts).
+      let after = index + 1;
+      while (after < probe.families.length && isStandInFamily(probe.families[after])) after++;
+      const rest = resolveFontFamily({ families: probe.families.slice(after), applied: probe.applied.slice(after) });
+      return { family: drawn, available: true, asked: rest.family };
+    }
+    const keyword = isFontKeyword(family);
+    if (applied === false && (keyword || platformList)) {
+      platformList = true;
+      continue;
+    }
+    if (applied === false) return { family, available: false };
+    return { family, available: keyword ? null : applied };
+  }
+  // Nothing in the stack applied, so the browser's default font drew it.
+  return { family: probe.families[0] ?? "", available: probe.families.length ? false : null };
+}
+
+export function normalizeFontWeight(value: string | undefined): number {
   const raw = (value ?? "").trim();
   const named: Record<string, number> = { normal: 400, bold: 700, lighter: 300, bolder: 700 };
   if (named[raw] != null) return named[raw];
@@ -209,7 +344,7 @@ function normalizeFontWeight(value: string | undefined): number {
   return Number.isFinite(n) ? n : 400;
 }
 
-function normalizeLineHeight(value: string | undefined): number | "normal" {
+export function normalizeLineHeight(value: string | undefined): number | "normal" {
   const raw = (value ?? "").trim();
   if (!raw || raw === "normal") return "normal";
   const px = pxToNumber(raw);
@@ -219,7 +354,7 @@ function normalizeLineHeight(value: string | undefined): number | "normal" {
 }
 
 /** Chromium keeps a percentage letter-spacing as written; it is a share of the font size. */
-function normalizeLetterSpacing(value: string | undefined, fontSize: number): number {
+export function normalizeLetterSpacing(value: string | undefined, fontSize: number): number {
   const raw = (value ?? "").trim();
   if (!raw || raw === "normal") return 0;
   const percent = raw.match(/^(-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)%$/i);
@@ -231,8 +366,8 @@ function normalizeLetterSpacing(value: string | undefined, fontSize: number): nu
 }
 
 /**
- * A hex colour drawn at an opacity: its alpha multiplied by it, rounded as
- * formatHex rounds alpha, the byte dropped when opaque and the colour null,
+ * A hex color drawn at an opacity: its alpha multiplied by it, rounded as
+ * formatHex rounds alpha, the byte dropped when opaque and the color null,
  * no fill, when nothing is left.
  */
 function withOpacity(hex: string | null, opacity: number): string | null {
@@ -243,17 +378,27 @@ function withOpacity(hex: string | null, opacity: number): string | null {
   return scaled >= 255 ? hex.slice(0, 7) : `${hex.slice(0, 7)}${scaled.toString(16).padStart(2, "0")}`;
 }
 
-/** A colour function as Chromium serialises one, in any space. */
+/** A color function as Chromium serializes one, in any space. */
 const COLOR_FUNCTION = /\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\([^)]*\)/i;
 
 /**
- * A computed `background-image`, or null for none, with each colour in its
- * gradients written as hex like every other colour snap records: Tailwind
+ * The clip of the bottom layer, the one that clips the background color,
+ * or null for `border-box`: a value per background layer is listed top
+ * first, so it is the last.
+ */
+function normalizeBackgroundClip(value: string | undefined): string | null {
+  const clip = splitTopLevel((value ?? "").trim()).pop()?.trim() ?? "";
+  return clip && clip !== "border-box" ? clip : null;
+}
+
+/**
+ * A computed `background-image`, or null for none, with each color in its
+ * gradients written as hex like every other color snap records: Tailwind
  * v4's `bg-linear-to-r` computes to `linear-gradient(to right, oklch(...) 0%,
  * oklch(...) 100%)`, Chromium dropping its default `in oklab`. A `url()`
  * layer is kept as written.
  */
-function normalizeBackgroundImage(value: string | undefined): string | null {
+export function normalizeBackgroundImage(value: string | undefined): string | null {
   const raw = (value ?? "").trim();
   if (!raw || raw === "none") return null;
   const anyColor = new RegExp(COLOR_FUNCTION.source, "gi");
@@ -318,7 +463,7 @@ function cornerRadii(value: string | undefined, box: { width: number; height: nu
  * radii differ, `10px / 20px` or `50%` of a box that isn't square, keeps the
  * smaller.
  */
-function resolveRadii(
+export function resolveRadii(
   raw: RawComputedStyles,
   box: { width: number; height: number },
 ): NormalizedStyles["borderRadius"] {
@@ -423,11 +568,11 @@ export function parseBoxShadow(value: string | undefined): BoxShadowLayer[] {
  * and background-free containers, and measuring one would describe the
  * wrapper, not the component.
  *
- * Its background is transparent by its colour's alpha, in whatever space
+ * Its background is transparent by its color's alpha, in whatever space
  * Chromium writes it: Tailwind v4's `bg-black/0` computes to
- * `oklab(0 0 0 / 0)`, not `rgba(0, 0, 0, 0)`. A colour that can't be read is
+ * `oklab(0 0 0 / 0)`, not `rgba(0, 0, 0, 0)`. A color that can't be read is
  * not taken for transparent, and nor is a background image, which is drawn
- * whatever the colour beneath it.
+ * whatever the color beneath it.
  */
 export function isPassThroughWrapper(raw: RawComputedStyles): boolean {
   const display = (raw["display"] ?? "").trim();
@@ -439,13 +584,666 @@ export function isPassThroughWrapper(raw: RawComputedStyles): boolean {
     ["top", "right", "bottom", "left"].every((side) => zero(`border-${side}-width`) && zero(`padding-${side}`));
 }
 
+// --- Choosing the element to measure ----------------------------------------
+
+/**
+ * Elements that never draw, so are never a story's component. input-otp
+ * renders a `<noscript>` ahead of its input, and measuring the first child of
+ * the story's root then found no layout box at all.
+ */
+export const NON_RENDERED_TAGS: readonly string[] = ["noscript", "script", "style", "template", "link", "meta", "title", "base"];
+
+/** One element of a rendered story, as snap-browser reads it out of the page. */
+export interface StoryNode {
+  tag: string;
+  /** `data-slot`, which shadcn/ui puts on each component's root element: `switch`, `dialog-trigger`. */
+  slot: string | null;
+  role: string | null;
+  /** `aria-haspopup`, `aria-expanded` and `aria-controls`, as written. */
+  hasPopup: string | null;
+  expanded: string | null;
+  controls: string | null;
+  /** `data-state`, which Radix sets to `open` or `closed`. */
+  state: string | null;
+  /** Whether it carries `data-popup-open` or `data-open`, Base UI's mark of an open trigger. */
+  open: boolean;
+  /** Its `id`, which a trigger's `aria-controls` names; absent where it wasn't read. */
+  id?: string | null;
+  /** `dir`, `data-orientation` (else `aria-orientation`) and `aria-label` (else `aria-labelledby`), as written. */
+  dir: string | null;
+  orientation: string | null;
+  label: string | null;
+  /** The computed `position`. */
+  position: string;
+  /** Whether it is a toast, as Sonner marks one with `data-sonner-toast`; absent where it isn't, or wasn't read. */
+  toast?: boolean;
+  /** Whether it is Sonner's list of toasts, `data-sonner-toaster`; absent where it isn't, or wasn't read. */
+  toaster?: boolean;
+  /** Whether it has a layout box: false for `display: none` and `display: contents`. */
+  rendered: boolean;
+  /**
+   * Whether it holds text of its own, not only whitespace. Absent where it
+   * wasn't read, which counts as text: see subtreeDraws.
+   */
+  text?: boolean;
+  /**
+   * Its ::before and ::after that have content, `none` and `normal` left
+   * out: the content as computed (`""`, `"★"`, `url(...)`) and their
+   * WRAPPER_PROPERTIES. Absent where none has, or they weren't read.
+   */
+  pseudos?: { content: string; styles: RawComputedStyles }[];
+  /** WRAPPER_PROPERTIES, computed. */
+  styles: RawComputedStyles;
+  /**
+   * Element children in DOM order, so a child's index here is its index among
+   * the element's children. Cut short past a size limit, from the end.
+   */
+  children: StoryNode[];
+}
+
+/** An element outside the story's root that may be its content, rendered into a portal. */
+export interface PortalNode {
+  tag: string;
+  slot: string | null;
+  role: string | null;
+  id: string | null;
+  rendered: boolean;
+  /** Whether it is an open overlay's content: OVERLAY_SELECTOR matches it, and no element around it. */
+  overlay?: boolean;
+  /**
+   * Whether it is or holds a select's or combobox's parts, a `combobox` or
+   * a `listbox`, as a combobox's popover holds its search input and its
+   * options: what opened it is then the component's field (see isPicker).
+   */
+  picks?: boolean;
+}
+
+/**
+ * What an open overlay's content is, wherever it renders: a dialog, alert
+ * dialog, tooltip, menu or select's listbox by its role; shadcn/ui's
+ * `*-content` slot, as `popover-content`; and what Radix's popper places,
+ * a popover's or a select's content without either. An overlay renders into a portal, a
+ * child of the body outside the story's root (Base UI's in a
+ * `data-base-ui-portal` holder).
+ */
+export const OVERLAY_SELECTOR =
+  '[role="dialog"], [role="alertdialog"], [role="tooltip"], [role="menu"], [role="listbox"], [data-slot$="-content"], [data-radix-popper-content-wrapper] > *';
+
+/**
+ * Why the element snap measured may not be the component. A closed
+ * trigger's `reason` says why snap didn't open it (see snap-browser.ts's
+ * openOverlay); a snap from before it opened overlays has none.
+ */
+export type MeasurementNote =
+  /** `toast`: for a toast's story, why snap couldn't raise one to measure (see chooseMeasuredElement). */
+  | { kind: "layout-wrapper"; element: string; children: number; toast?: string }
+  | { kind: "closed-trigger"; element: string; reason?: string };
+
+/** How snap opens an overlay through its trigger, as a user would: see openInteractions. */
+export type OpenInteraction = "click" | "hover" | "focus" | "contextmenu";
+
+/**
+ * How snap opened the overlay it measured, where the story rendered it
+ * closed: recorded on the variant as `opened`.
+ */
+export interface OverlayOpened {
+  /**
+   * `arg`: snap set the story's `arg`, `open` or `defaultOpen`, to true
+   * through Storybook's preview. Otherwise what it did to the trigger:
+   * clicked it, hovered over it, focused it or right-clicked it.
+   */
+  via: "arg" | OpenInteraction;
+  arg?: "open" | "defaultOpen";
+  /** The trigger, as describeElement names it. */
+  trigger: string;
+}
+
+/** One way snap tried to open an overlay, and what came of it, for describeOpenFailure. */
+export interface OpenAttempt {
+  via: "arg" | OpenInteraction;
+  arg?: "open" | "defaultOpen";
+  /**
+   * `nothing`: nothing opened within `waitMs`. `no-content`: the trigger
+   * said it was open, but snap found nothing it opened outside the
+   * story's root. `closed`: it opened, and closed again as the pointer
+   * left. `failed`: the attempt itself failed, as `error` says.
+   */
+  outcome: "nothing" | "no-content" | "closed" | "failed";
+  waitMs?: number;
+  error?: string;
+}
+
+const ATTEMPT_PHRASES: Record<OpenInteraction, string> = {
+  click: "clicking it", hover: "hovering over it", focus: "focusing it", contextmenu: "right-clicking it",
+};
+
+/** One way snap tries to open an overlay, as a note says it: "clicking it". */
+export function describeOpenWay(attempt: Pick<OpenAttempt, "via" | "arg">): string {
+  return attempt.via === "arg" ? `setting its ${attempt.arg ?? "open"} arg through Storybook's preview` : ATTEMPT_PHRASES[attempt.via];
+}
+
+function listed(items: string[]): string {
+  return items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * Why snap couldn't open a closed trigger, from what it tried, in order:
+ * the rest of a closed-trigger note. A run of attempts that opened nothing
+ * in the same wait is said once, so the note is the same for every variant
+ * it is the same for: "clicking it, hovering over it, focusing it and
+ * right-clicking it opened nothing within 3000ms each".
+ */
+export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
+  const parts: string[] = [];
+  let run: OpenAttempt[] = [];
+  const flush = () => {
+    if (!run.length) return;
+    const wait = run[0].waitMs;
+    parts.push(`${listed(run.map(describeOpenWay))} opened nothing${wait !== undefined ? ` within ${wait}ms${run.length > 1 ? " each" : ""}` : ""}`);
+    run = [];
+  };
+  for (const attempt of attempts) {
+    if (attempt.outcome === "nothing") {
+      if (run.length && run[0].waitMs !== attempt.waitMs) flush();
+      run.push(attempt);
+      continue;
+    }
+    flush();
+    parts.push(attempt.outcome === "no-content"
+      ? `${describeOpenWay(attempt)} opened it, but snap found nothing it opened to measure`
+      : attempt.outcome === "closed"
+        ? `${describeOpenWay(attempt)} opened it, but it closed again as the pointer left`
+        : `${describeOpenWay(attempt)} failed${attempt.error ? ` (${attempt.error.replace(/[.\s]+$/, "")})` : ""}`);
+  }
+  flush();
+  return parts.join("; ");
+}
+
+/**
+ * A measured element snap may open before it measures: a closed trigger,
+ * with the interactions to try in order, or a select or combobox `field`,
+ * which is the component while closed and measured as it is when clicking
+ * it opens nothing.
+ */
+export interface OpenableTrigger {
+  field: boolean;
+  interactions: OpenInteraction[];
+  /**
+   * For a toast's story: the element measured is the story's own, and
+   * this, the button at `at` under the story's container, `opener` as
+   * describeElement names it, raises the toast, which is measured instead.
+   */
+  toast?: { at: number[]; opener: string };
+}
+
+/**
+ * A select's or combobox's field, open, under the story's root: measured
+ * with the content it opened, as one (snap-browser.ts captureStory).
+ */
+export interface OpenField { path: number[]; element: string }
+
+export type MeasuredChoice =
+  /**
+   * An element under the story's root, by its index at each level down
+   * from the root's container. `content`: what an open trigger beside it
+   * controls, rendered inline rather than into a portal.
+   */
+  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger; content?: true; field?: OpenField }
+  /** One of the portal candidates, by index. */
+  | { kind: "portal"; index: number; element: string; notes: MeasurementNote[]; field?: OpenField }
+  | { kind: "none"; error: string };
+
+/** How deep snap looks past wrappers that draw nothing, as it always has. */
+const MAX_WRAPPER_DEPTH = 4;
+
+/**
+ * Whether a component is a select or combobox by its slots, `Combobox` or
+ * `SelectFilter`: its trigger is its field however it is marked, as a
+ * combobox built on a popover's trigger (`aria-haspopup="dialog"`) is.
+ */
+export function isPickerComponent(slots: readonly string[]): boolean {
+  return slots.some((slot) => /(?:^|-)(?:select|combobox|combo-box|autocomplete|listbox)(?:$|-)/.test(slot));
+}
+
+/** Whether `node`, or anything in it, is a combobox or a listbox: PortalNode's `picks`, for content rendered inline. */
+function holdsPicks(node: StoryNode): boolean {
+  return node.role === "combobox" || node.role === "listbox" || node.children.some(holdsPicks);
+}
+
+/**
+ * Whether `node` is a toaster, where a toast is raised: Sonner's list, or
+ * the `section` it renders, labeled "Notifications", while no toast is up.
+ */
+function isToaster(node: StoryNode): boolean {
+  return node.toaster === true || (node.tag === "section" && /^Notifications\b/.test(node.label ?? ""));
+}
+
+/**
+ * The first button in `node`, in document order, that raises a toast: one
+ * outside any toast, toaster, status or alert, and outside the component's
+ * own element, so a toast's own close or action button is never taken.
+ */
+function findToastOpener(node: StoryNode, path: number[], slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (!child.rendered) continue;
+    if (child.tag === "button" || child.role === "button") return { path: [...path, index], node: child };
+    const role = (child.role ?? "").toLowerCase();
+    if (child.toast || isToaster(child) || ["status", "alert", "alertdialog", "log"].includes(role) || (child.slot != null && slots.includes(child.slot))) continue;
+    const found = findToastOpener(child, [...path, index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Whether a component is a toast, by its slots: shadcn/ui's Sonner, whose component is `Toaster`. */
+export function isToastComponent(slots: readonly string[]): boolean {
+  return slots.some((slot) => /(?:^|-)(?:sonner|toasts?|toaster)(?:$|-)/.test(slot));
+}
+
+/** Whether anything under `node`, with a box or not, is what `wanted` takes. */
+function holdsAny(node: StoryNode, wanted: (node: StoryNode) => boolean): boolean {
+  return node.children.some((child) => wanted(child) || holdsAny(child, wanted));
+}
+
+/** The first element at or under `node`, in document order, with a box that `wanted` takes. */
+function findFirst(node: StoryNode, path: number[], wanted: (node: StoryNode) => boolean): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (child.rendered && wanted(child)) return { path: [...path, index], node: child };
+    const found = findFirst(child, [...path, index], wanted);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * The `data-slot` values a component's own root would carry: its name and its
+ * title's last segment, kebab-cased, as shadcn/ui writes them (`InputOTP` is
+ * `input-otp`, `ResizablePanelGroup` is `resizable-panel-group`).
+ */
+export function componentSlots(name: string, title?: string): string[] {
+  const kebab = (value: string) => value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  const leaf = title?.split("/").pop() ?? "";
+  return [...new Set([kebab(name), kebab(leaf)].filter(Boolean))];
+}
+
+/**
+ * The `data-slot` values of a component's content, which an overlay renders
+ * outside the story's root while open: each of its own slots' `-content`
+ * form, as an open Dialog's `dialog-content`, and a slot already ending in
+ * `-content` as it is, as TooltipContent's `tooltip-content`.
+ */
+export function contentSlots(slots: readonly string[]): string[] {
+  return [...new Set(slots.map((slot) => (slot.endsWith("-content") ? slot : `${slot}-content`)))];
+}
+
+/** `tag`, with its `data-slot` or else its `role`: how a measured element is named in styles.json and warnings. */
+export function describeElement(node: { tag: string; slot: string | null; role: string | null }): string {
+  if (node.slot) return `${node.tag}[data-slot="${node.slot}"]`;
+  if (node.role) return `${node.tag}[role="${node.role}"]`;
+  return node.tag;
+}
+
+function isNonRendered(node: StoryNode): boolean {
+  return NON_RENDERED_TAGS.includes(node.tag);
+}
+
+function isDisplayContents(node: StoryNode): boolean {
+  return (node.styles["display"] ?? "").trim() === "contents";
+}
+
+/** Children that take up space: what a reader would see as the element's parts. */
+function drawnChildren(node: StoryNode): StoryNode[] {
+  return node.children.filter((child) => !isNonRendered(child) && (child.rendered || isDisplayContents(child)));
+}
+
+/** Tags that draw by what they are, as a picture, a meter or an embedded page does, or as a form field does. */
+const DRAWING_TAGS: readonly string[] = [
+  "svg", "img", "canvas", "video", "input", "textarea", "select", "progress", "meter", "iframe", "object", "embed",
+];
+
+/**
+ * Whether an element, or anything in it, draws: a fill, picture, shadow,
+ * border or outline, text, a ::before or ::after that draws, or what an
+ * `<svg>`, `<img>`, `<progress>` or form field is. Text the page didn't
+ * read for counts, so this says no only where it knows.
+ */
+function subtreeDraws(node: StoryNode): boolean {
+  if (isNonRendered(node) || (!node.rendered && !isDisplayContents(node))) return false;
+  return node.text !== false || paints(node.styles) || DRAWING_TAGS.includes(node.tag) ||
+    (node.pseudos ?? []).some(pseudoDraws) || node.children.some(subtreeDraws);
+}
+
+/** Whether an element paints its own box: drawsNothing's fill, picture, shadow or border, or an outline that shows. */
+function paints(styles: RawComputedStyles): boolean {
+  const outline = styles["outline-style"];
+  return !drawsNothing(styles) ||
+    (outline !== undefined && outline !== "none" && parseFloat(styles["outline-width"] ?? "") > 0 && !isFullyTransparent(styles["outline-color"]));
+}
+
+/** Whether a ::before or ::after draws: any content but an empty string, an icon font's glyph say, or a box that paints. */
+function pseudoDraws(pseudo: { content: string; styles: RawComputedStyles }): boolean {
+  if ((pseudo.styles["display"] ?? "").trim() === "none") return false;
+  return pseudo.content !== '""' || paints(pseudo.styles);
+}
+
+/** Whether an element paints nothing itself: no fill, image, shadow or border, whatever its padding. */
+function drawsNothing(styles: RawComputedStyles): boolean {
+  return isFullyTransparent(styles["background-color"]) &&
+    normalizeBackgroundImage(styles["background-image"]) == null &&
+    parseBoxShadow(styles["box-shadow"]).length === 0 &&
+    ["top", "right", "bottom", "left"].every((side) => parseFloat(styles[`border-${side}-width`] ?? "") === 0);
+}
+
+/**
+ * Whether an element is the trigger of something it isn't showing: a
+ * dialog, menu, popover or tooltip whose content renders only while it is
+ * open, usually in a portal outside the story's root. Read off ARIA, which
+ * any accessible trigger carries, and shadcn/ui's `*-trigger` slot, which
+ * Base UI's tooltip and hover card triggers have nothing else to go by.
+ *
+ * A select or combobox is left out: closed, it is the field showing its
+ * value, which is the component, and what it opens is the transient part.
+ */
+export function isClosedTrigger(node: StoryNode): boolean {
+  return !isField(node) && isTrigger(node) && !isOpen(node);
+}
+
+/** A select's or combobox's field: what it opens is a listbox, and closed it is the component. */
+function isField(node: StoryNode): boolean {
+  return node.role === "combobox" || (node.hasPopup ?? "").trim().toLowerCase() === "listbox";
+}
+
+/** Whether an element bears a trigger's marks, open or closed: see isClosedTrigger. */
+function isTrigger(node: StoryNode): boolean {
+  const popup = (node.hasPopup ?? "").trim().toLowerCase();
+  return (popup !== "" && popup !== "false") ||
+    (node.slot?.endsWith("-trigger") ?? false) ||
+    ((node.expanded === "false" || node.expanded === "true") && node.controls != null) ||
+    ((node.state === "closed" || isOpenState(node.state)) && (node.tag === "button" || node.role === "button"));
+}
+
+/** Radix's `data-state` of something open: `open`, and a tooltip's `delayed-open` and `instant-open`. */
+function isOpenState(state: string | null): boolean {
+  return state === "open" || (state?.endsWith("-open") ?? false);
+}
+
+function isOpen(node: StoryNode): boolean {
+  return node.expanded === "true" || isOpenState(node.state) || node.open;
+}
+
+/** All the ways snap opens a trigger, in the order it tries those its marks don't single out. */
+const INTERACTIONS: readonly OpenInteraction[] = ["click", "hover", "focus", "contextmenu"];
+
+/**
+ * The ways snap tries to open a closed trigger, in order: first the one its
+ * marks point to, then the rest in INTERACTIONS' order. A context menu's
+ * trigger is right-clicked; a tooltip's or hover card's is hovered over,
+ * known by its slot or the component's (`slots`), or as Radix marks one, a
+ * `data-state` with no `aria-haspopup` or `aria-expanded`. Anything else is
+ * clicked, as a dialog's, popover's, sheet's or menu's is. A select's or
+ * combobox's field is clicked, and nothing else: it is the component, and
+ * measured as it is when that opens nothing.
+ */
+export function openInteractions(node: StoryNode, slots: readonly string[] = []): OpenInteraction[] {
+  if (isField(node)) return ["click"];
+  const names = [node.slot ?? "", ...slots].map((name) => name.toLowerCase());
+  const named = (...parts: string[]) => names.some((name) => parts.some((part) => name.includes(part)));
+  const radixHover = node.state != null && node.hasPopup == null && node.expanded == null;
+  const first: OpenInteraction = named("context-menu", "contextmenu")
+    ? "contextmenu"
+    : named("tooltip", "hover-card", "hovercard") || radixHover ? "hover" : "click";
+  return [first, ...INTERACTIONS.filter((how) => how !== first)];
+}
+
+/**
+ * The story's own top element: its container's first child that draws,
+ * looking through `display: contents`. Falls back to the first child that
+ * could, so a story rendering only hidden elements is still reported as
+ * having no layout box.
+ */
+function findStoryRoot(container: StoryNode): { path: number[]; node: StoryNode } | null {
+  let fallback: { path: number[]; node: StoryNode } | null = null;
+  const visit = (node: StoryNode, path: number[]): { path: number[]; node: StoryNode } | null => {
+    for (const [index, child] of node.children.entries()) {
+      if (isNonRendered(child)) continue;
+      const at = { path: [...path, index], node: child };
+      if (child.rendered) return at;
+      fallback ??= at;
+      if (isDisplayContents(child)) {
+        const inside = visit(child, at.path);
+        if (inside) return inside;
+      }
+    }
+    return null;
+  };
+  return visit(container, []) ?? fallback;
+}
+
+/**
+ * The first element at or under `node`, in document order, whose `data-slot`
+ * is one of the component's own and which is laid out in the flow. One taken
+ * out of the flow is not what the story lays out: input-otp puts its slot on
+ * a transparent `<input>` stretched over the boxes it draws.
+ */
+function findOwnSlot(node: StoryNode, path: number[], slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  const position = node.position.trim();
+  if (node.slot && slots.includes(node.slot) && node.rendered && position !== "absolute" && position !== "fixed") {
+    return { path, node };
+  }
+  for (const [index, child] of node.children.entries()) {
+    const found = findOwnSlot(child, [...path, index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * findOwnSlot over each element the story renders at its top level, in
+ * document order: a story that returns `<><Label /><Switch /></>` has the
+ * switch second.
+ */
+function findOwnSlotInStory(container: StoryNode, slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of container.children.entries()) {
+    if (isNonRendered(child)) continue;
+    const found = findOwnSlot(child, [index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** The first element at or under `node`, in document order, that has a box and an id in `ids`. */
+function findControlled(node: StoryNode, path: number[], ids: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (child.id && ids.includes(child.id) && child.rendered) return { path: [...path, index], node: child };
+    const found = findControlled(child, [...path, index], ids);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Tags whose children are its own parts, as a list's items or a form's fields are, never a story's layout. */
+const COMPONENT_ROOT_TAGS: readonly string[] = ["nav", "ol", "ul", "menu", "dl", "form", "fieldset", "table"];
+
+/**
+ * Whether an element bears a mark of a component's root, which a story's
+ * layout `<div>` doesn't: a role, a direction or orientation, an accessible
+ * label, or a tag that means a list, form or table. A RadioGroup, Tabs or
+ * Accordion root draws nothing and holds several elements, as a layout row
+ * does, and in a project without `data-slot` this is what tells them apart.
+ */
+export function hasComponentRootMarks(node: StoryNode): boolean {
+  const role = (node.role ?? "").trim().toLowerCase();
+  return (role !== "" && role !== "presentation" && role !== "none") ||
+    Boolean(node.dir?.trim()) ||
+    Boolean(node.orientation?.trim()) ||
+    Boolean(node.label?.trim()) ||
+    COMPONENT_ROOT_TAGS.includes(node.tag);
+}
+
+function hasOwnSlot(node: StoryNode, slots: readonly string[]): boolean {
+  return (node.slot != null && slots.includes(node.slot)) || node.children.some((child) => hasOwnSlot(child, slots));
+}
+
+/**
+ * Picks the element snap measures for a story, and says why it may not be
+ * the component.
+ *
+ * In order:
+ *
+ *   1. The first element the story renders carrying the component's own
+ *      `data-slot`, at any depth and after any sibling. shadcn/ui marks every
+ *      component's root this way, so a Switch story that renders
+ *      `<div class="flex gap-2"><Switch/><Label/></div>` measures the switch,
+ *      not the row holding it and its label. Any project can point snap at a
+ *      component's root the same way.
+ *   2. Content rendered into a portal outside the story's root: an element
+ *      with the component's own slot, or its `-content` slot, as an open
+ *      Dialog's `dialog-content`.
+ *   3. An open overlay's content in a portal (OVERLAY_SELECTOR), when nothing
+ *      under the story's root draws: a story that renders a dialog open,
+ *      with no trigger, shows nothing else.
+ *   4. Otherwise, as snap always has, the root, past single-child wrappers
+ *      that draw nothing. When that is an open trigger whose `aria-controls`
+ *      names an element in a portal, or one rendered inline in the story,
+ *      that element is measured instead; when it is a trigger open or
+ *      closed, or an open select's field, an open overlay's content in a
+ *      portal.
+ *
+ * What 4 settles on is flagged when it is a closed trigger, or holds several
+ * elements while drawing nothing itself and bearing no mark of a component's
+ * root, which is how a story's layout wrapper looks. Neither is certain, so
+ * each is a note for a warning. A closed trigger, and a closed select's or
+ * combobox's field, also come with `trigger`: how snap may open it, which
+ * snap-browser.ts does before it measures (openOverlay), choosing again.
+ */
+export function chooseMeasuredElement(
+  container: StoryNode | null,
+  portals: readonly PortalNode[],
+  slots: readonly string[],
+): MeasuredChoice {
+  const root = container ? findStoryRoot(container) : null;
+
+  const owned = container ? findOwnSlotInStory(container, slots) : null;
+  if (owned) return { kind: "tree", path: owned.path, element: describeElement(owned.node), notes: [] };
+
+  const portal = (wanted: (candidate: PortalNode) => boolean): MeasuredChoice | null => {
+    const index = portals.findIndex((candidate) => candidate.rendered && wanted(candidate));
+    return index < 0 ? null : { kind: "portal", index, element: describeElement(portals[index]), notes: [] };
+  };
+  // A select's or combobox's field, open: what it opened is measured with
+  // it, as the two render, where a dialog's or menu's content is alone. A
+  // field is one by its marks (isField), or a trigger where the component
+  // is a select or combobox by name, or what it opened holds one's parts,
+  // as a combobox built on a popover's trigger.
+  const named = isPickerComponent(slots);
+  const isPicker = (node: StoryNode, picks = false) => isField(node) || (isTrigger(node) && (named || picks));
+  const withField = <T extends MeasuredChoice>(choice: T, picks: boolean, at?: { path: number[]; node: StoryNode }): T => {
+    const found = at ?? (container ? findFirst(container, [], (n) => isOpen(n) && isPicker(n, picks)) : null);
+    return found ? { ...choice, field: { path: found.path, element: describeElement(found.node) } } : choice;
+  };
+  const picksAt = (choice: MeasuredChoice) => choice.kind === "portal" && portals[choice.index].picks === true;
+
+  const portaled =
+    portal((candidate) => candidate.slot != null && slots.includes(candidate.slot)) ??
+    portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
+  if (portaled) return withField(portaled, picksAt(portaled));
+
+  // A toast raised, where the story renders its toaster, as Sonner's does.
+  const toast = container && isToastComponent(slots) ? findFirst(container, [], (node) => node.toast === true) : null;
+  if (toast) return { kind: "tree", path: toast.path, element: describeElement(toast.node), notes: [], content: true };
+
+  const overlay = () => portal((candidate) => candidate.overlay === true);
+  const shown = container?.children.some(subtreeDraws) ?? false;
+  const open = shown ? null : overlay();
+  if (open) return open;
+
+  if (!root) {
+    return { kind: "none", error: "the story rendered no element that draws (only elements such as noscript, script or style, or none)" };
+  }
+
+  let { path, node } = root;
+  for (let depth = 0; depth < MAX_WRAPPER_DEPTH; depth++) {
+    const children = drawnChildren(node);
+    if (children.length !== 1 || !isPassThroughWrapper(node.styles)) break;
+    path = [...path, node.children.indexOf(children[0])];
+    node = children[0];
+  }
+
+  const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
+  const at = { path, node };
+  const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
+  if (opened) return isPicker(node, picksAt(opened)) ? withField(opened, true, at) : opened;
+  // Or rendered inline, beside the trigger, as Headless UI's menu is.
+  const inline = isOpen(node) && container ? findControlled(container, [], controls) : null;
+  if (inline) {
+    const content: MeasuredChoice = { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
+    return isPicker(node, holdsPicks(inline.node)) ? withField(content, true, at) : content;
+  }
+  // An open trigger whose aria-controls names nothing, as a tooltip's or a
+  // hover card's: what it opened is the overlay showing.
+  const shownBy = isOpen(node) && (isTrigger(node) || isField(node)) ? overlay() : null;
+  if (shownBy) return isPicker(node, picksAt(shownBy)) ? withField(shownBy, true, at) : shownBy;
+
+  const element = describeElement(node);
+  const notes: MeasurementNote[] = [];
+  // A toast's story, with no toast up, as Sonner's: an empty toaster, or a
+  // layout wrapper, holding the button that raises one. A toast the story
+  // draws itself is measured as it is, its own buttons left alone.
+  const wrapper = (() => {
+    const children = drawnChildren(node).length;
+    return children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots) ? children : 0;
+  })();
+  const raises = container && isToastComponent(slots) && (wrapper || holdsAny(container, isToaster));
+  const opener = raises && container ? findToastOpener(container, [], slots) : null;
+  if (opener) {
+    if (wrapper) notes.push({ kind: "layout-wrapper", element, children: wrapper });
+    const toast = { at: opener.path, opener: describeElement(opener.node) };
+    return { kind: "tree", path, element, notes, trigger: { field: false, interactions: ["click"], toast } };
+  }
+  // A select's or combobox's trigger by the component's name, closed: its field, as isField's.
+  const namedField = named && !isField(node) && isTrigger(node);
+  if (isClosedTrigger(node) && !namedField) {
+    // Opened by something other than its trigger, as a story's `open` arg does.
+    const content = overlay();
+    if (content) return content;
+    notes.push({ kind: "closed-trigger", element });
+    return { kind: "tree", path, element, notes, trigger: { field: false, interactions: openInteractions(node, slots) } };
+  }
+  if ((isField(node) || namedField) && !isOpen(node)) {
+    return { kind: "tree", path, element, notes, trigger: { field: true, interactions: isField(node) ? openInteractions(node, slots) : ["click"] } };
+  }
+  {
+    const children = drawnChildren(node).length;
+    if (children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots)) {
+      notes.push({ kind: "layout-wrapper", element, children });
+    }
+  }
+  return { kind: "tree", path, element, notes };
+}
+
 // --- normalizeStyles --------------------------------------------------------
 
+/**
+ * Normalizes one element's raw computed styles.
+ *
+ * `fonts` carries what the page probed of the root's and the text's font
+ * stacks, and with it each family is the one resolveFontFamily picks, and
+ * `fontAvailable` its availability. Without it, as from a caller that never
+ * probed, each is the stack's first family and `fontAvailable` as passed.
+ */
 export function normalizeStyles(
   raw: RawComputedStyles,
   box: { width: number; height: number },
   textRaw?: RawComputedStyles | null,
   fontAvailable: boolean | null = null,
+  fonts?: { root?: FontProbe | null; text?: FontProbe | null },
+  textLayout?: RawTextLayout | null,
 ): NormalizedStyles {
   const border = {
     top: parseBorderSide(raw["border-top-width"], raw["border-top-style"], raw["border-top-color"]),
@@ -473,6 +1271,8 @@ export function normalizeStyles(
 
   const opacity = Number(raw["opacity"]);
   const backgroundImage = normalizeBackgroundImage(raw["background-image"]);
+  const backgroundClip = normalizeBackgroundClip(raw["background-clip"]);
+  const rootFont = fonts?.root ? resolveFontFamily(fonts.root) : null;
 
   return {
     display: (raw["display"] ?? "").trim(),
@@ -484,6 +1284,7 @@ export function normalizeStyles(
     height: round2(box.height),
     backgroundColor: normalizeColor(raw["background-color"]),
     ...(backgroundImage != null ? { backgroundImage } : {}),
+    ...(backgroundClip != null ? { backgroundClip } : {}),
     color: normalizeColor(raw["color"]),
     border: anyBorder ? border : null,
     borderUniform: anyBorder && allSame ? border.top : null,
@@ -495,7 +1296,7 @@ export function normalizeStyles(
       bottom: pxOrZero(raw["padding-bottom"]),
       left: pxOrZero(raw["padding-left"]),
     },
-    fontFamily: firstFontFamily(raw["font-family"]),
+    fontFamily: rootFont?.family || firstFontFamily(raw["font-family"]),
     fontSize: pxOrZero(raw["font-size"]),
     fontWeight: normalizeFontWeight(raw["font-weight"]),
     lineHeight: normalizeLineHeight(raw["line-height"]),
@@ -503,22 +1304,41 @@ export function normalizeStyles(
     boxShadow: parseBoxShadow(raw["box-shadow"]),
     opacity: Number.isFinite(opacity) ? round2(opacity) : 1,
     boxSizing: (raw["box-sizing"] ?? "content-box").trim(),
-    fontAvailable,
-    text: textRaw ? normalizeText(textRaw) : null,
+    fontAvailable: rootFont ? rootFont.available : fontAvailable,
+    text: textRaw ? normalizeText(textRaw, fonts?.text, textLayout) : null,
   };
 }
 
-function normalizeText(textRaw: RawComputedStyles): TextStyles {
+function normalizeText(textRaw: RawComputedStyles, font?: FontProbe | null, raw?: RawTextLayout | null): TextStyles {
   const textTransform = (textRaw["text-transform"] ?? "").trim() || "none";
   const letterSpacing = normalizeLetterSpacing(textRaw["letter-spacing"], pxOrZero(textRaw["font-size"]));
+  const layout = normalizeTextLayout(raw);
   return {
     color: withOpacity(normalizeColor(textRaw["color"]), Number(textRaw["opacity"] ?? 1)),
-    fontFamily: firstFontFamily(textRaw["font-family"]),
+    fontFamily: (font ? resolveFontFamily(font).family : "") || firstFontFamily(textRaw["font-family"]),
     fontSize: pxOrZero(textRaw["font-size"]),
     fontWeight: normalizeFontWeight(textRaw["font-weight"]),
     ...(textTransform !== "none" ? { textTransform } : {}),
     ...(letterSpacing !== 0 ? { letterSpacing } : {}),
+    ...(layout ? { layout } : {}),
   };
+}
+
+/**
+ * How the text fits its box, or null where it sits on one line at its own
+ * width, which a Figma text that hugs its content reproduces. A line clamp
+ * that cut the text off draws its count of lines, ending in an ellipsis; a
+ * line cut off at the side ends in one where `text-overflow` says so, and
+ * flat otherwise; text that wraps draws all its lines at its box's width.
+ */
+export function normalizeTextLayout(raw?: RawTextLayout | null): TextLayout | null {
+  if (!raw || !Number.isFinite(raw.width) || raw.width <= 0) return null;
+  const width = round2(raw.width);
+  if (raw.lineClamp && raw.lineClamp > 0 && raw.overflowsY) return { width, lines: raw.lineClamp, truncation: "ellipsis" };
+  if (raw.overflowsX) {
+    return { width, lines: Math.max(1, raw.lines), truncation: raw.textOverflow.trim() === "ellipsis" ? "ellipsis" : "clip" };
+  }
+  return raw.lines > 1 ? { width, lines: raw.lines } : null;
 }
 
 // --- Storybook args encoding ------------------------------------------------
@@ -527,8 +1347,9 @@ function normalizeText(textRaw: RawComputedStyles): TextStyles {
  * Storybook's own allowed charset for URL arg keys and values, from its
  * router: `VALIDATION_REGEXP = /^[a-zA-Z0-9 _-]*$/`. Anything outside it is
  * dropped *silently*, and the story then renders with its default args — so a
- * value we can't encode must be reported rather than measured, or we'd record
- * the default render as though it were that variant.
+ * value we can't encode must be set another way (snap sets it through
+ * Storybook's preview: see snap-args.ts) or reported rather than measured, or
+ * we'd record the default render as though it were that variant.
  *
  * Verified empirically against Storybook 10.5: `Data Display` round-trips,
  * `Nav/Primary` is discarded.
@@ -544,6 +1365,8 @@ export interface EncodedArgs {
   param: string | null;
   /** `name=value` pairs Storybook would reject. */
   unsupported: string[];
+  /** The names of those pairs, left out of `param`. */
+  unsupportedNames: string[];
 }
 
 /**
@@ -560,10 +1383,12 @@ export function encodeStoryArgs(
   const byName = new Map(props.map((p) => [p.name, p]));
   const pairs: string[] = [];
   const unsupported: string[] = [];
+  const unsupportedNames: string[] = [];
 
   for (const [name, value] of Object.entries(combo)) {
     if (!isEncodableArgValue(name)) {
       unsupported.push(`${name}=${value}`);
+      unsupportedNames.push(name);
       continue;
     }
 
@@ -574,12 +1399,13 @@ export function encodeStoryArgs(
 
     if (!isEncodableArgValue(value)) {
       unsupported.push(`${name}=${value}`);
+      unsupportedNames.push(name);
       continue;
     }
     pairs.push(`${name}:${value}`);
   }
 
-  return { param: pairs.length ? pairs.join(";") : null, unsupported };
+  return { param: pairs.length ? pairs.join(";") : null, unsupported, unsupportedNames };
 }
 
 /**
@@ -587,10 +1413,12 @@ export function encodeStoryArgs(
  * `URLSearchParams`, which percent-encodes spaces as `+` — verified to
  * round-trip through Storybook's arg parser.
  */
-export function buildStoryUrl(baseUrl: string, storyId: string, argsParam: string | null): string {
+export function buildStoryUrl(baseUrl: string, storyId: string, argsParam: string | null, globalsParam?: string | null): string {
   const base = baseUrl.replace(/\/+$/, "");
   const query = new URLSearchParams({ id: storyId, viewMode: "story" });
   if (argsParam) query.set("args", argsParam);
+  // Storybook's globals, in the same form: `theme:light`, as snap sets for the light scheme (snap-scheme.ts).
+  if (globalsParam) query.set("globals", globalsParam);
   return `${base}/iframe.html?${query.toString()}`;
 }
 
@@ -674,7 +1502,7 @@ export type StyleDelta = Partial<NormalizedStyles>;
 
 const STYLE_KEYS = [
   "display", "flexDirection", "alignItems", "justifyContent", "gap",
-  "width", "height", "backgroundColor", "backgroundImage", "color", "border", "borderUniform",
+  "width", "height", "backgroundColor", "backgroundImage", "backgroundClip", "color", "border", "borderUniform",
   "borderRadius", "borderRadiusUniform", "padding", "fontFamily", "fontSize",
   "fontWeight", "lineHeight", "letterSpacing", "boxShadow", "opacity", "text",
   "boxSizing", "fontAvailable",

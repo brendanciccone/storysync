@@ -4,7 +4,7 @@ Thanks for your interest in Storysync. This guide covers the basics for working 
 
 ## Local development setup
 
-Storysync uses [pnpm](https://pnpm.io/) as its package manager. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored.
+Storysync uses [pnpm](https://pnpm.io/) as its package manager: version 10.33.0 or later, as `packageManager` in `package.json` pins it (Corepack picks it up), on Node 18 or later. The repo ships a `pnpm-lock.yaml`; other lockfiles are gitignored. `engines` in `package.json` names only Node, since it is published and checked against every user's install.
 
 ```bash
 pnpm install
@@ -14,7 +14,7 @@ pnpm test
 
 ### Supply-chain protection
 
-This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time — defense against npm supply-chain attacks like Shai-Hulud.
+This project assumes contributors have [Aikido Safe Chain](https://github.com/AikidoSec/safe-chain) installed locally. Safe Chain wraps `npm`/`pnpm`/`yarn`/`npx`/`pip`/`uv`/`poetry` to block known-malicious packages and quarantine versions under 48 hours old at install time: defense against npm supply-chain attacks like Shai-Hulud.
 
 Install it once with the command in [its README's Installation section](https://github.com/AikidoSec/safe-chain#installation). It downloads the install script from a pinned release and checks its SHA-256 before running it. The version and checksum change with every release, so copy the command from there. Then restart your terminal, and `pnpm safe-chain-verify` should print `OK: Safe-chain works!`.
 
@@ -22,17 +22,18 @@ No tokens or config required. Free and open source.
 
 ## Scripts
 
-- `pnpm build` — compile TypeScript to `dist/`
-- `pnpm dev` — incremental compile in watch mode
-- `pnpm lint` — type-check without emitting
-- `pnpm test` — build and run the node test runner suite
-- `pnpm acceptance` — end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm storybook`). It drives the real CLI and runs the skill's readback and audit templates against simulated Figma nodes, so it catches regressions the unit tests can't; it is not run in CI.
+- `pnpm build`: compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
+- `pnpm dev`: incremental compile in watch mode
+- `pnpm lint`: type-check without emitting
+- `pnpm test`: build and run the node test runner suite
+- `pnpm acceptance`: end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm install && pnpm storybook`; the example has its own lockfile and is not a workspace package). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
 
 ## Submitting changes
 
 - Keep commits focused and descriptive.
 - Run `pnpm lint` and `pnpm test` before opening a pull request.
 - Follow the existing code style (TypeScript, ESM, no semi-bikeshedding).
+- Keep `skills/codex.md` byte-identical to `skills/claude-code.md` from `## Tokens` down. `skills/cursor.mdc` follows the same steps, but gives the root-only build and readback and the audit's reads in prose, without the plugin code the other two carry, and says so: a change to those templates is a change to its prose.
 
 ## Releasing
 
@@ -45,13 +46,13 @@ Releases are built and uploaded from CI, never from a laptop, and go live only a
 
    ```bash
    git switch main && git pull --ff-only
-   git tag v0.3.0
-   git push origin v0.3.0
+   git tag v0.4.0
+   git push origin v0.4.0
    ```
 
 5. When the run finishes, approve the version on npmjs.com: account menu → **Staged Packages** → **Approve**, with 2FA. The button stays disabled until npm's malware scan finishes. The run's summary shows the tarball's shasum; approve only if the card shows the same one.
 
-The tag must be `v` plus the exact `package.json` version, and it must point at a commit on `main`, or the workflow stops before staging. These checks catch mistakes; the approval in step 5 is what guards against misuse. Push one tag at a time: GitHub starts no workflow when more than three tags are pushed at once. A prerelease tag such as `v0.4.0-rc.1` goes to npm's `next` dist-tag and is marked as a prerelease on GitHub. If a run fails or is cancelled, re-run it: it skips what is already done. If you reject a staged version, delete its GitHub Release and tag before tagging again.
+The tag must be `v` plus the exact `package.json` version, and it must point at a commit on `main`, or the workflow stops before staging. These checks catch mistakes; the approval in step 5 is what guards against misuse. Push one tag at a time: GitHub starts no workflow when more than three tags are pushed at once. A prerelease tag such as `v0.4.0-rc.1` goes to npm's `next` dist-tag and is marked as a prerelease on GitHub. If a run fails or is canceled, re-run it: it skips what is already done. If you reject a staged version, delete its GitHub Release and tag before tagging again.
 
 ### One-time npm setup
 
@@ -63,9 +64,9 @@ npm has to trust the workflow before the first release. On npmjs.com, open the `
 | Repository | `storysync` |
 | Workflow filename | `release.yml` |
 | Environment name | *(leave blank)* |
-| Allowed actions | leave **Allow npm publish** and **Allow npm dist-tag** unticked |
+| Allowed actions | leave **Allow npm publish** and **Allow npm dist-tag** unchecked |
 
-With both boxes unticked, the connection can only stage, which is what the workflow does. Fields are case-sensitive, and a connection can't be edited, only deleted and recreated. npm accepts a workflow if any of the package's connections match, so delete any other connection, especially one created before 20 May 2026 (npm set those to allow direct publishing) or one with **Allow npm publish** ticked.
+With both boxes unchecked, the connection can only stage, which is what the workflow does. Fields are case-sensitive, and a connection can't be edited, only deleted and recreated. npm accepts a workflow if any of the package's connections match, so delete any other connection, especially one created before 20 May 2026 (npm set those to allow direct publishing) or one with **Allow npm publish** ticked.
 
 Once a release has gone out this way, set Settings → Publishing access to "Require two-factor authentication and disallow tokens". Trusted publishing keeps working, and no npm token is stored in GitHub.
 

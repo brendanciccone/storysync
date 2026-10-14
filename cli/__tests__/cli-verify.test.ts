@@ -1,6 +1,6 @@
 // Runs the compiled `verify` command against fixture files, so the exit codes
 // and printed verdicts are covered in CI — the acceptance suite checks the same
-// behaviour end to end, but needs a running Storybook and does not run there.
+// behavior end to end, but needs a running Storybook and does not run there.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,6 +10,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { readbackChecksum } from "../verify.js";
+import type { ReadbackFile } from "../verify.js";
+import { buildAndRead, buildFixture, newFigma, readBack, assemble } from "./tree-harness.js";
+import { loadTreeFixture } from "./mock-figma.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
@@ -101,7 +104,7 @@ test("verify CLI: a matching readback passes --strict and says what it matched",
 test("verify CLI: a readback with nothing comparable fails --strict as incomplete and claims no match", () => {
   const r = verify(snap(), readback({ source: "measured" }), "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, width, height, which the readback template always returns, so the template was cut down — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, width, height, which the readback template always returns, so the template was cut down; nothing in it was scored/);
   assert.match(r.out, /1 with an unverified readback/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
@@ -112,7 +115,7 @@ test("verify CLI: a readback cut down to source, width and height, still sealed,
   const r = verify(snap(), readback({ source: "measured", width: 61.5, height: 24 }), "--strict-measured");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /readback entry is incomplete: it lacks backgroundColor, color, borderRadiusUniform, padding, borderUniform, fontSize, fontWeight, fontFamily, gap, opacity, which/);
-  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
 
@@ -168,10 +171,10 @@ test("verify CLI: a --snap that is not a snap fails saying so, not with a TypeEr
 });
 
 test("verify CLI: a single unmeasurable variant is reported but does not fail --strict alone", () => {
-  // args_unsupported is expected for values Storybook cannot pass in a URL; the
-  // skill builds those from source and labels them inferred, which
-  // --strict-measured already fails. Failing --strict too would make a correct
-  // run impossible to pass.
+  // args_unsupported is expected for values Storybook cannot pass in a URL or
+  // take through its preview; the skill builds those from source and labels
+  // them inferred, which --strict-measured already fails. Failing --strict
+  // too would make a correct run impossible to pass.
   const r = verify(
     snap({ summary: { components: 1, variants: 2, rendered: 1, failed: 1, componentsFailed: 0, componentsWithWarnings: 0 } }, {
       variants: [
@@ -193,9 +196,9 @@ test("verify CLI: a readback entry edited after Figma returned it fails --strict
   const r = verify(snap(), file, "--strict");
   assert.equal(r.status, 1, r.out);
   assert.match(r.out, /1 with an unverified readback/);
-  assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry does not match its checksum, so it was edited, composed, or copied from another variant or component after Figma returned it; nothing in it was scored/);
   assert.match(r.out, /Read these variants back again[^\n]*exactly as returned/);
-  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /Fidelity: n\/a \(0\/0 properties\); 1 entry unverified, not scored/);
   assert.doesNotMatch(r.out, /Figma matches/);
   const { checksum: _checksum, ...edited } = file.components["Forms/Button"].variants.a;
   assert.doesNotMatch(r.out, new RegExp(readbackChecksum("1:2", "a", edited).slice("fnv1a:".length)), "printed the checksum that would pass");
@@ -237,10 +240,25 @@ test("verify CLI: one variant sealed and matching beside one edited fails --stri
   file.components["Forms/Button"].variants.b.backgroundColor = "#2563eb";
   const r = verify(snapOfTwo(), file, "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Fidelity: 100\.0% \(12\/12 properties\) — 1 unverified readback entry excluded/);
+  assert.match(r.out, /^Fidelity: 100\.0% of verified entries \(12\/12 properties\); 1 entry unverified, not scored$/m);
   assert.match(r.out, /1 verified, 0 drifted, 0 missing from Figma, 1 with an unverified readback, across 2 variants/);
   assert.match(r.out, /Forms\/Button b readback entry does not match its checksum/);
   assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: without --strict, a score that left entries out says so on its own line, and a clean one doesn't", () => {
+  // A falsification run read "Fidelity: 100.0%" with an entry failing its
+  // checksum, and the run exited 0: the percentage alone read as a pass.
+  const file = readbackOf({ a: MATCHING, b: MATCHING });
+  file.components["Forms/Button"].variants.b.backgroundColor = "#ff00ff";
+  const r = verify(snapOfTwo(), file);
+  assert.equal(r.status, 0, r.out);
+  const headline = r.out.split("\n").find((line) => line.startsWith("Fidelity:"));
+  assert.equal(headline, "Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored");
+
+  const clean = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }));
+  assert.equal(clean.status, 0, clean.out);
+  assert.equal(clean.out.split("\n").find((line) => line.startsWith("Fidelity:")), "Fidelity: 100.0% (24/24 properties)");
 });
 
 test("verify CLI: a component with no nodeId, or another set's, fails --strict", () => {
@@ -275,7 +293,7 @@ test("verify CLI: a component's entries copied onto another, nodeId and all, fai
   components["Forms/Link"] = JSON.parse(JSON.stringify(components["Forms/Button"]));
   const r = verify(snap(), file, "--strict");
   assert.equal(r.status, 1, r.out);
-  assert.match(r.out, /Forms\/Button a readback entry has a nodeId its component shares with Forms\/Link, though every component is read back from a set of its own, so one component's entries were copied onto another — nothing in it was scored/);
+  assert.match(r.out, /Forms\/Button a readback entry has a nodeId its component shares with Forms\/Link, though every component is read back from a set of its own, so one component's entries were copied onto another; nothing in it was scored/);
   assert.match(r.out, /Forms\/Link a readback entry has a nodeId its component shares with Forms\/Button/);
   assert.doesNotMatch(r.out, /Figma matches/);
 });
@@ -288,7 +306,7 @@ test("verify CLI: a readback read before the snap fails --strict as stale, and o
   const earlier = new Date(measured - 3_600_000).toISOString();
   const stale = verifyMeasuredAt(measuredAt, snap(), readback(MATCHING, { readAt: earlier }), "--strict");
   assert.equal(stale.status, 1, stale.out);
-  assert.match(stale.out, new RegExp(`readback entry is stale: Figma read it at ${earlier}, before the snap was measured at ${measuredAt}, so it is from an earlier run — nothing in it was scored`));
+  assert.match(stale.out, new RegExp(`readback entry is stale: Figma read it at ${earlier}, before the snap was measured at ${measuredAt}, so it is from an earlier run; nothing in it was scored`));
   assert.match(stale.out, /Read these variants back again, after the snap,/);
   assert.doesNotMatch(stale.out, /Figma matches/);
 
@@ -299,4 +317,293 @@ test("verify CLI: a readback read before the snap fails --strict as stale, and o
   const none = verify(snap(), readback(MATCHING, { readAt: null }), "--strict");
   assert.equal(none.status, 1, none.out);
   assert.match(none.out, /readback entry is stale: it has no readAt, so when Figma read it is unknown/);
+});
+
+test("verify CLI: a push scored on a snap re-run for some components alone fails --strict, naming the rest", () => {
+  // The push's timeout advice re-ran snap with --components, which wrote a
+  // styles.json of those alone: verify --strict-age then scored the push at
+  // 100% with a drifted Button left out.
+  const card = snap({}, { name: "Card", title: "Forms/Card" });
+  const button = readback({ ...MATCHING, backgroundColor: "#ff00ff" }).components["Forms/Button"];
+  const cardEntry = readback(MATCHING).components["Forms/Button"];
+  const r = verifyMeasuredAt("2026-10-01T11:59:00.000Z", card, { version: 1, components: { "Forms/Card": { ...cardEntry, nodeId: "1:2" }, "Forms/Button": { ...button, nodeId: "3:4", variants: { a: { ...button.variants.a, checksum: readbackChecksum("3:4", "a", { ...MATCHING, backgroundColor: "#ff00ff", readAt: READ_AT }) } } } } }, "--strict-age", "--max-age", "1000d");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /! Forms\/Button is in the readback but not in the snap, so none of it was scored: another snap run measured it, or none did\. Measure it into this snap with `snap --components "Forms\/Button" --merge`, or run the whole snap again\./);
+  assert.doesNotMatch(r.out, /Figma matches/);
+});
+
+test("verify CLI: --skip leaves a component the user chose not to push out of --strict, and says so under the score", () => {
+  // Skipped at the push's question about a closed trigger, the dialog stayed
+  // in styles.json, and verify --strict failed on its variants as missing.
+  const two = snap();
+  two.components.push({ ...two.components[0], id: "ui-base-dialog", name: "Dialog", title: "ui/base/Dialog" } as never);
+  const without = verify(two, readback(MATCHING), "--strict");
+  assert.equal(without.status, 1, without.out);
+  assert.match(without.out, /ui\/base\/Dialog a not found in Figma/);
+
+  const r = verify(two, readback(MATCHING), "--strict", "--skip", "ui-base-dialog");
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.equal(lines[at + 1], "  Left out of the score, as --skip asked: ui/base/Dialog");
+  assert.doesNotMatch(r.out, /not found in Figma/);
+
+  const typo = verify(two, readback(MATCHING), "--strict", "--skip", "Dialgo");
+  assert.equal(typo.status, 1, typo.out);
+  assert.match(typo.out, /--skip matched no component named "Dialgo"/);
+});
+
+test("verify CLI: what snap warned about a scored component is said beside the score, and fails nothing", () => {
+  const warning = "snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, rather than Dialog. What it opens renders only while open.";
+  const r = verify(
+    snap({}, { warnings: [warning], variantProperties: [{ name: "size", type: "VARIANT", values: ["md"], defaultValue: "md", defaultAssumed: true }] }),
+    readback(MATCHING), "--strict",
+  );
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.deepEqual(lines.slice(at + 1, at + 4), [
+    "  ! The score compares Figma with what snap measured, and snap warned about that for this component:",
+    "      Forms/Button: snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, so this scores the trigger, not what it opens",
+    "      Forms/Button: Storybook's docs give no default for `size`, so the default variant in Figma is a guess",
+  ]);
+});
+
+test("verify CLI: a closed trigger snap didn't open says why beside the score; an overlay it opened is said, failing nothing", () => {
+  const warning = "snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, rather than Dialog: snap didn't open it " +
+    "(clicking it opened nothing within 3000ms). What it opens renders only while open.";
+  const shut = verify(snap({}, { warnings: [warning] }), readback(MATCHING), "--strict");
+  assert.equal(shut.status, 0, shut.out);
+  assert.ok(shut.out.includes(
+    "      Forms/Button: snap measured button[data-slot=\"dialog-trigger\"], a closed trigger, so this scores the trigger, not what it opens; " +
+    "snap didn't open it: clicking it opened nothing within 3000ms",
+  ), shut.out);
+
+  const opened = { element: "div[data-slot=\"dialog-content\"]", portal: true, opened: { via: "hover", trigger: "button[data-slot=\"tooltip-trigger\"]" } };
+  const open = verify(snap({}, { variants: [{ combination: {}, slug: "a", status: "ok", error: null, delta: {}, ...opened }] }), readback(MATCHING), "--strict");
+  assert.equal(open.status, 0, open.out);
+  assert.ok(open.out.includes("  i Forms/Button: measured open: snap hovered over button[data-slot=\"tooltip-trigger\"] to open it, and measured div[data-slot=\"dialog-content\"]"), open.out);
+  assert.doesNotMatch(open.out, /snap warned about that/);
+});
+
+test("verify CLI: props that reach the component and change nothing measured are said as such, not as the story's fault", () => {
+  const warning = "all 2 rendered variants measured identically, though their markup changed with the args, so the story passes them through: " +
+    "`textAlign` changes nothing snap measures, likely only behavior, or something it doesn't measure, such as a child element. " +
+    "If it doesn't change how it looks, leave it out of every component with `--exclude-props textAlign`, and build it as one variant.";
+  const r = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }));
+  const withWarning = verify({ ...snapOfTwo(), components: [{ ...snapOfTwo().components[0], warnings: [warning] }] }, readbackOf({ a: MATCHING, b: MATCHING }));
+  assert.match(r.out, /Forms\/Button: every variant measured the same, so the story may not pass its args through/);
+  assert.equal(withWarning.status, 0, withWarning.out);
+  assert.match(withWarning.out, /\n {6}Forms\/Button: every variant measured the same though the args reached it: `textAlign` changes nothing snap measures, so its variants in Figma look alike; `--exclude-props textAlign` leaves it out\n/);
+  assert.doesNotMatch(withWarning.out, /story may not pass/);
+});
+
+test("verify CLI: variants Storybook wouldn't render are named beside the score as unmeasured, and fail --strict-measured", () => {
+  // Storybook rendered its default for variant=link, as for a value outside
+  // the story's options: snap measured nothing, so nothing may score it.
+  const rejectedArgs = [{ name: "variant", value: "link", reasons: ["not-in-options"], options: ["default"] }];
+  const twoVariants = snap({ summary: { components: 1, variants: 2, rendered: 1, failed: 1, componentsFailed: 0, componentsWithWarnings: 1 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "arg_rejected", error: "Storybook didn't give the story variant=link", rejectedArgs },
+    ],
+  });
+  const figma = readbackOf({ a: MATCHING, b: { ...MATCHING, source: "inferred" } });
+  const r = verify(twoVariants, figma, "--strict");
+  assert.equal(r.status, 0, r.out);
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.deepEqual(lines.slice(at + 1, at + 3), [
+    "  ! The score compares Figma with what snap measured, and snap warned about that for this component:",
+    "      Forms/Button: Storybook wouldn't render variant=link, so snap didn't measure 1 variant and nothing here scored it; snap's warning names the story change that lets it",
+  ]);
+  assert.match(r.out, /Forms\/Button b \[unmeasured: written to Figma but never scored\]/);
+  assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
+});
+
+test("verify CLI: variants snap measured without checking their args are named beside the score, and fail --strict-measured", () => {
+  // snap couldn't read Storybook's preview for b, so b may be the story's
+  // default under its name: scored, but not as surely measured.
+  const twoVariants = snap({ summary: { components: 1, variants: 2, rendered: 2, failed: 0, componentsFailed: 0, componentsWithWarnings: 1 } }, {
+    variants: [
+      { combination: {}, slug: "a", status: "ok", error: null, delta: {} },
+      { combination: {}, slug: "b", status: "ok", error: null, delta: {}, argsChecked: false },
+    ],
+  });
+  const figma = readbackOf({ a: MATCHING, b: MATCHING });
+  const r = verify(twoVariants, figma, "--strict");
+  assert.equal(r.status, 0, r.out);
+  // Under the score, beside the caveat that a and b measured the same.
+  const lines = r.out.split("\n");
+  const at = lines.findIndex((line) => line.startsWith("Fidelity: 100.0%"));
+  assert.equal(lines[at + 1], "  ! The score compares Figma with what snap measured, and snap warned about that for this component:");
+  assert.deepEqual(lines.slice(at + 2, at + 4).filter((line) => line.includes("couldn't check")), [
+    "      Forms/Button: snap couldn't check that Storybook gave the story the values of variant b, so it may have scored the story's default under its name; measure the component again",
+  ]);
+  assert.equal(verify(twoVariants, figma, "--strict-measured").status, 1);
+});
+
+test("verify CLI: a component snap measured again holds its readback to that time, the rest to theirs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-verify-"));
+  try {
+    const two = snap();
+    two.components.push({ ...two.components[0], name: "Card", title: "Forms/Card" });
+    writeFileSync(join(dir, "styles.json"), JSON.stringify(two));
+    writeFileSync(join(dir, "meta.json"), JSON.stringify({
+      measuredAt: "2026-10-01T11:00:00.000Z",
+      componentsMeasuredAt: { "Forms/Button": "2026-10-01T11:00:00.000Z", "Forms/Card": "2026-10-01T13:00:00.000Z" },
+    }));
+    const button = readback(MATCHING).components["Forms/Button"];
+    const card = { ...button, nodeId: "3:4", variants: { a: { ...MATCHING, readAt: READ_AT, checksum: readbackChecksum("3:4", "a", { ...MATCHING, readAt: READ_AT }) } } };
+    writeFileSync(join(dir, "readback.json"), JSON.stringify({ version: 1, components: { "Forms/Button": button, "Forms/Card": card } }));
+    const r = spawnSync(process.execPath, [CLI, "verify", "--snap", join(dir, "styles.json"), "--readback", join(dir, "readback.json"), "--strict", "--max-age", "1000d"], { encoding: "utf8" });
+    const out = `${r.stdout}${r.stderr}`.replace(/\u001b\[[0-9;]*m/g, "");
+    assert.equal(r.status, 1, out);
+    assert.match(out, /Forms\/Card a readback entry is stale: Figma read it at 2026-10-01T12:00:00\.000Z, before the snap was measured at 2026-10-01T13:00:00\.000Z/);
+    assert.doesNotMatch(out, /Forms\/Button a readback entry/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify CLI: a field bound to no variable though one has its value is named beside the score, and fails nothing", () => {
+  // A token detached in Figma keeps its value, so the values alone scored a
+  // detached radius 100%.
+  const file = readbackOf({
+    a: { ...MATCHING, textLayout: null, bound: { backgroundColor: "primary", borderRadiusUniform: "radius/sm" }, unbound: [] },
+    b: { ...MATCHING, textLayout: null, bound: { backgroundColor: "primary" }, unbound: ["borderRadiusUniform"] },
+  });
+  const r = verify(snapOfTwo(), file, "--strict");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /\n {2}Variables: 3 fields bound across 2 variants\n {2}! Bound to no variable, though a variable of its kind has the value: a token detached in Figma, or one the push left unbound \(its summary says which\):\n {6}Forms\/Button borderRadiusUniform, on 1 variant\n/);
+
+  // A readback from an earlier template says nothing of bindings, and still scores.
+  const older = verify(snapOfTwo(), readbackOf({ a: MATCHING, b: MATCHING }), "--strict");
+  assert.equal(older.status, 0, older.out);
+  assert.match(older.out, /Variables: this readback doesn't say what is bound, so a token detached in Figma at the same value can't be seen/);
+});
+
+test("verify CLI: a text layout snap measured, against a readback without textLayout, is said beside the score and fails --strict", () => {
+  // A readback from a template before textLayout, or an older skill beside
+  // a newer CLI, scored a title that runs past its card 100%, said Figma
+  // matched, and passed --strict.
+  const text = { color: "#ffffff", fontFamily: "Inter", fontSize: 12, fontWeight: 600, layout: { width: 40, lines: 1, truncation: "ellipsis" } };
+  const cut = snapOfTwo();
+  cut.components[0].base = { combination: {}, slug: "a", styles: { ...STYLES, text } as never };
+  const older = readbackOf({ a: MATCHING, b: MATCHING });
+  const strict = verify(cut, older, "--strict");
+  assert.equal(strict.status, 1, strict.out);
+  assert.match(strict.out, /Fidelity: 100\.0%/);
+  assert.match(strict.out, /\n {2}! Not compared, since the readback has no textLayout[^\n]*\n {6}Forms\/Button, 2 variants\n/);
+  assert.doesNotMatch(strict.out, /Figma matches/);
+  assert.equal(verify(cut, older).status, 0, "a score, not a failure, without --strict");
+
+  // Read with the template as it is, it is compared, and passes.
+  const current = readbackOf({ a: { ...MATCHING, textLayout: { width: 40, maxLines: 1 }, bound: {}, unbound: [] }, b: { ...MATCHING, textLayout: { width: 40, maxLines: 1 }, bound: {}, unbound: [] } });
+  const passed = verify(cut, current, "--strict");
+  assert.equal(passed.status, 0, passed.out);
+  assert.doesNotMatch(passed.out, /Not compared/);
+  assert.match(passed.out, /Figma matches the measured styles for Forms\/Button\./);
+
+  // Where snap measured no layout, an older readback is compared on all it has.
+  const plain = verify(snapOfTwo(), older, "--strict");
+  assert.equal(plain.status, 0, plain.out);
+  assert.doesNotMatch(plain.out, /Not compared/);
+});
+
+
+// --- Element trees ---------------------------------------------------------------
+
+test("verify CLI: a tree snap is scored by elements, a faithful build passes --strict and says so", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const r = verify(fixture, readback, "--strict");
+  assert.match(r.out, /Variables: the element-tree readback doesn't read variable bindings yet/);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /Fidelity: 100\.0% of elements \(4 of 4 verified\), 100\.0% of properties \(\d+\/\d+\)/);
+  assert.match(r.out, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
+  assert.match(r.out, /Figma matches the measured styles for ui\/base\/Switch/);
+  assert.doesNotMatch(r.out, /only the outer element/);
+  assert.doesNotMatch(r.out, /Variables: this readback doesn't say/);
+  const json = JSON.parse(verify(fixture, readback, "--json").out);
+  assert.equal(json.elementFidelity, 1);
+  assert.equal(json.summary.elements.measured, 4);
+});
+
+test("verify CLI: an element missing, or a designer's layer, fails --strict and is named by key and node", async () => {
+  const ctx = await buildAndRead("switch");
+  const thumb = ctx.built.variants[1].layers["switch-thumb"];
+  await ctx.figma.run(`(await figma.getNodeByIdAsync(${JSON.stringify(thumb)})).remove();
+    const v = await figma.getNodeByIdAsync(${JSON.stringify(ctx.built.variants[0].id)}); const r = figma.createRectangle(); r.name = 'Note'; v.appendChild(r);`);
+  const again = assemble(await readBack(ctx.figma, [[ctx.built.component, 0, 1, 0]]));
+  const r = verify(ctx.fixture, again, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /Fidelity: 75\.0% of elements \(3 of 4 verified\)/);
+  assert.match(r.out, /- ui\/base\/Switch size=sm › switch-thumb: missing from Figma/);
+  assert.match(r.out, /\? ui\/base\/Switch size=default: a layer nothing keyed, "Note" \(RECTANGLE, node \d+:\d+\): a designer's, not scored/);
+  assert.doesNotMatch(r.out, /Figma matches/);
+  assert.equal(verify(ctx.fixture, again).status, 0, "a score, not a failure, without --strict");
+});
+
+test("verify CLI: a readback from before trees against a tree snap fails --strict, its roots still scored", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const v1 = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+  for (const entry of Object.values(v1.components)) {
+    for (const [slug, e] of Object.entries(entry.variants)) {
+      const { tpl: _t, name: _n, built: _b, tree: _tr, designerLayers: _d, boxShadow: _s, checksum: _c, ...rest } = e;
+      entry.variants[slug] = { ...rest, checksum: readbackChecksum(entry.nodeId!, slug, rest) };
+    }
+  }
+  const r = verify(fixture, v1, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /not read back 2/);
+  assert.match(r.out, /ui\/base\/Switch size-sm: read back without its tree, so only its root was compared/);
+});
+
+test("verify CLI: placeholders for variants snap couldn't measure fail --strict-measured, not --strict", async () => {
+  const figma = newFigma();
+  const fixture = loadTreeFixture("button-icon");
+  const built = await buildFixture(figma, fixture);
+  const readback = assemble(await readBack(figma, [[built.component, 0, fixture.components[0].variants.length - 1, 0]]));
+  const strict = verify(fixture, readback, "--strict");
+  assert.equal(strict.status, 0, strict.out);
+  assert.match(strict.out, /not measured 2/);
+  // Why, as snap recorded it, and no story change snap's warnings don't name.
+  assert.match(strict.out, /\? ui\/base\/Button variant=link, size=xs: not measured \(args_hidden\), so Figma holds a placeholder for it\n/);
+  assert.match(strict.out, /\d+ verified, 0 drifted, 0 missing from Figma, 2 not measured, across \d+ variants/);
+  assert.equal(verify(fixture, readback, "--strict-measured").status, 1);
+});
+
+test("verify CLI: a variant in Figma's set no read covered is named under provenance, and one an earlier push built fails --strict, as extra", async () => {
+  const figma = newFigma();
+  const fixture = loadTreeFixture("switch");
+  const built = await buildFixture(figma, fixture);
+  await figma.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(built.id)}); const c = figma.createComponent(); c.name = 'size=xl'; set.appendChild(c);`);
+  const resnap = JSON.parse(JSON.stringify(fixture)) as typeof fixture;
+  resnap.components[0].variants = resnap.components[0].variants.filter((v) => v.slug === "size-default");
+  const readback = assemble(await readBack(figma, [[built.component, 0, 0, 0]]));
+  const strict = verify(resnap, readback, "--strict");
+  assert.equal(strict.status, 1, strict.out);
+  assert.match(strict.out, /\+ 1 extra variant in Figma's sets that snap no longer measures/);
+  assert.match(strict.out, /Provenance: 2 in Figma's sets that no read covered/);
+  assert.match(strict.out, /ui\/base\/Switch size=xl \[not built by storysync: in Figma's set but never scored\]/);
+  assert.match(strict.out, /ui\/base\/Switch: 1 variant carries a slug no read covered \[built by an earlier push for a variant snap no longer measures, never scored\]/);
+  assert.equal(verify(resnap, readback, "--strict-measured").status, 1);
+});
+
+test("verify CLI: a variant read in parts, one of them missing, is said once, with its issue", async () => {
+  const { fixture, readback } = await buildAndRead("sidebar", { limit: 1500 });
+  const component = Object.keys(readback.components)[0];
+  const first = Object.keys(readback.components[component].variants).find((k) => !k.includes("#"))!;
+  delete readback.components[component].variants[first];
+  const r = verify(fixture, readback, "--strict");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /ui\/base\/Sidebar \S+ readback entry is one of the parts a variant was read in, and they don't add up/);
+  assert.doesNotMatch(r.out, /^ {2}~ ui\/base\/Sidebar \S+$/m, "no bare drift line");
+});
+
+test("verify CLI: what verify compared only in part is said on its own, the outer elements alone on one line", () => {
+  const r = verify(snap(), readback(MATCHING), "--strict");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /\n {2}! Only the outer element was measured and compared, for Forms\/Button\n/);
+  assert.doesNotMatch(r.out, /snap warned/);
 });

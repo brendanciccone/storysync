@@ -1,0 +1,428 @@
+{
+ "source": {
+  "story": "ui-base-inputotp--default",
+  "args": null,
+  "root": "[data-input-otp-container]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "div",
+   "box": [
+    0,
+    0,
+    216,
+    36
+   ],
+   "cs": {
+    "display": "flex",
+    "position": "relative",
+    "align-items": "center"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      0,
+      216,
+      36
+     ],
+     "cs": {
+      "display": "flex",
+      "align-items": "center",
+      "border-top-left-radius": "8px",
+      "border-top-right-radius": "8px",
+      "border-bottom-right-radius": "8px",
+      "border-bottom-left-radius": "8px"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        0,
+        0,
+        36,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "relative",
+        "justify-content": "center",
+        "align-items": "center",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-left-width": "1px",
+        "border-top-color": "oklch(0.922 0 0)",
+        "border-right-color": "oklch(0.922 0 0)",
+        "border-bottom-color": "oklch(0.922 0 0)",
+        "border-left-color": "oklch(0.922 0 0)",
+        "border-top-left-radius": "8px",
+        "border-bottom-left-radius": "8px",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+       },
+       "kids": [],
+       "path": [
+        0,
+        0
+       ],
+       "slot": "input-otp-slot",
+       "cls": [
+        "dark:bg-input/30",
+        "border-input",
+        "data-[active=true]:border-ring",
+        "data-[active=true]:ring-ring/50",
+        "data-[active=true]:aria-invalid:ring-destructive/20",
+        "dark:data-[active=true]:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "data-[active=true]:aria-invalid:border-destructive",
+        "border-y",
+        "border-r",
+        "text-sm",
+        "shadow-xs",
+        "outline-none",
+        "first:rounded-l-md",
+        "first:border-l",
+        "last:rounded-r-md",
+        "data-[active=true]:ring-[3px]"
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        36,
+        0,
+        36,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "relative",
+        "justify-content": "center",
+        "align-items": "center",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-top-color": "oklch(0.922 0 0)",
+        "border-right-color": "oklch(0.922 0 0)",
+        "border-bottom-color": "oklch(0.922 0 0)",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+       },
+       "kids": [],
+       "path": [
+        0,
+        1
+       ],
+       "slot": "input-otp-slot",
+       "cls": [
+        "dark:bg-input/30",
+        "border-input",
+        "data-[active=true]:border-ring",
+        "data-[active=true]:ring-ring/50",
+        "data-[active=true]:aria-invalid:ring-destructive/20",
+        "dark:data-[active=true]:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "data-[active=true]:aria-invalid:border-destructive",
+        "border-y",
+        "border-r",
+        "text-sm",
+        "shadow-xs",
+        "outline-none",
+        "first:rounded-l-md",
+        "first:border-l",
+        "last:rounded-r-md",
+        "data-[active=true]:ring-[3px]"
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        72,
+        0,
+        36,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "relative",
+        "justify-content": "center",
+        "align-items": "center",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-top-color": "oklch(0.922 0 0)",
+        "border-right-color": "oklch(0.922 0 0)",
+        "border-bottom-color": "oklch(0.922 0 0)",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+       },
+       "kids": [],
+       "path": [
+        0,
+        2
+       ],
+       "slot": "input-otp-slot",
+       "cls": [
+        "dark:bg-input/30",
+        "border-input",
+        "data-[active=true]:border-ring",
+        "data-[active=true]:ring-ring/50",
+        "data-[active=true]:aria-invalid:ring-destructive/20",
+        "dark:data-[active=true]:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "data-[active=true]:aria-invalid:border-destructive",
+        "border-y",
+        "border-r",
+        "text-sm",
+        "shadow-xs",
+        "outline-none",
+        "first:rounded-l-md",
+        "first:border-l",
+        "last:rounded-r-md",
+        "data-[active=true]:ring-[3px]"
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        108,
+        0,
+        36,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "relative",
+        "justify-content": "center",
+        "align-items": "center",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-top-color": "oklch(0.922 0 0)",
+        "border-right-color": "oklch(0.922 0 0)",
+        "border-bottom-color": "oklch(0.922 0 0)",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+       },
+       "kids": [],
+       "path": [
+        0,
+        3
+       ],
+       "slot": "input-otp-slot",
+       "cls": [
+        "dark:bg-input/30",
+        "border-input",
+        "data-[active=true]:border-ring",
+        "data-[active=true]:ring-ring/50",
+        "data-[active=true]:aria-invalid:ring-destructive/20",
+        "dark:data-[active=true]:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "data-[active=true]:aria-invalid:border-destructive",
+        "border-y",
+        "border-r",
+        "text-sm",
+        "shadow-xs",
+        "outline-none",
+        "first:rounded-l-md",
+        "first:border-l",
+        "last:rounded-r-md",
+        "data-[active=true]:ring-[3px]"
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        144,
+        0,
+        36,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "relative",
+        "justify-content": "center",
+        "align-items": "center",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-top-color": "oklch(0.922 0 0)",
+        "border-right-color": "oklch(0.922 0 0)",
+        "border-bottom-color": "oklch(0.922 0 0)",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+       },
+       "kids": [],
+       "path": [
+        0,
+        4
+       ],
+       "slot": "input-otp-slot",
+       "cls": [
+        "dark:bg-input/30",
+        "border-input",
+        "data-[active=true]:border-ring",
+        "data-[active=true]:ring-ring/50",
+        "data-[active=true]:aria-invalid:ring-destructive/20",
+        "dark:data-[active=true]:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "data-[active=true]:aria-invalid:border-destructive",
+        "border-y",
+        "border-r",
+        "text-sm",
+        "shadow-xs",
+        "outline-none",
+        "first:rounded-l-md",
+        "first:border-l",
+        "last:rounded-r-md",
+        "data-[active=true]:ring-[3px]"
+       ]
+      },
+      {
+       "k": "e",
+       "tag": "div",
+       "box": [
+        180,
+        0,
+        36,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "relative",
+        "justify-content": "center",
+        "align-items": "center",
+        "border-top-width": "1px",
+        "border-right-width": "1px",
+        "border-bottom-width": "1px",
+        "border-top-color": "oklch(0.922 0 0)",
+        "border-right-color": "oklch(0.922 0 0)",
+        "border-bottom-color": "oklch(0.922 0 0)",
+        "border-top-right-radius": "8px",
+        "border-bottom-right-radius": "8px",
+        "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+       },
+       "kids": [],
+       "path": [
+        0,
+        5
+       ],
+       "slot": "input-otp-slot",
+       "cls": [
+        "dark:bg-input/30",
+        "border-input",
+        "data-[active=true]:border-ring",
+        "data-[active=true]:ring-ring/50",
+        "data-[active=true]:aria-invalid:ring-destructive/20",
+        "dark:data-[active=true]:aria-invalid:ring-destructive/40",
+        "aria-invalid:border-destructive",
+        "data-[active=true]:aria-invalid:border-destructive",
+        "border-y",
+        "border-r",
+        "text-sm",
+        "shadow-xs",
+        "outline-none",
+        "first:rounded-l-md",
+        "first:border-l",
+        "last:rounded-r-md",
+        "data-[active=true]:ring-[3px]"
+       ]
+      }
+     ],
+     "path": [
+      0
+     ],
+     "slot": "input-otp-group",
+     "cls": [
+      "has-aria-invalid:ring-destructive/20",
+      "dark:has-aria-invalid:ring-destructive/40",
+      "has-aria-invalid:border-destructive",
+      "rounded-md",
+      "has-aria-invalid:ring-[3px]"
+     ]
+    },
+    {
+     "k": "e",
+     "tag": "div",
+     "box": [
+      0,
+      0,
+      216,
+      36
+     ],
+     "cs": {
+      "position": "absolute"
+     },
+     "kids": [
+      {
+       "k": "e",
+       "tag": "input",
+       "box": [
+        0,
+        0,
+        216,
+        36
+       ],
+       "cs": {
+        "display": "flex",
+        "position": "absolute",
+        "overflow-x": "clip",
+        "overflow-y": "clip",
+        "outline-style": "solid",
+        "outline-color": "rgba(0, 0, 0, 0)",
+        "appearance": "auto"
+       },
+       "kids": [],
+       "path": [
+        1,
+        0
+       ],
+       "slot": "input-otp",
+       "text": {
+        "color": "rgba(0, 0, 0, 0)",
+        "font-family": "monospace",
+        "font-size": "36px",
+        "font-weight": "400",
+        "font-style": "normal",
+        "line-height": "36px",
+        "letter-spacing": "-18px",
+        "text-transform": "none",
+        "text-decoration-line": "none",
+        "text-align": "left",
+        "white-space": "normal",
+        "text-overflow": "clip",
+        "-webkit-line-clamp": "none"
+       },
+       "input": {
+        "type": "text",
+        "value": "",
+        "placeholder": "",
+        "advance": 0
+       }
+      }
+     ],
+     "path": [
+      1
+     ]
+    }
+   ],
+   "path": []
+  },
+  "fonts": {
+   "monospace": {
+    "families": [
+     "monospace"
+    ],
+    "applied": [
+     null
+    ]
+   }
+  }
+ }
+}

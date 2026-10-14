@@ -2,12 +2,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   verify, verifyVariant, propertyMatches, expandSnap, formatFidelity, parseDuration, formatAge, readSnapAge, hasIntrinsicSize,
-  canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS,
+  canonicalJson, fnv1a32, readbackChecksum, checkReadback, missingReadbackFields, READBACK_FIELDS, READ_AT_SKEW_MS, scoreCaveats, bindingReport,
+  unsaidWarnings,
 } from "../verify.js";
+import { describeMeasurementNotes, describeIdenticalVariants, describeNoOpProperties } from "../snap.js";
 import type { ReadbackFile } from "../verify.js";
 import type { NormalizedStyles } from "../snap-normalize.js";
 import type { SnapResult } from "../snap.js";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { headlineFidelity, slugOfKey, formatElementReport } from "../verify.js";
+import { SPIKE } from "../verify-tree.js";
+import { buildAndRead, reread } from "./tree-harness.js";
+import { loadTreeFixture } from "./mock-figma.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -110,7 +117,7 @@ test("propertyMatches: colors compare case-insensitively", () => {
   assert.equal(propertyMatches("backgroundColor", null, "#000000", 0.5), false);
 });
 
-test("propertyMatches: lengths honour the tolerance", () => {
+test("propertyMatches: lengths honor the tolerance", () => {
   assert.equal(propertyMatches("fontSize", 12, 12.3, 0.5), true);
   assert.equal(propertyMatches("fontSize", 12, 13, 0.5), false);
   assert.equal(propertyMatches("borderRadiusUniform", 3, 3, 0), true);
@@ -138,9 +145,20 @@ test("propertyMatches: shadows compare layer by layer", () => {
   const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring }], 0.5), true);
   assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, inset: false }], 0.5), false);
+  // A spread Figma dropped drifts, unless the spike found it drops every one.
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, spread: 0 }], 0.5), false);
+  assert.equal(propertyMatches("boxShadow", [ring], [{ ...ring, spread: 0 }], 0.5, { ...SPIKE, shadowSpreadKept: false }), true);
 });
 
-test("propertyMatches: borders compare width, colour and style", () => {
+test("verify: what to assume of Figma reaches a root's shadows too", () => {
+  const ring = { offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#d1d5db", inset: true };
+  const s = snapWith([{ slug: "primary", delta: { boxShadow: [ring] } }]);
+  const readback = readbackWith({ primary: { boxShadow: [{ ...ring, spread: 0 }] } });
+  assert.equal(verify(s, readback, 0.5).variants[0].status, "drifted");
+  assert.equal(verify(s, readback, 0.5, { spike: { ...SPIKE, shadowSpreadKept: false } }).variants[0].status, "verified");
+});
+
+test("propertyMatches: borders compare width, color and style", () => {
   const b = { width: 2, style: "solid", color: "#9ca3af" };
   assert.equal(propertyMatches("borderUniform", b, { ...b }, 0.5), true);
   assert.equal(propertyMatches("borderUniform", b, { ...b, width: 4 }, 0.5), false);
@@ -345,6 +363,26 @@ test("readSnapAge: marks a snap past the limit stale", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("readSnapAge: scoring some components of a merged snap, it is as old as the oldest of those", () => {
+  // A push of B into a snap that keeps A from a push hours before.
+  const dir = snapDir({
+    measuredAt: "2026-03-04T06:00:00.000Z",
+    componentsMeasuredAt: { "Forms/A": "2026-03-04T06:00:00.000Z", "Forms/B": "2026-03-04T11:50:00.000Z", "Forms/C": "2026-03-04T11:00:00.000Z" },
+  });
+  try {
+    const path = join(dir, "styles.json");
+    const whole = readSnapAge(path, 2 * 3_600_000, NOW);
+    assert.equal(whole.known && whole.stale, true);
+    const plan = readSnapAge(path, 2 * 3_600_000, NOW, ["Forms/B", "Forms/C"]);
+    assert.equal(plan.known && plan.measuredAt, "2026-03-04T11:00:00.000Z");
+    assert.equal(plan.known && plan.ageMs, 3_600_000);
+    assert.equal(plan.known && plan.stale, false);
+    // One with no time of its own is held to the snap's.
+    const untimed = readSnapAge(path, 2 * 3_600_000, NOW, ["Forms/B", "Forms/D"]);
+    assert.equal(untimed.known && untimed.stale, true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // meta.json is the file a consuming project is most likely to gitignore, so an
 // absent sidecar must read as "unknown", never as "fresh".
 test("readSnapAge: a missing sidecar is unknown, not fresh", () => {
@@ -492,7 +530,7 @@ test("propertyMatches: geometry still catches a real mismatch", () => {
   assert.equal(propertyMatches("height", 23, 120, 0.5), false);
 });
 
-test("propertyMatches: an explicit tolerance above the floor is honoured", () => {
+test("propertyMatches: an explicit tolerance above the floor is honored", () => {
   assert.equal(propertyMatches("width", 55, 58, 0.5), false);
   assert.equal(propertyMatches("width", 55, 58, 4), true);
 });
@@ -651,6 +689,38 @@ test("verify: surfaces failures the snap recorded about itself", () => {
   assert.match(result.snapWarnings[0], /2 variant\(s\) could not be measured/);
 });
 
+test("verify: an untitled component is keyed by its ID, so two of one name are both scored", () => {
+  // Keyed by name, Toaster under ui/base/Sonner and under ui/radix/Sonner
+  // collapsed into one, the last standing for both, and the run read 100%
+  // having scored only one of them.
+  const one = snapWith([{ slug: "a" }]).components[0];
+  const snap = snapWith([{ slug: "a" }]);
+  snap.components = [
+    { ...one, id: "ui-base-sonner", name: "Toaster", title: undefined },
+    { ...one, id: "ui-radix-sonner", name: "Toaster", title: undefined },
+  ];
+  const entry = { a: complete({ source: "measured" }) };
+  const readback: ReadbackFile = {
+    version: 1,
+    components: {
+      "ui-base-sonner": { nodeId: "1:2", variants: sealed(entry, "1:2") as never },
+      "ui-radix-sonner": { nodeId: "3:4", variants: sealed({ a: complete({ source: "measured", fontSize: 14 }) }, "3:4") as never },
+    },
+  };
+  const result = verify(snap, readback, 0.5);
+  assert.deepEqual(result.variants.map((v) => [v.component, v.status]), [["ui-base-sonner", "verified"], ["ui-radix-sonner", "drifted"]]);
+  assert.deepEqual(result.snapIssues, []);
+});
+
+test("verify: components that share a key are a snap issue, since only one was scored", () => {
+  // A snap from before IDs were recorded, with two untitled Toasters.
+  const one = snapWith([{ slug: "a" }]).components[0];
+  const snap = snapWith([{ slug: "a" }]);
+  snap.components = [{ ...one, name: "Toaster", title: undefined }, { ...one, name: "Toaster", title: undefined }];
+  const result = verify(snap, { version: 1, components: { Toaster: { nodeId: "1:2", variants: sealed({ a: complete({ source: "measured" }) }) as never } } }, 0.5);
+  assert.deepEqual(result.snapIssues, ['2 components share the key "Toaster", so only one of them was scored']);
+});
+
 test("verify: a snap with no components at all is reported as an issue", () => {
   const empty = { ...snapWith([{ slug: "a" }]), components: [] } as unknown as SnapResult;
   const result = verify(empty, readbackWith({}), 0.5);
@@ -768,9 +838,9 @@ test("readbackChecksum: numbers are compared as values, whatever notation the fi
   assert.equal(readbackChecksum("1:2", "a", JSON.parse(JSON.stringify(float))), readbackChecksum("1:2", "a", float));
 });
 
-test("readbackChecksum: a colour is its string, null is not absent, and the entry is bound to its set, its slug and its readAt", () => {
+test("readbackChecksum: a color is its string, null is not absent, and the entry is bound to its set, its slug and its readAt", () => {
   const checksum = readbackChecksum("1:2", "a", ENTRY);
-  assert.notEqual(readbackChecksum("1:2", "a", { ...ENTRY, backgroundColor: "#2563EB" }), checksum, "a colour's case is a change");
+  assert.notEqual(readbackChecksum("1:2", "a", { ...ENTRY, backgroundColor: "#2563EB" }), checksum, "a color's case is a change");
   const { color: _color, ...absent } = ENTRY;
   assert.notEqual(readbackChecksum("1:2", "a", absent), checksum, "a null removed is a change");
   assert.notEqual(readbackChecksum("1:2", "a", { ...ENTRY, fontSize: null }), checksum, "a null added is a change");
@@ -953,7 +1023,7 @@ test("verify: a shared nodeId flags every entry of every component that has it, 
 
 // A template cut down to fewer fields still seals what it returns, and verify
 // scores only what an entry reports: cut down to { source, width, height }, it
-// scored 100% on every strict flag without comparing colour, padding, type or
+// scored 100% on every strict flag without comparing color, padding, type or
 // radius.
 
 test("verify: a sealed entry cut down to source, width and height is incomplete, and nothing in it is scored", () => {
@@ -983,6 +1053,12 @@ test("missingReadbackFields: null is present, absent is not, and every field the
   }
   // Not boxShadow or flexDirection, which the template does not read.
   assert.deepEqual(missingReadbackFields(complete({ boxShadow: undefined, flexDirection: undefined })), []);
+  // The later fields: none, from an earlier template, or all three, from
+  // the template as it is. Some but not all is a template cut down.
+  const later = { textLayout: null, bound: {}, unbound: [] };
+  assert.deepEqual(missingReadbackFields(complete(later)), []);
+  assert.deepEqual(missingReadbackFields(complete({ ...later, textLayout: undefined })), ["textLayout"]);
+  assert.deepEqual(missingReadbackFields(complete({ textLayout: null })), ["bound", "unbound"]);
 });
 
 test("verify: an entry that leaves out the text child's fields and gap is incomplete, and nothing in it is scored", () => {
@@ -1122,4 +1198,535 @@ test("verify: an entry can be both incomplete and stale, and is reported as both
     { component: "Forms/Button", slug: "a", problem: "stale", readAt: null },
   ]);
   assert.equal(result.summary.unverifiedReadback, 1, "one variant, however many issues");
+});
+
+test("verifyVariant: a font family measured as a CSS keyword is not scored", () => {
+  // Tailwind v4's default stack draws the platform's UI font, which snap
+  // records as system-ui. No Figma font has that name, so whatever the push
+  // set drifted on every text variant, capping fidelity with nothing to fix.
+  const figma = { ...FAITHFUL, fontFamily: "Inter" };
+  for (const family of ["system-ui", "sans-serif", "-apple-system"]) {
+    const measured = { ...BASE, text: { color: "#ffffff", fontFamily: family, fontSize: 12, fontWeight: 600 } };
+    const verdict = verifyVariant("Forms/Button", "a", measured, figma as never, 0.5);
+    assert.equal(verdict.status, "verified", `${family}: ${JSON.stringify(verdict.differences)}`);
+    const faithful = verifyVariant("Forms/Button", "a", { ...measured, text: { ...measured.text, fontFamily: "Helvetica" } }, FAITHFUL as never, 0.5);
+    assert.equal(verdict.matched, faithful.matched - 1, "the family is left out, not counted as a match");
+  }
+  // A font's name is still compared.
+  const named = verifyVariant("Forms/Button", "a", { ...BASE, text: { color: "#ffffff", fontFamily: "Roboto", fontSize: 12, fontWeight: 600 } }, figma as never, 0.5);
+  assert.deepEqual(named.differences.map((d) => d.property), ["fontFamily"]);
+});
+
+// --- a merged snap, and what snap warned about ---
+
+test("verify: a merged snap holds each component's readback to the time it was measured", () => {
+  // A component measured again by snap --merge, and its readback from
+  // before that, was scored against the new measurement.
+  const snap = snapWith([{ slug: "a" }]);
+  const card = { ...snap.components[0], name: "Card", title: "Forms/Card" };
+  const both = { ...snap, components: [snap.components[0], card] } as SnapResult;
+  const entry = complete({ readAt: "2026-10-01T12:30:00.000Z" });
+  const readback: ReadbackFile = {
+    version: 1,
+    components: {
+      "Forms/Button": { nodeId: "1:2", variants: { a: { ...entry, checksum: readbackChecksum("1:2", "a", entry) } } as never },
+      "Forms/Card": { nodeId: "3:4", variants: { a: { ...entry, checksum: readbackChecksum("3:4", "a", entry) } } as never },
+    },
+  };
+  const result = verify(both, readback, 0.5, {
+    measuredAt: "2026-10-01T12:00:00.000Z",
+    componentsMeasuredAt: { "Forms/Button": "2026-10-01T12:00:00.000Z", "Forms/Card": "2026-10-01T13:00:00.000Z" },
+  });
+  assert.deepEqual(result.readbackIssues, [
+    { component: "Forms/Card", slug: "a", problem: "stale", readAt: "2026-10-01T12:30:00.000Z", measuredAt: "2026-10-01T13:00:00.000Z" },
+  ]);
+  assert.deepEqual(result.variants.map((v) => [v.component, v.status]), [["Forms/Button", "verified"], ["Forms/Card", "unverified_readback"]]);
+});
+
+test("verify: a readback component the snap has no record of is named, so a partial snap can't score a whole push", () => {
+  // A snap re-run for Card alone wrote a styles.json of Card alone; the
+  // drifted Button beside it in the readback was never scored, and --strict passed.
+  const snap = snapWith([{ slug: "a" }]);
+  const entry = complete({});
+  const readback: ReadbackFile = {
+    version: 1,
+    components: {
+      "Forms/Button": { nodeId: "1:2", variants: { a: { ...entry, checksum: readbackChecksum("1:2", "a", entry) } } as never },
+      "Forms/Card": { nodeId: "3:4", variants: { a: { ...entry, checksum: readbackChecksum("3:4", "a", entry) } } as never },
+    },
+  };
+  const result = verify(snap, readback, 0.5);
+  assert.deepEqual(result.componentsNotInSnap, ["Forms/Card"]);
+  assert.equal(result.fidelity, 1);
+  assert.deepEqual(verify(snap, readbackWith({ a: {} }), 0.5).componentsNotInSnap, []);
+});
+
+test("verify: --skip leaves the components the user chose not to push out of the score, and says which", () => {
+  // The push asks whether to build, skip or stop on a dialog snap measured
+  // closed. Skipped, it stayed in styles.json, so every one of its variants
+  // was missing from Figma and verify --strict failed the push on it.
+  const base = snapWith([{ slug: "a" }]);
+  const dialog = {
+    ...base.components[0], id: "ui-base-dialog", name: "Dialog", title: "ui/base/Dialog",
+    variants: [base.components[0].variants[0], { ...base.components[0].variants[0], slug: "b", status: "timeout" }],
+    error: "could not render",
+  };
+  const snap = {
+    ...base,
+    components: [base.components[0], dialog],
+    summary: { ...base.summary, components: 2, variants: 3, rendered: 2, failed: 1, componentsFailed: 1 },
+  } as SnapResult;
+  const readback = readbackWith({ a: {} });
+
+  const all = verify(snap, readback, 0.5);
+  assert.equal(all.summary.missingFromFigma, 1);
+  assert.equal(all.snapIssues.length, 1);
+  assert.equal(all.snapWarnings.length, 1);
+  assert.deepEqual(all.skipped, []);
+
+  // By ID, title, name or the title's last segment, ignoring case.
+  for (const name of ["ui-base-dialog", "ui/base/Dialog", "dialog", " Dialog "]) {
+    const result = verify(snap, readback, 0.5, { skip: [name] });
+    assert.deepEqual(result.skipped, ["ui/base/Dialog"], name);
+    assert.equal(result.summary.missingFromFigma, 0, name);
+    assert.equal(result.summary.components, 1, name);
+    // Its own failures go with it: they are not this push's.
+    assert.deepEqual(result.snapIssues, [], name);
+    assert.deepEqual(result.snapWarnings, [], name);
+    assert.equal(result.fidelity, 1, name);
+  }
+
+  // A skipped component already in the readback is left out there too.
+  const entry = complete({});
+  const both: ReadbackFile = {
+    version: 1,
+    components: {
+      ...readback.components,
+      "ui/base/Dialog": { nodeId: "3:4", variants: { a: { ...entry, backgroundColor: "#ff00ff", checksum: "fnv1a:00000000" } } as never },
+    },
+  };
+  const skippedBoth = verify(snap, both, 0.5, { skip: ["ui-base-dialog"] });
+  assert.deepEqual(skippedBoth.readbackIssues, []);
+  assert.deepEqual(skippedBoth.variants.map((v) => v.component), ["Forms/Button"]);
+
+  // A readback-only key can be named too, rather than read as a typo.
+  const extra: ReadbackFile = { version: 1, components: { ...readback.components, "Forms/Old": both.components!["ui/base/Dialog"] } };
+  assert.deepEqual(verify(snap, extra, 0.5).componentsNotInSnap, ["Forms/Old"]);
+  const named = verify(snap, extra, 0.5, { skip: ["Forms/Old", "dialog"] });
+  assert.deepEqual(named.skipped, ["Forms/Old", "ui/base/Dialog"]);
+  assert.deepEqual(named.componentsNotInSnap, []);
+
+  // A typo throws rather than leaving a component in, or out, unseen; an
+  // empty list leaves everything in.
+  assert.throws(() => verify(snap, readback, 0.5, { skip: ["Dialgo"] }), /--skip matched no component named "Dialgo"/);
+  assert.equal(verify(snap, readback, 0.5, { skip: ["", " "] }).summary.missingFromFigma, 1);
+});
+
+test("scoreCaveats: names a closed trigger, a layout wrapper, identical variants and an assumed default, each once", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  const warnings = [
+    ...describeMeasurementNotes("Dialog", [
+      { slug: "a", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+      { slug: "b", note: { kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' } },
+    ], 2),
+    ...describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "layout-wrapper", element: "div", children: 2 } }], 2),
+    "the browser could not render \"Inter\"",
+  ];
+  const component = {
+    ...snap.components[0],
+    warnings,
+    variantProperties: [
+      { name: "size", type: "VARIANT", values: ["md", "sm"], defaultValue: "md", defaultAssumed: true },
+      { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+      // An optional boolean has no default in the docs either, but Figma's
+      // default for it is false all the same: nothing to say.
+      { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false", defaultAssumed: true },
+    ],
+  } as never;
+  assert.deepEqual(scoreCaveats(component), [
+    { component: "Forms/Button", kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' },
+    { component: "Forms/Button", kind: "layout-wrapper", element: "div" },
+    { component: "Forms/Button", kind: "identical-variants" },
+    { component: "Forms/Button", kind: "default-assumed", properties: ["size"] },
+  ]);
+  // Variants that differ, and no warnings: nothing to say.
+  assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#dc2626" } }]).components[0]), []);
+});
+
+test("scoreCaveats: the variants measured from a story of their own, by story, said as snap said it", () => {
+  const snap = snapWith([{ slug: "default", delta: {} }, { slug: "icon", delta: { width: 36 } }, { slug: "icon-sm", delta: { width: 32 } }]);
+  const [base, icon, small] = snap.components[0].variants;
+  base.combination = { size: "default" };
+  Object.assign(icon, { combination: { size: "icon" }, storyId: "forms-button--icon" });
+  Object.assign(small, { combination: { size: "icon-sm" }, storyId: "forms-button--icon-small" });
+  assert.deepEqual(scoreCaveats(snap.components[0]), [{
+    component: "Forms/Button", kind: "variant-stories",
+    stories: [{ story: "forms-button--icon", slugs: ["icon"] }, { story: "forms-button--icon-small", slugs: ["icon-sm"] }],
+    note: "measured `size=icon` from forms-button--icon and `size=icon-sm` from forms-button--icon-small, the rest from forms-button--default",
+  }]);
+  // Each variant from the component's story: nothing to say.
+  assert.deepEqual(scoreCaveats(snapWith([{ slug: "a" }, { slug: "b", delta: { width: 36 } }]).components[0]), []);
+  // Unless snap couldn't read the stories' args, and so chose no story for any variant.
+  const unread = snapWith([{ slug: "a" }, { slug: "b", delta: { width: 36 } }]).components[0];
+  unread.storiesUnread = "Execution context was destroyed";
+  assert.deepEqual(scoreCaveats(unread), [{
+    component: "Forms/Button", kind: "variant-stories", stories: [],
+    note: "snap couldn't read its stories' args (Execution context was destroyed), so it measured every variant from forms-button--default, choosing no story for any",
+  }]);
+});
+
+test("scoreCaveats: props that reach the component and change nothing measured are a caveat of their own, not the story's", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  const props = [{ name: "textAlign", type: "VARIANT", values: ["center", "left"], defaultValue: "center" }] as never[];
+  const variants = snap.components[0].variants;
+  const component = (markups: string[]) => ({
+    ...snap.components[0],
+    variantProperties: props,
+    warnings: [describeIdenticalVariants(variants, props, markups)!],
+  }) as never;
+  assert.deepEqual(scoreCaveats(component(["a", "b"])), [{ component: "Forms/Button", kind: "behavior-only", properties: ["textAlign"] }]);
+  assert.deepEqual(scoreCaveats(component(["a", "a"])), [{ component: "Forms/Button", kind: "identical-variants" }]);
+});
+
+test("scoreCaveats: names the values Storybook wouldn't render, and how many variants that left unmeasured", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", status: "arg_rejected" }, { slug: "c", status: "arg_rejected" }, { slug: "d", status: "timeout" }]);
+  const rejected = (name: string, value: string) => [{ name, value, reasons: ["not-in-options"], options: ["default"] }];
+  const component = snap.components[0];
+  component.variants[1].rejectedArgs = rejected("variant", "ghost") as never;
+  component.variants[2].rejectedArgs = [...rejected("variant", "ghost"), ...rejected("size", "xs")] as never;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-rejected"), [
+    { component: "Forms/Button", kind: "args-rejected", values: ["variant=ghost", "size=xs"], variants: 2 },
+  ]);
+  // Values applied through the preview were measured: nothing to say.
+  component.variants[1].status = "ok";
+  component.variants[2].status = "ok";
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-rejected"), []);
+});
+
+test("scoreCaveats: names the variants snap measured without checking their args", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }, { slug: "c" }, { slug: "d", status: "timeout" }]);
+  const component = snap.components[0];
+  component.variants[1].argsChecked = false;
+  component.variants[2].argsChecked = false;
+  // One not measured isn't scored, so isn't named here.
+  component.variants[3].argsChecked = false;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-unchecked"), [
+    { component: "Forms/Button", kind: "args-unchecked", slugs: ["b", "c"], variants: 2 },
+  ]);
+  delete component.variants[1].argsChecked;
+  delete component.variants[2].argsChecked;
+  assert.deepEqual(scoreCaveats(component).filter((c) => c.kind === "args-unchecked"), []);
+});
+
+test("verify: caveats are given for the components the readback scored, and fail nothing", () => {
+  const snap = snapWith([{ slug: "a" }]);
+  const trigger = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button" } }], 1);
+  const withTrigger = { ...snap, components: [{ ...snap.components[0], warnings: trigger }, { ...snap.components[0], title: "Forms/Other", warnings: trigger }] } as SnapResult;
+  const result = verify(withTrigger, readbackWith({ a: {} }), 0.5);
+  // A snap without trees: only the outer element was compared, which is said too.
+  assert.deepEqual(result.caveats, [{ component: "Forms/Button", kind: "closed-trigger", element: "button" }, { component: "Forms/Button", kind: "root-only" }]);
+  assert.equal(result.fidelity, 1);
+});
+
+test("scoreCaveats: a closed trigger snap didn't open carries why; an overlay it opened is said, not warned", () => {
+  // Two variants that measured apart: the trigger, and what it opened.
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { width: 448 } }]);
+  const reason = "clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each";
+  const warnings = describeMeasurementNotes("Dialog", [{ slug: "a", note: { kind: "closed-trigger", element: "button", reason } }], 2);
+  const [a, b] = snap.components[0].variants;
+  const component = {
+    ...snap.components[0], warnings,
+    variants: [a, { ...b, element: 'div[data-slot="dialog-content"]', portal: true, opened: { via: "click", trigger: "button" } }],
+  } as never;
+  assert.deepEqual(scoreCaveats(component), [
+    { component: "Forms/Button", kind: "closed-trigger", element: "button", reason },
+    { component: "Forms/Button", kind: "opened", note: 'measured open: snap clicked button in 1 of 2 variants to open it, and measured div[data-slot="dialog-content"]' },
+  ]);
+});
+
+// What a third live push's snap warned, word for word, which its verify
+// left out: caveats [] and nothing under the score.
+const PUSH3_ALIKE = "`state=done`, `state=uploading` and `state=processing` render identically: everything snap measures, the root and the elements in it, is the same wherever they were measured. If the code draws them differently, the story may not pass state through for these values; if it doesn't, they could be one Figma variant.";
+const PUSH3_PREVIEW = "Storybook wouldn't take some of ui/base/Badge's values from the story URL, and would have rendered those 2 variants without them, as its default: `variant` link, ghost: the story's argTypes options for it are 'default', 'secondary', 'destructive', 'outline'. snap set them through Storybook's preview instead and measured what the component renders with them, so the measurements are right. To let the story take them as well, add 'link', 'ghost' to argTypes.variant.options in ./registry/ui/badge-story/badge-base.stories.tsx.";
+
+test("verify: what snap warned is carried beside the score as caveats, each of its kind, and a warning of no kind as snap wrote it", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#ffffff" } }, { slug: "c", delta: { backgroundColor: "#000000" } }]);
+  const component = snap.components[0];
+  const options = ["default", "secondary", "destructive", "outline"];
+  component.variants[1].appliedVia = "preview";
+  component.variants[1].rejectedArgs = [{ name: "variant", value: "link", reasons: ["not-in-options"], options }];
+  // A value no story change lets the URL carry: snap doesn't warn of it, so neither does verify.
+  component.variants[2].appliedVia = "preview";
+  component.variants[2].rejectedArgs = [{ name: "cols", value: "2", reasons: ["number-in-url"] }];
+  const climbed = "snap measured div[data-slot=\"card\"] rather than span: span draws nothing and holds nothing that does, so its tree would be empty, and div[data-slot=\"card\"] is the nearest element around it that draws.";
+  component.warnings = [PUSH3_ALIKE, PUSH3_PREVIEW, describeNoOpProperties(["asChild"])!, "the browser could not render \"Geist\", so the measurements describe a substituted typeface. Load the font in Storybook.", climbed];
+  const result = verify(snap, readbackWith({ a: {}, b: { backgroundColor: "#ffffff" }, c: { backgroundColor: "#000000" } }), 0.5);
+  assert.deepEqual(result.caveats, [
+    { component: "Forms/Button", kind: "preview-set", values: ["variant=link"], variants: 1 },
+    { component: "Forms/Button", kind: "identical-values", values: ["state=done", "state=uploading", "state=processing"] },
+    { component: "Forms/Button", kind: "no-op-properties", properties: ["asChild"] },
+    { component: "Forms/Button", kind: "font-not-rendered", fonts: ["Geist"] },
+    { component: "Forms/Button", kind: "root-only" },
+    { component: "Forms/Button", kind: "snap-warning", warning: climbed },
+  ]);
+  // Said, and failing nothing.
+  assert.equal(result.fidelity, 1);
+  assert.equal(result.summary.drifted, 0);
+});
+
+test("unsaidWarnings: a warning whose caveat the measurements don't bear out is said as written; one said elsewhere is not said twice", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b", delta: { backgroundColor: "#ffffff" } }]);
+  const component = snap.components[0];
+  const identical = describeIdenticalVariants([
+    { slug: "a", status: "ok", combination: {}, delta: {}, error: null }, { slug: "b", status: "ok", combination: {}, delta: {}, error: null },
+  ] as never, [], [])!;
+  const shared = "2 components share the key \"Forms/Button\", which identifies a component in the readback and during verification, so their variants will collide and only one will be scored. Give them distinct Storybook titles.";
+  const truncated = "the element tree of every variant holds more than snap keeps (600 elements, 24 levels deep): up to 900 elements, so everything from `list/item` on was left out, and verify lists it as not measured.";
+  component.warnings = [identical, shared, truncated];
+  // This snap's variants measured differently, so no identical-variants
+  // caveat stands for the warning; the shared key is a snap issue; and
+  // the root-only caveat says the tree went unscored.
+  const own = scoreCaveats(component);
+  assert.deepEqual(own, []);
+  assert.deepEqual(unsaidWarnings(component, [...own, { component: "Forms/Button", kind: "root-only" }]), [{ component: "Forms/Button", kind: "snap-warning", warning: identical }]);
+  // A component's caveats stand for its own warnings only.
+  assert.deepEqual(unsaidWarnings(component, [{ component: "Forms/Other", kind: "root-only" }]).map((c) => c.warning), [identical, truncated]);
+});
+
+test("readSnapAge: carries a merged snap's time for each component, leaving out any that isn't a time", () => {
+  const dir = snapDir({ measuredAt: "2026-03-04T11:00:00.000Z", componentsMeasuredAt: { "Forms/A": "2026-03-04T11:00:00.000Z", "Forms/B": "2026-03-04T11:30:00.000Z", "Forms/C": "soon" } });
+  try {
+    const age = readSnapAge(join(dir, "styles.json"), 2 * 3_600_000, NOW);
+    assert.deepEqual(age.known && age.componentsMeasuredAt, { "Forms/A": "2026-03-04T11:00:00.000Z", "Forms/B": "2026-03-04T11:30:00.000Z" });
+    assert.equal(age.known && age.ageMs, 3_600_000);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+  const plain = snapDir({ measuredAt: "2026-03-04T11:00:00.000Z" });
+  try {
+    const age = readSnapAge(join(plain, "styles.json"), null, NOW);
+    assert.equal(age.known && "componentsMeasuredAt" in age, false);
+  } finally { rmSync(plain, { recursive: true, force: true }); }
+});
+
+// --- How Figma fits the text ---
+
+test("verifyVariant: where the browser cut a label off or wrapped it, Figma's text is scored on its width and where it ends", () => {
+  // Attachment's vertical title: Tailwind's truncate cut it off at 94px.
+  const cut = { ...BASE, text: { color: "#ffffff", fontFamily: "Helvetica", fontSize: 12, fontWeight: 600, layout: { width: 94, lines: 1, truncation: "ellipsis" as const } } };
+  const wrapped = { ...BASE, text: { ...cut.text, layout: { width: 102, lines: 3 } } };
+  const score = (measured: NormalizedStyles, textLayout: unknown) => verifyVariant("C", "s", measured, complete({ textLayout }) as never, 0.5);
+  const drift = (measured: NormalizedStyles, textLayout: unknown) => score(measured, textLayout).differences.map((d) => d.property).join();
+
+  assert.equal(score(cut, { width: 94, maxLines: 1 }).status, "verified");
+  assert.equal(score(cut, { width: 94.4, maxLines: 1 }).status, "verified", "within the geometry allowance");
+  // A text that hugs, as the live push built it, reads as null.
+  assert.equal(drift(cut, null), "textLayout");
+  assert.equal(drift(cut, { width: 140, maxLines: 1 }), "textLayout");
+  assert.equal(drift(cut, { width: 94, maxLines: null }), "textLayout", "fixed at the width but never cut off");
+  assert.equal(drift(cut, { width: 94, maxLines: 0 }), "textLayout", "cut off at its height, not after a line");
+  assert.equal(score(wrapped, { width: 102, maxLines: null }).status, "verified");
+  assert.equal(drift(wrapped, { width: 102, maxLines: 3 }), "textLayout", "cut off where the browser drew every line");
+
+  // Where the browser drew the label on one line at its own width, how
+  // Figma fits it isn't scored, however it is built.
+  const plain = { ...BASE, text: cut.text && { ...cut.text, layout: undefined } };
+  const verdict = (measured: NormalizedStyles, entry: Record<string, unknown>) => verifyVariant("C", "s", measured, complete(entry) as never, 0.5);
+  assert.equal(verdict(plain, { textLayout: { width: 10, maxLines: 1 } }).matched, verdict(plain, {}).matched);
+  assert.equal("uncompared" in verdict(plain, {}), false, "nothing measured is left uncompared");
+  // A readback from a template that didn't read it isn't compared on it,
+  // and says so, rather than count it a match.
+  const older = verdict(cut, { textLayout: undefined });
+  assert.equal(older.matched + 1, verdict(cut, { textLayout: { width: 94, maxLines: 1 } }).matched);
+  assert.deepEqual(older.uncompared, ["textLayout"]);
+  assert.equal(older.status, "verified");
+});
+
+test("verify: a text layout snap measured, against a readback from a template without textLayout, is reported as not compared", () => {
+  // A cut-down template, or an older skill beside a newer CLI, scored a
+  // title that runs past its card 100%, and said Figma matched.
+  const layout = { width: 94, lines: 1, truncation: "ellipsis" as const };
+  const snap = snapWithText({ color: "#ffffff", fontFamily: "Helvetica", fontSize: 12, fontWeight: 600, layout });
+  const older = verify(snap, readbackWith({ a: {} }), 0.5);
+  assert.deepEqual(older.readbackIssues, []);
+  assert.equal(older.fidelity, 1);
+  assert.deepEqual(older.uncompared, [{ component: "Forms/Button", property: "textLayout", variants: 1 }]);
+  // Read with the template as it is, it is compared, and nothing is left.
+  const current = verify(snap, readbackWith({ a: { textLayout: { width: 94, maxLines: 1 }, bound: {}, unbound: [] } }), 0.5);
+  assert.deepEqual(current.uncompared, []);
+  assert.equal(current.variants[0].status, "verified");
+  // Read with the template cut down to leave textLayout out alone, it is
+  // incomplete: the template that returns bindings returns textLayout.
+  const cut = verify(snap, readbackWith({ a: { bound: {}, unbound: [] } }), 0.5);
+  assert.deepEqual(cut.readbackIssues.map((i) => [i.problem, i.missing]), [["incomplete", ["textLayout"]]]);
+  assert.deepEqual(cut.uncompared, []);
+});
+
+// --- Variable bindings ---
+
+test("bindingReport: counts the fields bound, and names by component and field those bound to nothing at a variable's value", () => {
+  const unverified = new Set([JSON.stringify(["Forms/Button", "edited"])]);
+  const report = bindingReport({
+    "Forms/Button": {
+      nodeId: "1:2",
+      variants: {
+        a: { bound: { backgroundColor: "primary", borderRadiusUniform: "radius/md" }, unbound: [] },
+        b: { bound: { backgroundColor: "primary" }, unbound: ["borderRadiusUniform"] },
+        c: { bound: {}, unbound: ["borderRadiusUniform", "color"] },
+        // Not trusted, so not counted.
+        edited: { bound: {}, unbound: ["backgroundColor"] },
+        // From an earlier template, with no bindings to count.
+        old: { backgroundColor: "#2563eb" },
+      },
+    },
+  }, unverified);
+  assert.deepEqual(report, {
+    read: 3,
+    bound: 3,
+    unbound: [
+      { component: "Forms/Button", field: "borderRadiusUniform", variants: 2 },
+      { component: "Forms/Button", field: "color", variants: 1 },
+    ],
+  });
+  assert.deepEqual(bindingReport({}, new Set()), { read: 0, bound: 0, unbound: [] });
+});
+
+test("verify: bindings are reported beside the score and fail nothing, and a readback without them still scores", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  const result = verify(snap, readbackWith({ a: { textLayout: null, bound: { backgroundColor: "primary" }, unbound: [] }, b: { textLayout: null, bound: {}, unbound: ["backgroundColor"] } }), 0.5);
+  assert.equal(result.fidelity, 1);
+  assert.deepEqual(result.bindings, { read: 2, bound: 1, unbound: [{ component: "Forms/Button", field: "backgroundColor", variants: 1 }] });
+  assert.equal(result.readbackIssues.length, 0, "the later fields are sealed like any other, and none is required");
+  const older = verify(snap, readbackWith({ a: {}, b: {} }), 0.5);
+  assert.equal(older.fidelity, 1);
+  assert.deepEqual(older.bindings, { read: 0, bound: 0, unbound: [] });
+});
+
+
+// --- Element trees: what changes for snaps and readbacks from before them ------------
+
+const PUSH2 = fileURLToPath(new URL("../../../cli/__tests__/fixtures/push2/", import.meta.url));
+const push2 = (file: string) => JSON.parse(readFileSync(`${PUSH2}${file}`, "utf8"));
+
+test("push2 replay: a root-only snap and readback score as 0.4.0 did, 99.9%, plus a root-only caveat per component", () => {
+  const snap = push2("styles.json") as SnapResult;
+  const meta = push2("meta.json") as { measuredAt: string };
+  const result = verify(snap, push2("figma-readback.json") as ReadbackFile, 0.5, { measuredAt: meta.measuredAt });
+  assert.equal(result.summary.propertiesMatched, 1653);
+  assert.equal(result.summary.propertiesCompared, 1654);
+  assert.equal(result.elementFidelity, undefined, "no element score without trees");
+  const rootOnly = result.caveats.filter((c) => c.kind === "root-only");
+  assert.equal(rootOnly.length, 14);
+  assert.deepEqual(rootOnly[0], { component: "ui/base/Attachment", kind: "root-only" });
+  // Byte for byte the JSON 0.4.0 wrote, but for the caveats added, and the
+  // binding and textLayout fields 0.4.0's later readback work added.
+  const before = push2("verify-0.4.0.json") as Record<string, unknown>;
+  delete before.snapAge;
+  const now = JSON.parse(JSON.stringify(result)) as Record<string, unknown> & { caveats: { kind: string }[] };
+  assert.deepEqual(now.bindings, { read: 0, bound: 0, unbound: [] });
+  assert.deepEqual(now.uncompared, []);
+  delete now.bindings;
+  delete now.uncompared;
+  now.caveats = now.caveats.filter((c) => c.kind !== "root-only");
+  assert.deepEqual(now, before);
+  assert.equal(JSON.stringify(now), JSON.stringify(before), "in the same order, too");
+});
+
+test("root-only: the caveat counts the inner elements snap --root-only found, and leaves out a component with none", () => {
+  const snap = snapWith([{ slug: "a" }, { slug: "b" }]);
+  (snap.components[0].variants[0] as { innerElements?: number }).innerElements = 22;
+  (snap.components[0].variants[1] as { innerElements?: number }).innerElements = 20;
+  const readback = readbackWith({ a: {}, b: {} });
+  assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), [{ component: "Forms/Button", kind: "root-only", innerElements: 22 }]);
+  for (const v of snap.components[0].variants) (v as { innerElements?: number }).innerElements = 0;
+  assert.deepEqual(verify(snap, readback, 0.5).caveats.filter((c) => c.kind === "root-only"), []);
+});
+
+test("roots-only: a tree snap scored by its roots alone scores as 0.4.0 would, and says how much it left out", async () => {
+  const { fixture, readback } = await buildAndRead("card");
+  const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
+  assert.equal(roots.elementFidelity, undefined);
+  assert.equal(roots.summary.elements, undefined);
+  assert.ok(roots.variants.every((v) => v.elements === undefined));
+  assert.deepEqual(roots.caveats.filter((c) => c.kind === "root-only"), [{ component: "ui/base/Card", kind: "root-only", innerElements: 22 }]);
+  const full = verify(fixture, readback, 0.5);
+  assert.equal(headlineFidelity(full), full.elementFidelity);
+  assert.equal(headlineFidelity(roots), roots.fidelity);
+});
+
+test("roots-only: an element-tree build's roots score their radius in the browser's terms, and not the padding and gap its children's places stand for", async () => {
+  // button-icon's root has its border outside its fill (padding-box),
+  // built as an OUTSIDE stroke with the radius less the border; its
+  // children are placed, absolutely or in auto layout spaced by their
+  // margins too.
+  for (const autoLayout of [false, true]) {
+    const { fixture, readback } = await buildAndRead("button-icon", { autoLayout });
+    const roots = verify(fixture, readback, 0.5, { rootsOnly: true });
+    assert.deepEqual(roots.variants.flatMap((v) => v.differences.map((d) => `${v.slug} ${d.property}`)), [], autoLayout ? "auto layout" : "absolute");
+    assert.equal(roots.fidelity, 1);
+  }
+});
+
+test("root-only snap, element readback: roots scored from the root fields, boxShadow among them, the records left alone", async () => {
+  const { fixture, readback } = await buildAndRead("inputotp");
+  const snap = JSON.parse(JSON.stringify(fixture)) as SnapResult & { components: Record<string, unknown>[] };
+  for (const c of snap.components) delete c.tree;
+  const result = verify(snap, readback, 0.5);
+  assert.equal(result.elementFidelity, undefined);
+  assert.deepEqual(result.readbackIssues, []);
+  assert.equal(result.variants[0].status, "verified");
+  assert.equal(result.summary.notMeasured, 0, "an element readback says what it couldn't measure, even here");
+  // A shadow the root fields didn't carry before trees is compared now.
+  const shadowed = JSON.parse(JSON.stringify(snap)) as SnapResult;
+  shadowed.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 1, blur: 2, spread: 0, color: "#0000000d", inset: false }];
+  const drifted = verify(shadowed, readback, 0.5);
+  assert.deepEqual(drifted.variants[0].differences.map((d) => d.property), ["boxShadow"]);
+});
+
+test("element readback: a later part needs only its part's fields, every other entry the tree fields too", () => {
+  const part = { name: "a=b", source: "measured", tpl: 2, built: null, part: [5, 2, 7], tree: [] };
+  assert.deepEqual(missingReadbackFields(part), []);
+  assert.deepEqual(missingReadbackFields({ ...part, part: [0, 5, 7] }), [...READBACK_FIELDS.filter((f) => f !== "source"), "boxShadow", "designerLayers"]);
+  assert.deepEqual(missingReadbackFields({ ...part, tree: [["k", "T", 0, 0, 1, 1]] }), ["tree[0], a T record of 6 fields, not 23"]);
+  assert.deepEqual(missingReadbackFields({ ...part, tree: "nodes" }), ["tree, as a list of records"]);
+  assert.equal(slugOfKey("size-sm#12"), "size-sm");
+  assert.equal(slugOfKey("size-sm"), "size-sm");
+  assert.equal(slugOfKey("#text"), "#text");
+});
+
+test("element report: the headline is element fidelity beside the share of properties, then what drifted by key and node", async () => {
+  const { fixture, readback } = await buildAndRead("switch");
+  const clean = formatElementReport(verify(fixture, readback, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(clean, /^\nFidelity: 100\.0% of elements \(4 of 4 verified\), 100\.0% of properties \(\d+\/\d+\)$/m);
+  assert.match(clean, /missing 0 · drifted 0 · extra 0 · designer layers 0 · not measured 0/);
+  const thumb = readback.components["ui/base/Switch"].variants["size-sm"].tree![1] as unknown[];
+  const tampered = JSON.parse(JSON.stringify(readback)) as ReadbackFile;
+  const entry = tampered.components["ui/base/Switch"].variants["size-sm"];
+  (entry.tree![1] as unknown[])[6] = ["#f5f5f5"];
+  const { checksum: _c, ...rest } = entry;
+  entry.checksum = readbackChecksum(tampered.components["ui/base/Switch"].nodeId!, "size-sm", rest);
+  const report = formatElementReport(verify(fixture, tampered, 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  // The thumb's fill alone wrong: it scores most of one element, and the
+  // count beside the percentage is of the elements right on everything.
+  assert.match(report, /Fidelity: 97\.9% of elements \(3 of 4 verified\)/);
+  assert.match(report, /worst: ui\/base\/Switch 9\d\.\d% of elements/);
+  assert.ok(report.includes(`~ ui/base/Switch size=sm › switch-thumb: fills measured ["#ffffff"], Figma ["#f5f5f5"] (node ${String(thumb[14])})`), report);
+  // A Switch has nothing verify can't score, and the coverage line says so.
+  assert.match(clean, /^ {2}coverage 100\.0%: every property was scored$/m);
+  assert.match(report, /^ {2}coverage 100\.0%: every property was scored$/m);
+  // A keyed layer snap doesn't measure is an element too, scoring 0: 4 of 5.
+  const extra = await buildAndRead("switch");
+  const added = await extra.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(extra.built.variants[0].id)}); const f = figma.createFrame(); v.appendChild(f); f.setSharedPluginData('storysync', 'k', 'switch-thumb:2'); return f.id;`);
+  assert.ok(added.ok, added.text);
+  const withExtra = formatElementReport(verify(extra.fixture, await reread(extra.figma, extra.fixture, extra.built), 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(withExtra, /Fidelity: 80\.0% of elements \(4 of 5 verified\)/);
+  assert.ok(withExtra.includes(`+ ui/base/Switch size=default › switch-thumb:2: in Figma (node ${String(added.value)}), but snap no longer measures it`), withExtra);
+  // Designer layers, 4 in each of Toggle's 6 variants: 20 named, the rest counted.
+  const toggle = await buildAndRead("toggle");
+  for (const v of toggle.built.variants) {
+    const run = await toggle.figma.run(`const v = await figma.getNodeByIdAsync(${JSON.stringify(v.id)}); for (let i = 0; i < 4; i++) { const r = figma.createRectangle(); r.name = 'Note ' + i; v.appendChild(r); }`);
+    assert.ok(run.ok, run.text);
+  }
+  const noted = formatElementReport(verify(toggle.fixture, await reread(toggle.figma, toggle.fixture, toggle.built), 0.5)).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.equal(noted.match(/a layer nothing keyed/g)?.length, 20);
+  assert.match(noted, /… and 4 more \(--json lists every one\)/);
+  assert.deepEqual(formatElementReport(verify(loadTreeFixture("switch"), readback, 0.5, { rootsOnly: true })), []);
 });

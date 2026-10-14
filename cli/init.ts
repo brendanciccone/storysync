@@ -1,7 +1,7 @@
 // `storysync init` — detect Storybook MCP setup gaps and offer to fix them.
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, relative } from "node:path";
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve, relative } from "node:path";
 import { execSync } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Interface } from "node:readline";
@@ -29,22 +29,80 @@ const MIN_STORYBOOK_MAJOR = 10;
 const ADDON_MCP_FIRST_LOCKSTEP = "10.6.0-alpha.4";
 const ADDON_MCP_PRE_LOCKSTEP_RANGE = "^0.7.0";
 
-/**
- * The package manager whose lockfile is nearest the project. Looks upward, as
- * the action does, since a package in a workspace has none of its own: npm
- * run there can't install a `workspace:` dependency, and otherwise writes a
- * second lockfile and node_modules beside the workspace's. Stops at the
- * repository root, so a stray lockfile above it is not taken for the
- * project's. npm when there is none.
- */
-export function detectPackageManager(projectPath: string): PackageManager {
-  for (let dir = resolve(projectPath); ; dir = dirname(dir)) {
-    if (existsSync(join(dir, "pnpm-lock.yaml"))) return "pnpm";
-    if (existsSync(join(dir, "yarn.lock"))) return "yarn";
-    if (existsSync(join(dir, "bun.lock")) || existsSync(join(dir, "bun.lockb"))) return "bun";
-    if (existsSync(join(dir, "package-lock.json")) || existsSync(join(dir, "npm-shrinkwrap.json"))) return "npm";
-    if (existsSync(join(dir, ".git")) || dirname(dir) === dir) return "npm";
+const LOCKFILES: [string, PackageManager][] = [
+  ["pnpm-lock.yaml", "pnpm"],
+  ["yarn.lock", "yarn"],
+  ["bun.lock", "bun"],
+  ["bun.lockb", "bun"],
+  ["package-lock.json", "npm"],
+  ["npm-shrinkwrap.json", "npm"],
+];
+
+export interface PackageManagerChoice {
+  pm: PackageManager;
+  /** Why it was chosen, as said when it turns out not to be installed. */
+  reason: string;
+}
+
+/** The package manager a package.json's `packageManager` field names, as corepack reads it. */
+function declaredPackageManager(dir: string): { pm: PackageManager; declared: string } | null {
+  try {
+    const declared = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8").replace(/^\uFEFF/, "")) as { packageManager?: unknown }).packageManager;
+    if (typeof declared !== "string") return null;
+    const name = declared.split("@")[0];
+    return name === "pnpm" || name === "yarn" || name === "bun" || name === "npm" ? { pm: name, declared } : null;
+  } catch {
+    // None, or one that doesn't parse, which init reports when it reads it.
+    return null;
   }
+}
+
+/**
+ * The package manager to install with, and why. Looks upward, as the action
+ * does, since a package in a workspace has none of its own: npm run there
+ * can't install a `workspace:` dependency, and otherwise writes a second
+ * lockfile and node_modules beside the workspace's. The nearest directory
+ * with either decides. In it, package.json's `packageManager` field wins, as
+ * it does for corepack and the action: a stale lockfile from another
+ * package manager is often left beside the real one. Stops at the
+ * repository root, so a stray lockfile above it is not taken for the
+ * project's. npm when there is neither.
+ */
+export function choosePackageManager(projectPath: string): PackageManagerChoice {
+  const start = resolve(projectPath);
+  const shown = (dir: string, name: string) => relative(start, join(dir, name)) || name;
+  for (let dir = start; ; dir = dirname(dir)) {
+    const declared = declaredPackageManager(dir);
+    if (declared) {
+      return { pm: declared.pm, reason: `${shown(dir, "package.json")}'s packageManager field names ${declared.declared}` };
+    }
+    const lockfile = LOCKFILES.find(([name]) => existsSync(join(dir, name)));
+    if (lockfile) return { pm: lockfile[1], reason: `the project has ${shown(dir, lockfile[0])}` };
+    if (existsSync(join(dir, ".git")) || dirname(dir) === dir) {
+      return { pm: "npm", reason: "the project has no lockfile and no packageManager field" };
+    }
+  }
+}
+
+/** The package manager to install with; see choosePackageManager. */
+export function detectPackageManager(projectPath: string): PackageManager {
+  return choosePackageManager(projectPath).pm;
+}
+
+/**
+ * Whether `command` is a file on PATH, as the shell running it would look
+ * for it: with each of PATHEXT's extensions on Windows.
+ */
+export function isOnPath(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const dirs = (env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean);
+  const extensions = process.platform === "win32" ? ["", ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")] : [""];
+  return dirs.some((dir) => extensions.some((ext) => {
+    try {
+      return statSync(join(dir, command + ext)).isFile();
+    } catch {
+      return false;
+    }
+  }));
 }
 
 export function findStorybookConfig(projectPath: string): StorybookConfigFile | null {
@@ -245,14 +303,60 @@ export function hasAddonMcpInConfig(content: string): boolean {
 /**
  * Adds addon-mcp at the start of the `addons` array. One commented out, often
  * left beside the real one, is passed over: written into, it uncomments the
- * line it lands on and breaks the file, or never loads.
+ * line it lands on and breaks the file, or never loads. The key may be
+ * quoted, as `storybook init` writes it (`"addons": [`), or not.
  */
 export function addAddonToConfig(content: string): { content: string; ok: boolean } {
-  const m = maskComments(content).match(/(addons\s*:\s*\[)/);
+  const m = maskComments(content).match(/(?<![\w$])(["']?)addons\1\s*:\s*\[/);
   if (!m) return { content, ok: false };
   const insertAt = (m.index ?? 0) + m[0].length;
-  const entry = `\n    { name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const entry = `${newline}${entryIndent(content, m.index ?? 0, insertAt)}{ name: "@storybook/addon-mcp", options: { toolsets: { docs: true } } },`;
   return { content: content.slice(0, insertAt) + entry + content.slice(insertAt), ok: true };
+}
+
+/**
+ * How to indent an entry of the `addons` array, in the file's own style: as
+ * the array's first entry is, where it has one on a line of its own, and
+ * otherwise a level deeper than the line `addons` is on. A level is a tab in
+ * a file whose code is indented with tabs, and otherwise the file's own
+ * step of spaces (see indentStep). A line indented with spaces in a file
+ * indented with tabs reads as a mistake, and fails a linter that enforces
+ * tabs. Comments are left out: a JSDoc block's ` * ` lines are indented a
+ * space, and a comment may be indented with tabs in a file of spaces.
+ */
+function entryIndent(content: string, keyAt: number, insertAt: number): string {
+  const next = /^[ \t]*\r?\n(?:[ \t]*\r?\n)*([ \t]*)(\S)/.exec(content.slice(insertAt));
+  if (next && next[2] !== "]") return next[1];
+  const lineStart = content.lastIndexOf("\n", keyAt - 1) + 1;
+  const own = /^[ \t]*/.exec(content.slice(lineStart))?.[0] ?? "";
+  const indents = [...maskComments(content).matchAll(/^([ \t]*)\S/gm)].map((line) => line[1]);
+  if (indents.some((indent) => indent.startsWith("\t"))) return `${own}\t`;
+  return own + " ".repeat(indentStep(indents.map((indent) => indent.length)));
+}
+
+/**
+ * A file's step of spaces, from the depth of each line of its code in turn:
+ * the rise from one line to the next that is most common, the smaller of
+ * two as common, and 2 where no line is deeper than the one before. Not the
+ * least depth, which a line aligned under an open bracket, three spaces in
+ * a file of two, would set.
+ */
+function indentStep(depths: number[]): number {
+  const rises = new Map<number, number>();
+  for (let i = 1; i < depths.length; i++) {
+    const rise = depths[i] - depths[i - 1];
+    if (rise > 0) rises.set(rise, (rises.get(rise) ?? 0) + 1);
+  }
+  let step = 2;
+  let most = 0;
+  for (const [rise, count] of rises) {
+    if (count > most || (count === most && rise < step)) {
+      step = rise;
+      most = count;
+    }
+  }
+  return step;
 }
 
 // One reader of stdin for every prompt. A readline interface per prompt lost
@@ -320,8 +424,28 @@ function inProject(command: string, projectPath: string): string {
   return `cd ${/^[\w@/.:+\\-]+$/.test(dir) ? dir : `"${dir}"`} && ${command}`;
 }
 
-/** Asks before installing `spec`. A failed install ends init with exit code 1. */
-async function offerInstall(pm: PackageManager, spec: string, projectPath: string): Promise<"installed" | "skipped" | "failed"> {
+/**
+ * How a command execSync ran ended, from its error: the exit code, or the
+ * signal that stopped it, when it was killed and has no code. Said as
+ * "exited with Error: Command failed: ..." before.
+ */
+export function howItEnded(err: unknown): string {
+  const { status, signal } = (err ?? {}) as { status?: unknown; signal?: unknown };
+  if (typeof status === "number") return `exited with code ${status}`;
+  if (typeof signal === "string") return `was stopped by ${signal}`;
+  return `couldn't run: ${err instanceof Error ? err.message : String(err)}`;
+}
+
+/**
+ * Asks before installing `spec`. A failed install exits 1 in the end, and
+ * says how to finish by hand: the command, and, when the package manager
+ * isn't installed at all, which one that is and why init chose it. Only the
+ * raw "Command failed" was printed, with no command to paste. PATH is looked
+ * at rather than the exit code: sh exits 127 for a command it can't find,
+ * but so does a package manager whose own shim can't, and cmd.exe exits 1.
+ */
+async function offerInstall(choice: PackageManagerChoice, spec: string, projectPath: string): Promise<"installed" | "skipped" | "failed"> {
+  const { pm } = choice;
   const command = installCommand(pm, spec);
   if (!(await confirm(`Install ${spec} via ${pm}?`))) {
     console.log(chalk.dim(`  Skipped. Run manually: ${inProject(command, projectPath)}`));
@@ -331,7 +455,14 @@ async function offerInstall(pm: PackageManager, spec: string, projectPath: strin
     execSync(command, { cwd: projectPath, stdio: "inherit" });
     return "installed";
   } catch (err) {
-    console.log(chalk.red(`Install failed: ${String(err)}`));
+    if (!isOnPath(pm)) {
+      console.log(chalk.red(`Install failed: ${pm} isn't installed, or isn't on PATH. init chose ${pm} because ${choice.reason}.`));
+      console.log(chalk.dim(`  Install ${pm}, or if the project uses another package manager, name it in package.json's packageManager field and run init again.`));
+    } else {
+      // The package manager's own output, above, says why.
+      console.log(chalk.red(`Install failed: ${pm} ${howItEnded(err)}.`));
+    }
+    console.log(chalk.dim(`  Run manually: ${inProject(command, projectPath)}`));
     process.exitCode = 1;
     return "failed";
   }
@@ -370,7 +501,8 @@ async function checkAndFix(projectInput: string): Promise<void> {
   }
   console.log(chalk.green("✔") + ` Found ${relative(projectPath, config.path)}`);
 
-  const pm = detectPackageManager(projectPath);
+  const choice = choosePackageManager(projectPath);
+  const { pm } = choice;
 
   // The installed version when there is one: `^10.5.0` in package.json may
   // well be 10.6 on disk, and the addon has to match what actually runs.
@@ -403,6 +535,7 @@ async function checkAndFix(projectInput: string): Promise<void> {
   let updatedContent = config.content;
   let configChanged = false;
   let installed = false;
+  let installFailed = false;
 
   if (!hasAddon || addonTooNew) {
     const spec = addonMcpInstallSpec(sbVersion);
@@ -412,9 +545,12 @@ async function checkAndFix(projectInput: string): Promise<void> {
         `but this project has Storybook ${sbVersion}, so Storybook can't load the addon.`,
       ));
     }
-    const outcome = await offerInstall(pm, spec, projectPath);
-    if (outcome === "failed") return;
+    // A failed install still goes on to offer the registration, which
+    // doesn't depend on it: the addon is registered by name, and Storybook
+    // skips an addon it can't resolve until it is installed.
+    const outcome = await offerInstall(choice, spec, projectPath);
     installed = outcome === "installed";
+    installFailed = outcome === "failed";
     if (addonTooNew && !installed) {
       // Declined: the addon is left as it is, and it still doesn't load.
       console.log(chalk.dim(`  Or upgrade Storybook: ${inProject(upgradeCommand(pm), projectPath)}`));
@@ -441,7 +577,10 @@ async function checkAndFix(projectInput: string): Promise<void> {
     console.log(chalk.green(`\n✔ Updated ${relative(projectPath, config.path)}`));
   }
 
-  if (configChanged || installed) {
+  if (installFailed) {
+    console.log(chalk.dim("\nOnce the addon is installed, restart Storybook, then run:"));
+    console.log(chalk.dim("  storysync list --storybook http://localhost:6006"));
+  } else if (configChanged || installed) {
     console.log(chalk.dim("\nRestart Storybook to apply changes, then run:"));
     console.log(chalk.dim("  storysync list --storybook http://localhost:6006"));
   }

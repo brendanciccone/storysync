@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeStyles,
+  normalizeTextLayout,
   normalizeColor,
   pxToNumber,
   firstFontFamily,
@@ -18,8 +19,17 @@ import {
   componentSlug,
   diffFromBase,
   applyDelta,
+  componentSlots,
+  contentSlots,
+  chooseMeasuredElement, isToastComponent,
+  describeOpenFailure,
+  isClosedTrigger,
+  openInteractions,
+  resolveFontFamily,
+  isFontKeyword,
+  CAPTURED_PROPERTIES,
 } from "../snap-normalize.js";
-import type { RawComputedStyles } from "../snap-normalize.js";
+import type { RawComputedStyles, StoryNode, PortalNode } from "../snap-normalize.js";
 import type { FigmaVariantProperty } from "../mapper.js";
 
 // Captured from a real Chromium render of a Storybook story, so the fixtures
@@ -94,8 +104,8 @@ test("normalizeColor: partial alpha is preserved", () => {
   assert.equal(normalizeColor("rgba(0, 0, 0, 0.5)"), "#00000080");
 });
 
-test("normalizeColor: reads Chromium's CSS Color 4 serialisations rather than recording no fill", () => {
-  // Chromium reports a computed colour in its authored space. Each of these
+test("normalizeColor: reads Chromium's CSS Color 4 serializations rather than recording no fill", () => {
+  // Chromium reports a computed color in its authored space. Each of these
   // used to come back null, which snap records as nothing drawn: Tailwind v4's
   // red-500 button measured as unfilled.
   assert.equal(normalizeColor("oklch(0.637 0.237 25.331)"), "#fb2c36");
@@ -108,7 +118,7 @@ test("normalizeColor: reads Chromium's CSS Color 4 serialisations rather than re
   assert.equal(normalizeColor("color(display-p3 1 0 0)"), "#ff0000");
 });
 
-test("normalizeColor: a CSS Color 4 colour with zero alpha is still absent", () => {
+test("normalizeColor: a CSS Color 4 color with zero alpha is still absent", () => {
   // color-mix(in oklab, red 0%, transparent) computes to this.
   assert.equal(normalizeColor("oklab(0 0 0 / 0)"), null);
   assert.equal(normalizeColor("oklch(0.5 0.1 30 / none)"), null);
@@ -118,6 +128,9 @@ test("firstFontFamily: takes the first family and strips quotes", () => {
   assert.equal(firstFontFamily("Helvetica, Arial, sans-serif"), "Helvetica");
   assert.equal(firstFontFamily('"Inter var", sans-serif'), "Inter var");
   assert.equal(firstFontFamily(undefined), "");
+  // A stand-in snap drew (fonts.ts), where no probe of the stack says so, by the name Figma has it under.
+  assert.equal(firstFontFamily('"storysync Inter", ui-sans-serif, system-ui'), "Inter");
+  assert.equal(firstFontFamily("storysync Roboto Mono, monospace"), "Roboto Mono");
 });
 
 // --- Borders ----------------------------------------------------------------
@@ -294,16 +307,16 @@ test("normalizeStyles: a percentage letter-spacing is a share of the font size",
   assert.equal(text.text?.letterSpacing, -1);
 });
 
-test("normalizeStyles: an opacity between the root and its text is folded into the text colour", () => {
+test("normalizeStyles: an opacity between the root and its text is folded into the text color", () => {
   // <button style="color: #fff"><span style="opacity: 0.6">Draft</span></button>:
   // drawn at 60%, so verify can tell it from an opaque white label.
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, opacity: "0.6" }).text?.color, "#ffffff99");
-  // A translucent colour's alpha is multiplied, not replaced.
+  // A translucent color's alpha is multiplied, not replaced.
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, color: "rgba(255, 255, 255, 0.5)", opacity: "0.5" }).text?.color, "#ffffff40");
-  // Opaque stays #rrggbb, and nothing left is no colour at all.
+  // Opaque stays #rrggbb, and nothing left is no color at all.
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, LABEL).text?.color, "#ffffff");
   assert.equal(normalizeStyles(PRIMARY_SM, BOX, { ...LABEL, opacity: "0" }).text?.color, null);
-  // The root's own opacity stays the frame's, out of the text colour.
+  // The root's own opacity stays the frame's, out of the text color.
   const faded = normalizeStyles(withOverrides({ opacity: "0.4" }), BOX, LABEL);
   assert.equal(faded.opacity, 0.4);
   assert.equal(faded.text?.color, "#ffffff");
@@ -321,7 +334,7 @@ test("normalizeStyles: a gradient fill is recorded, though its backgroundColor i
   assert.equal(s.backgroundImage, "linear-gradient(90deg, #2563eb, #7c3aed)");
 });
 
-test("normalizeStyles: a gradient's colours are written as hex, in whatever space Chromium gives them", () => {
+test("normalizeStyles: a gradient's colors are written as hex, in whatever space Chromium gives them", () => {
   // Tailwind v4's bg-linear-to-r from-blue-600 to-violet-600.
   const tailwind = normalizeStyles(withOverrides({
     "background-image": "linear-gradient(to right, oklch(0.546 0.245 262.881) 0%, oklch(0.541 0.281 293.009) 100%)",
@@ -345,6 +358,35 @@ test("normalizeStyles: an image layered over a fill keeps both, and a url() as w
 test("normalizeStyles: no background image writes no field, so styles.json reads as it did", () => {
   assert.equal("backgroundImage" in normalizeStyles(withOverrides({ "background-image": "none" }), BOX), false);
   assert.equal("backgroundImage" in normalizeStyles(PRIMARY_SM, BOX), false);
+});
+
+// --- Background clip --------------------------------------------------------
+
+test("normalizeStyles: a background clipped to the padding box is recorded, a border-box one writes no field", () => {
+  // shadcn's Button has bg-clip-padding, so its fill stops at its transparent
+  // border; its Badge doesn't, so the fill runs under the border. The build
+  // draws the two differently, so snap records which.
+  assert.equal(normalizeStyles(withOverrides({ "background-clip": "padding-box" }), BOX).backgroundClip, "padding-box");
+  assert.equal("backgroundClip" in normalizeStyles(withOverrides({ "background-clip": "border-box" }), BOX), false);
+  // A styles.json from before it was measured reads as it did.
+  assert.equal("backgroundClip" in normalizeStyles(PRIMARY_SM, BOX), false);
+  // A value per layer, top first: the bottom one clips the color.
+  assert.equal(normalizeStyles(withOverrides({ "background-clip": "border-box, content-box" }), BOX).backgroundClip, "content-box");
+  assert.equal("backgroundClip" in normalizeStyles(withOverrides({ "background-clip": "padding-box, border-box" }), BOX), false);
+});
+
+test("the browser side is asked for background-clip, which normalizeStyles reads", () => {
+  // normalizeStyles only sees the properties snap-browser reads, so without
+  // this every element would measure as border-box.
+  assert.ok(CAPTURED_PROPERTIES.includes("background-clip"));
+});
+
+test("diffFromBase: a variant whose background runs under its border records null against a padding-box base", () => {
+  const base = normalizeStyles(withOverrides({ "background-clip": "padding-box" }), BOX);
+  const other = normalizeStyles(PRIMARY_SM, BOX);
+  const delta = diffFromBase(base, other);
+  assert.deepEqual(delta, { backgroundClip: null });
+  assert.equal(applyDelta(base, delta).backgroundClip, null);
 });
 
 test("diffFromBase: a gradient variant of a solid button differs from it", () => {
@@ -406,7 +448,7 @@ test("parseBoxShadow: handles negative offsets and hex colors", () => {
   assert.deepEqual(layer, { offsetX: -2, offsetY: -4, blur: 6, spread: 1, color: "#ff0000", inset: false });
 });
 
-test("parseBoxShadow: reads a colour Chromium writes in oklch, oklab or color()", () => {
+test("parseBoxShadow: reads a color Chromium writes in oklch, oklab or color()", () => {
   // Chromium's computed box-shadow for a ring and an inset layer in Tailwind v4's red-500.
   assert.deepEqual(
     parseBoxShadow("oklch(0.637 0.237 25.331) 0px 1px 2px 3px, oklch(0.637 0.237 25.331 / 0.5) 1px 1px 0px 0px inset"),
@@ -438,14 +480,14 @@ test("parseBoxShadow: drops the 0 0 #0000 layers Tailwind fills its unused slots
   );
 });
 
-test("parseBoxShadow: a layer with no offset, blur or spread draws nothing, whatever its colour", () => {
+test("parseBoxShadow: a layer with no offset, blur or spread draws nothing, whatever its color", () => {
   // v3's ring-1: a white ring-offset layer of zero size, the ring, an empty slot.
   assert.deepEqual(
     parseBoxShadow("rgb(255, 255, 255) 0px 0px 0px 0px, rgb(59, 130, 246) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"),
     [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#3b82f6", inset: false }],
   );
   assert.deepEqual(parseBoxShadow("rgb(255, 255, 255) 0px 0px 0px 0px inset"), []);
-  // A fully transparent layer draws nothing however big, in any colour space.
+  // A fully transparent layer draws nothing however big, in any color space.
   assert.deepEqual(parseBoxShadow("oklab(0 0 0 / 0) 0px 4px 6px -1px"), []);
   assert.deepEqual(parseBoxShadow("transparent 0px 4px 6px 0px"), []);
 });
@@ -459,7 +501,7 @@ test("isFullyTransparent: zero alpha in any form, and nothing it can't read", ()
   }
 });
 
-test("normalizeStyles: a Tailwind v4 component's colours, as Chromium computes them, all reach hex", () => {
+test("normalizeStyles: a Tailwind v4 component's colors, as Chromium computes them, all reach hex", () => {
   const sides = ["top", "right", "bottom", "left"];
   const raw = withOverrides({
     "background-color": "oklch(0.637 0.237 25.331)",
@@ -494,7 +536,7 @@ test("isPassThroughWrapper: a block or contents wrapper that draws nothing is lo
   assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "transparent" }), true);
 });
 
-test("isPassThroughWrapper: a transparent background in any colour space is transparent", () => {
+test("isPassThroughWrapper: a transparent background in any color space is transparent", () => {
   // Tailwind v4's bg-black/0, a color-mix in oklab, computes to this. Read as
   // a fill, it stopped the descent and snap measured the full-width wrapper.
   assert.equal(isPassThroughWrapper({ ...WRAPPER, "background-color": "oklab(0 0 0 / 0)" }), true);
@@ -507,7 +549,7 @@ test("isPassThroughWrapper: a wrapper that draws anything is the component", () 
   for (const [property, value] of [
     ["background-color", "oklch(0.637 0.237 25.331)"],
     ["background-color", "oklab(0 0 0 / 0.05)"],
-    // A colour it can't read is not taken for transparent.
+    // A color it can't read is not taken for transparent.
     ["background-color", "device-cmyk(0 0 0 1)"],
     ["background-image", "linear-gradient(90deg, rgb(37, 99, 235), rgb(124, 58, 237))"],
     ["box-shadow", "rgba(0, 0, 0, 0.1) 0px 1px 2px 0px"],
@@ -562,7 +604,8 @@ test("encodeStoryArgs: values with spaces are encodable", () => {
 });
 
 // Storybook drops out-of-charset values without a word, then renders the story
-// with its defaults — so these must be reported, never measured.
+// with its defaults — so these must be set another way or reported, never
+// measured as they render from the URL.
 test("encodeStoryArgs: reports values Storybook would silently drop", () => {
   const tone: FigmaVariantProperty = {
     name: "tone", type: "VARIANT", values: ["plain", "Nav/Primary"], defaultValue: "plain",
@@ -576,16 +619,18 @@ test("encodeStoryArgs: keeps encodable pairs and reports only the bad one", () =
   const tone: FigmaVariantProperty = {
     name: "tone", type: "VARIANT", values: ["Nav/Primary"], defaultValue: "Nav/Primary",
   };
-  const { param, unsupported } = encodeStoryArgs(
-    { variant: "danger", tone: "Nav/Primary" },
+  const { param, unsupported, unsupportedNames } = encodeStoryArgs(
+    { variant: "danger", tone: "Nav/Primary", "data.kind": "x" },
     [VARIANT, tone],
   );
   assert.equal(param, "variant:danger");
-  assert.deepEqual(unsupported, ["tone=Nav/Primary"]);
+  assert.deepEqual(unsupported, ["tone=Nav/Primary", "data.kind=x"]);
+  // By name too, for setting them another way: an unsafe name included.
+  assert.deepEqual(unsupportedNames, ["tone", "data.kind"]);
 });
 
 test("encodeStoryArgs: an empty combination encodes to nothing", () => {
-  assert.deepEqual(encodeStoryArgs({}, []), { param: null, unsupported: [] });
+  assert.deepEqual(encodeStoryArgs({}, []), { param: null, unsupported: [], unsupportedNames: [] });
 });
 
 test("buildStoryUrl: builds an iframe URL and encodes the query", () => {
@@ -734,4 +779,535 @@ test("diffFromBase: a font that stopped resolving shows up as a delta", () => {
   const base = normalizeStyles(PRIMARY_SM, BOX, null, true);
   const variant = normalizeStyles(PRIMARY_SM, BOX, null, false);
   assert.deepEqual(diffFromBase(base, variant), { fontAvailable: false });
+});
+
+// --- fonts: what the browser drew with ---------------------------------------
+
+test("resolveFontFamily: a system stack records the font Chrome drew, not -apple-system", () => {
+  // Tailwind v4's default stack as Chromium computes it: BlinkMacSystemFont
+  // becomes "system-ui", and Chrome implements no -apple-system at all, so a
+  // canvas draws `-apple-system, monospace` exactly as monospace.
+  const resolved = resolveFontFamily({
+    families: ["-apple-system", "system-ui", "Segoe UI", "Roboto", "sans-serif"],
+    applied: [false, true, false, true, null],
+  });
+  assert.deepEqual(resolved, { family: "system-ui", available: null });
+});
+
+test("resolveFontFamily: a stand-in snap drew is recorded as the family Figma sets, with what the code asked for", () => {
+  // Tailwind's stack, with the stand-in snap puts ahead of it (fonts.ts).
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Inter", "ui-sans-serif", "system-ui", "sans-serif"], applied: [true, false, null, null] }),
+    { family: "Inter", available: true, asked: "system-ui" },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Roboto Mono", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"], applied: [true, false, false, true, null] }),
+    { family: "Roboto Mono", available: true, asked: "Menlo" },
+  );
+  // Inter's second family, its other scripts (fonts.ts), is snap's too, never what the code asked for.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Inter", "storysync Inter scripts", "ui-sans-serif", "system-ui"], applied: [true, true, false, null] }),
+    { family: "Inter", available: true, asked: "system-ui" },
+  );
+  // A stand-in that didn't load drew nothing: the stack is read as before.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["storysync Inter", "ui-sans-serif", "system-ui"], applied: [false, false, null] }),
+    { family: "system-ui", available: null },
+  );
+});
+
+test("resolveFontFamily: Tailwind's ui-sans-serif, which only Safari implements, is passed over", () => {
+  assert.deepEqual(
+    resolveFontFamily({ families: ["ui-sans-serif", "system-ui", "sans-serif"], applied: [false, null, null] }),
+    { family: "system-ui", available: null },
+  );
+});
+
+test("resolveFontFamily: a named font that didn't load is kept, and flagged", () => {
+  // What the code meant to draw, and worth a warning, unlike an alias.
+  assert.deepEqual(resolveFontFamily({ families: ["Inter", "sans-serif"], applied: [false, null] }), { family: "Inter", available: false });
+  assert.deepEqual(resolveFontFamily({ families: ["Inter", "sans-serif"], applied: [true, null] }), { family: "Inter", available: true });
+  // Ahead of a system stack, it is still the font the code asked for.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["Inter", "-apple-system", "system-ui", "sans-serif"], applied: [false, false, true, null] }),
+    { family: "Inter", available: false },
+  );
+});
+
+test("resolveFontFamily: past a system keyword, a platform's font this machine lacks is passed over, not flagged", () => {
+  // Tailwind's mono stack (v3 and v4), and preflight's for code and kbd, as
+  // Chrome on macOS probes it: ui-monospace and SFMono-Regular don't apply,
+  // Menlo draws. Recording SFMono-Regular as a font that failed to load
+  // warned on every mono component, and failed --strict-warnings.
+  assert.deepEqual(
+    resolveFontFamily({
+      families: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"],
+      applied: [false, false, true, true, false, false, true, null],
+    }),
+    { family: "Menlo", available: true },
+  );
+  // Tailwind's serif stack draws Georgia.
+  assert.deepEqual(
+    resolveFontFamily({ families: ["ui-serif", "Georgia", "Cambria", "Times New Roman", "Times", "serif"], applied: [false, true, false, true, true, null] }),
+    { family: "Georgia", available: true },
+  );
+  // Tailwind 4.3's sans stack where BlinkMacSystemFont doesn't resolve, as
+  // off macOS: Segoe UI and Roboto are Windows' and Android's.
+  const sans = ["-apple-system", "BlinkMacSystemFont", "Segoe UI", "Roboto", "Helvetica Neue", "Noto Sans", "Arial", "sans-serif"];
+  assert.deepEqual(
+    resolveFontFamily({ families: sans, applied: [false, false, false, false, false, false, true, null] }),
+    { family: "Arial", available: true },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: sans, applied: [false, false, false, false, false, false, false, null] }),
+    { family: "sans-serif", available: null },
+  );
+  assert.deepEqual(
+    resolveFontFamily({ families: ["-apple-system", "Segoe UI", "Roboto"], applied: [false, false, true] }),
+    { family: "Roboto", available: true },
+  );
+});
+
+test("resolveFontFamily: a generic family or an unprobed one is recorded as it is", () => {
+  assert.deepEqual(resolveFontFamily({ families: ["sans-serif"], applied: [null] }), { family: "sans-serif", available: null });
+  assert.deepEqual(resolveFontFamily({ families: ["Inter", "Arial"], applied: [null, null] }), { family: "Inter", available: null });
+  // Nothing applied: the browser's default font drew it.
+  assert.deepEqual(resolveFontFamily({ families: ["-apple-system"], applied: [false] }), { family: "-apple-system", available: false });
+  assert.deepEqual(resolveFontFamily({ families: [], applied: [] }), { family: "", available: null });
+});
+
+test("isFontKeyword: generic families and system aliases, never a font's name", () => {
+  for (const keyword of ["sans-serif", "monospace", "system-ui", "ui-sans-serif", "-apple-system", "BlinkMacSystemFont", "SYSTEM-UI"]) {
+    assert.equal(isFontKeyword(keyword), true, keyword);
+  }
+  for (const font of ["Inter", "Roboto", "Segoe UI", "Helvetica Neue", "", null]) {
+    assert.equal(isFontKeyword(font), false, String(font));
+  }
+});
+
+test("normalizeStyles: probed fonts give the root's and the text's family as drawn", () => {
+  const apple = { families: ["-apple-system", "system-ui", "sans-serif"], applied: [false, true, null] };
+  const s = normalizeStyles(
+    withOverrides({ "font-family": "-apple-system, \"system-ui\", sans-serif" }),
+    BOX,
+    { color: "rgb(255, 255, 255)", "font-family": "-apple-system, \"system-ui\", sans-serif", "font-size": "12px", "font-weight": "600" },
+    null,
+    { root: apple, text: apple },
+  );
+  assert.equal(s.fontFamily, "system-ui");
+  assert.equal(s.fontAvailable, null);
+  assert.equal(s.text?.fontFamily, "system-ui");
+
+  // Without probes, as from a caller that never ran them: the first family, as before.
+  const legacy = normalizeStyles(withOverrides({ "font-family": "-apple-system, sans-serif" }), BOX, null, false);
+  assert.equal(legacy.fontFamily, "-apple-system");
+  assert.equal(legacy.fontAvailable, false);
+});
+
+// --- choosing the element to measure -------------------------------------------
+
+const DRAWS_NOTHING: RawComputedStyles = {
+  display: "block", "background-color": "rgba(0, 0, 0, 0)", "background-image": "none", "box-shadow": "none",
+  "border-top-width": "0px", "border-right-width": "0px", "border-bottom-width": "0px", "border-left-width": "0px",
+  "padding-top": "0px", "padding-right": "0px", "padding-bottom": "0px", "padding-left": "0px",
+};
+
+/** A StoryNode that draws nothing unless `styles` says otherwise, in the flow, with a box. */
+function node(tag: string, attrs: Partial<Omit<StoryNode, "tag" | "children" | "styles">> & { styles?: RawComputedStyles } = {}, children: StoryNode[] = []): StoryNode {
+  const { styles, ...rest } = attrs;
+  return {
+    tag, slot: null, role: null, hasPopup: null, expanded: null, controls: null, state: null, open: false,
+    dir: null, orientation: null, label: null, position: "static", rendered: true, ...rest, styles: { ...DRAWS_NOTHING, ...styles }, children,
+  };
+}
+
+const FILLED: RawComputedStyles = { display: "inline-flex", "background-color": "rgb(37, 99, 235)" };
+const root = (...children: StoryNode[]) => node("div", {}, children);
+const portal = (attrs: Partial<PortalNode>): PortalNode => ({ tag: "div", slot: null, role: null, id: null, rendered: true, ...attrs });
+
+test("componentSlots: a component's name and title leaf, kebab-cased as shadcn/ui writes data-slot", () => {
+  assert.deepEqual(componentSlots("Switch"), ["switch"]);
+  assert.deepEqual(componentSlots("InputOTP"), ["input-otp"]);
+  assert.deepEqual(componentSlots("OTPInput"), ["otp-input"]);
+  assert.deepEqual(componentSlots("ResizablePanelGroup"), ["resizable-panel-group"]);
+  assert.deepEqual(componentSlots("TooltipContent", "ui/base/Tooltip"), ["tooltip-content", "tooltip"]);
+  assert.deepEqual(componentSlots("Button", "Forms/Button"), ["button"]);
+});
+
+test("contentSlots: each slot's -content form, never doubled", () => {
+  assert.deepEqual(contentSlots(["dialog"]), ["dialog-content"]);
+  assert.deepEqual(contentSlots(componentSlots("TooltipContent", "ui/base/Tooltip")), ["tooltip-content"]);
+  assert.deepEqual(contentSlots(["dialog-demo", "dialog"]), ["dialog-demo-content", "dialog-content"]);
+  assert.deepEqual(contentSlots([]), []);
+});
+
+test("chooseMeasuredElement: a <noscript> ahead of the component is passed over", () => {
+  // input-otp renders <noscript><style/></noscript> first: measuring the
+  // root's first child found no layout box, on every variant.
+  const choice = chooseMeasuredElement(
+    root(node("noscript", { rendered: false }), node("div", { styles: FILLED })),
+    [], ["input-otp"],
+  );
+  assert.equal(choice.kind, "tree");
+  assert.deepEqual(choice.kind === "tree" && choice.path, [1]);
+});
+
+test("chooseMeasuredElement: an element with no box is passed over, unless nothing else is there", () => {
+  const hidden = node("div", { rendered: false, styles: { display: "none" } });
+  const picked = chooseMeasuredElement(root(hidden, node("button", { styles: FILLED })), [], []);
+  assert.deepEqual(picked.kind === "tree" && picked.path, [1]);
+  // Still measured, so the capture reports the missing layout box.
+  const only = chooseMeasuredElement(root(hidden), [], []);
+  assert.deepEqual(only.kind === "tree" && only.path, [0]);
+  assert.equal(chooseMeasuredElement(root(node("style", { rendered: false })), [], []).kind, "none");
+  assert.equal(chooseMeasuredElement(root(), [], []).kind, "none");
+});
+
+test("chooseMeasuredElement: looks through display: contents", () => {
+  const contents = node("div", { rendered: false, styles: { display: "contents" } }, [node("button", { styles: FILLED })]);
+  const choice = chooseMeasuredElement(root(contents), [], []);
+  assert.deepEqual(choice.kind === "tree" && choice.path, [0, 0]);
+});
+
+test("chooseMeasuredElement: measures the component's own data-slot inside a story's layout wrapper", () => {
+  // The shadcn Switch story: <div class="flex items-center gap-2"><Switch/><Label/></div>,
+  // Base UI adding a visually hidden input. snap measured the 135x18 row.
+  const row = node("div", { styles: { display: "flex" } }, [
+    node("span", { slot: "switch", styles: FILLED }, [node("span", { slot: "switch-thumb" })]),
+    node("input", { position: "absolute" }),
+    node("label", { slot: "label" }),
+  ]);
+  const choice = chooseMeasuredElement(root(row), [], ["switch"]);
+  assert.deepEqual(choice, { kind: "tree", path: [0, 0], element: 'span[data-slot="switch"]', notes: [] });
+});
+
+test("chooseMeasuredElement: a layout wrapper with no slot to go by is measured, and flagged", () => {
+  const row = node("div", { styles: { display: "flex" } }, [node("button", { styles: FILLED }), node("label")]);
+  const choice = chooseMeasuredElement(root(row), [], ["switch"]);
+  assert.equal(choice.kind, "tree");
+  assert.deepEqual(choice.kind === "tree" && choice.notes, [{ kind: "layout-wrapper", element: "div", children: 2 }]);
+});
+
+test("chooseMeasuredElement: finds the component's slot after a sibling, in a story that renders a fragment", () => {
+  // <><Label /><Switch /></>: only the story's first element was searched,
+  // so the label was measured, with nothing said.
+  const choice = chooseMeasuredElement(
+    root(node("label", { slot: "label" }), node("button", { slot: "switch", styles: FILLED })),
+    [], ["switch"],
+  );
+  assert.deepEqual(choice, { kind: "tree", path: [1], element: 'button[data-slot="switch"]', notes: [] });
+  // Behind display: contents too, and never inside a <noscript> or <template>.
+  const behind = chooseMeasuredElement(
+    root(node("template", { rendered: false }), node("p"), node("div", { rendered: false, styles: { display: "contents" } }, [node("span", { slot: "switch" })])),
+    [], ["switch"],
+  );
+  assert.deepEqual(behind.kind === "tree" && behind.path, [2, 0]);
+});
+
+test("chooseMeasuredElement: a component root without data-slot is not taken for a layout wrapper", () => {
+  // A RadioGroup, Tabs or Accordion root in a project without data-slot
+  // (Tailwind v3 shadcn, a custom Radix wrapper) draws nothing and holds
+  // several elements, as a story's layout row does, but bears a role, a
+  // direction, an orientation, a label or a list's tag.
+  const parts = () => [node("button", { styles: FILLED }), node("button", { styles: FILLED })];
+  for (const marked of [
+    node("div", { role: "radiogroup", styles: { display: "grid" } }, parts()),
+    node("div", { dir: "ltr", styles: { display: "flex" } }, parts()),
+    node("div", { orientation: "horizontal", styles: { display: "flex" } }, parts()),
+    node("div", { label: "Text alignment", styles: { display: "flex" } }, parts()),
+    node("ol", { styles: { display: "flex" } }, parts()),
+    node("nav", { styles: { display: "flex" } }, parts()),
+  ]) {
+    const choice = chooseMeasuredElement(root(marked), [], ["radio-group"]);
+    assert.deepEqual(choice.kind === "tree" && choice.notes, [], JSON.stringify({ ...marked, children: [] }));
+  }
+  // A role that says it means nothing is no mark.
+  const presentational = chooseMeasuredElement(root(node("div", { role: "presentation", styles: { display: "flex" } }, parts())), [], []);
+  assert.equal(presentational.kind === "tree" && presentational.notes[0]?.kind, "layout-wrapper");
+});
+
+test("chooseMeasuredElement: a container that draws is not taken for a layout wrapper", () => {
+  const card = node("div", { styles: { "background-color": "rgb(255, 255, 255)", "border-top-width": "1px" } }, [node("h3"), node("p")]);
+  const choice = chooseMeasuredElement(root(card), [], ["card"]);
+  assert.deepEqual(choice.kind === "tree" && choice.notes, []);
+});
+
+test("chooseMeasuredElement: a slot on an element out of the flow is not the component", () => {
+  // input-otp puts the slot on a transparent <input> stretched over the
+  // boxes it draws: the container is what to measure, and with the
+  // component's own slot inside it, it is no layout wrapper.
+  const otp = node("div", { styles: { display: "flex" } }, [
+    node("div", { slot: "input-otp-group", styles: { display: "flex" } }, [node("div", { styles: FILLED }), node("div", { styles: FILLED })]),
+    node("div", { position: "absolute" }, [node("input", { slot: "input-otp", position: "absolute" })]),
+  ]);
+  const choice = chooseMeasuredElement(root(node("noscript", { rendered: false }), otp), [], ["input-otp"]);
+  assert.deepEqual(choice, { kind: "tree", path: [1], element: "div", notes: [] });
+});
+
+test("chooseMeasuredElement: the bundled example's shape, a filled button behind a wrapper, is measured as before", () => {
+  const button = node("button", { styles: FILLED });
+  const choice = chooseMeasuredElement(root(node("div", {}, [button])), [], ["button"]);
+  assert.deepEqual(choice, { kind: "tree", path: [0, 0], element: "button", notes: [] });
+});
+
+test("isClosedTrigger: ARIA's and shadcn/ui's marks of a trigger whose content isn't showing", () => {
+  // Radix's tooltip, open after its delay or at once, is open.
+  assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger", state: "delayed-open" })), false);
+  assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger", state: "instant-open" })), false);
+  assert.equal(isClosedTrigger(node("button", { hasPopup: "dialog", expanded: "false" })), true);
+  assert.equal(isClosedTrigger(node("button", { slot: "tooltip-trigger" })), true);
+  assert.equal(isClosedTrigger(node("button", { state: "closed" })), true);
+  assert.equal(isClosedTrigger(node("button", { expanded: "false", controls: "radix-1" })), true);
+  // Open, it shows what it opens.
+  assert.equal(isClosedTrigger(node("button", { hasPopup: "dialog", expanded: "true" })), false);
+  assert.equal(isClosedTrigger(node("button", { slot: "popover-trigger", open: true })), false);
+  // A closed select is the field showing its value, which is the component.
+  assert.equal(isClosedTrigger(node("button", { role: "combobox", hasPopup: "listbox", expanded: "false" })), false);
+  // A closed Collapsible's root is no trigger.
+  assert.equal(isClosedTrigger(node("div", { state: "closed" })), false);
+  assert.equal(isClosedTrigger(node("button")), false);
+});
+
+test("chooseMeasuredElement: a closed overlay's trigger is measured, and flagged, with how snap may open it", () => {
+  const trigger = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false", styles: { display: "inline-block" } });
+  const choice = chooseMeasuredElement(root(trigger), [], ["dialog"]);
+  assert.deepEqual(choice.kind === "tree" && choice.notes, [{ kind: "closed-trigger", element: 'button[data-slot="dialog-trigger"]' }]);
+  assert.deepEqual(choice.kind === "tree" && choice.trigger, { field: false, interactions: ["click", "hover", "focus", "contextmenu"] });
+  // A select's field is the component while closed: no note, but snap may open it.
+  const field = node("button", { slot: "select-trigger", role: "combobox", expanded: "false", state: "closed", styles: FILLED });
+  const select = chooseMeasuredElement(root(field), [], ["select"]);
+  assert.deepEqual(select, { kind: "tree", path: [0], element: 'button[data-slot="select-trigger"]', notes: [], trigger: { field: true, interactions: ["click"] } });
+  // Anything else isn't one to open.
+  const button = chooseMeasuredElement(root(node("button", { slot: "button", styles: FILLED })), [], ["button"]);
+  assert.equal(button.kind === "tree" && button.trigger, undefined);
+});
+
+test("openInteractions: a context menu's trigger is right-clicked first, a tooltip's or hover card's hovered over, anything else clicked; then the rest in turn", () => {
+  const rest = (first: string) => ["click", "hover", "focus", "contextmenu"].filter((how) => how !== first);
+  assert.deepEqual(openInteractions(node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "false" })), ["click", ...rest("click")]);
+  assert.deepEqual(openInteractions(node("span", { slot: "context-menu-trigger", state: "closed" })), ["contextmenu", ...rest("contextmenu")]);
+  assert.deepEqual(openInteractions(node("button", { slot: "tooltip-trigger" })), ["hover", ...rest("hover")]);
+  assert.deepEqual(openInteractions(node("a", { slot: "hover-card-trigger" })), ["hover", ...rest("hover")]);
+  // By the component's slots, where the trigger has none of its own, as Base UI's tooltip's has none to go by but the story's.
+  assert.deepEqual(openInteractions(node("button", { state: "closed", hasPopup: "dialog" }), ["tooltip-content", "tooltip"]), ["hover", ...rest("hover")]);
+  // Radix's tooltip and hover card triggers: a data-state, and nothing that says what they open.
+  assert.deepEqual(openInteractions(node("button", { state: "closed" })), ["hover", ...rest("hover")]);
+  // A select's field: clicked, and nothing else.
+  assert.deepEqual(openInteractions(node("button", { role: "combobox", expanded: "false" })), ["click"]);
+  assert.deepEqual(openInteractions(node("button", { hasPopup: "listbox" })), ["click"]);
+});
+
+test("describeOpenFailure: says each way snap tried and what came of it, a run that opened nothing in the same wait once", () => {
+  assert.equal(describeOpenFailure([
+    { via: "click", outcome: "nothing", waitMs: 3000 }, { via: "hover", outcome: "nothing", waitMs: 3000 },
+    { via: "focus", outcome: "nothing", waitMs: 3000 }, { via: "contextmenu", outcome: "nothing", waitMs: 3000 },
+  ]), "clicking it, hovering over it, focusing it and right-clicking it opened nothing within 3000ms each");
+  assert.equal(describeOpenFailure([
+    { via: "arg", arg: "defaultOpen", outcome: "failed", error: "Storybook didn't confirm the args." },
+    { via: "click", outcome: "no-content" },
+    { via: "hover", outcome: "nothing", waitMs: 3000 },
+  ]), "setting its defaultOpen arg through Storybook's preview failed (Storybook didn't confirm the args); " +
+    "clicking it opened it, but snap found nothing it opened to measure; hovering over it opened nothing within 3000ms");
+  assert.equal(describeOpenFailure([{ via: "click", outcome: "failed" }]), "clicking it failed");
+});
+
+test("chooseMeasuredElement: open content in a portal is measured in place of the trigger", () => {
+  const trigger = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "true" });
+  const portals = [portal({ slot: "dialog-overlay" }), portal({ slot: "dialog-content", role: "dialog" })];
+  assert.deepEqual(chooseMeasuredElement(root(trigger), portals, ["dialog"]), {
+    kind: "portal", index: 1, element: 'div[data-slot="dialog-content"]', notes: [],
+  });
+  // The component's own slot, as TooltipContent's, even with nothing in the root.
+  assert.deepEqual(chooseMeasuredElement(root(), [portal({ slot: "tooltip-content" })], ["tooltip-content", "tooltip"]), {
+    kind: "portal", index: 0, element: 'div[data-slot="tooltip-content"]', notes: [],
+  });
+  // Content with no box is not measured.
+  const hidden = chooseMeasuredElement(root(trigger), [portal({ slot: "dialog-content", rendered: false })], ["dialog"]);
+  assert.equal(hidden.kind, "tree");
+});
+
+test("chooseMeasuredElement: an open trigger whose aria-controls names nothing measures the overlay it shows, a select's listbox included", () => {
+  // Radix's tooltip once hovered over: open, naming nothing it controls.
+  const tooltip = node("button", { state: "delayed-open", text: true });
+  const portals = [portal({ tag: "span", role: "tooltip", overlay: true })];
+  assert.deepEqual(chooseMeasuredElement(root(tooltip), portals, []), { kind: "portal", index: 0, element: 'span[role="tooltip"]', notes: [] });
+  // A select's field, open, without slots.
+  const field = node("button", { role: "combobox", expanded: "true", controls: "elsewhere", styles: FILLED });
+  const listbox = [portal({ role: "listbox", overlay: true })];
+  // With the field it opened from, which is measured with it.
+  assert.deepEqual(chooseMeasuredElement(root(field), listbox, []), { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [], field: { path: [0], element: 'button[role="combobox"]' } });
+  // An open trigger with nothing showing is measured as it is, with no note: it isn't closed.
+  assert.deepEqual(chooseMeasuredElement(root(tooltip), [], []), { kind: "tree", path: [0], element: "button", notes: [] });
+  // Something open that is no trigger doesn't take an overlay in its place.
+  const item = node("div", { state: "open", text: true });
+  assert.equal(chooseMeasuredElement(root(item), portals, []).kind, "tree");
+});
+
+test("chooseMeasuredElement: an open trigger's aria-controls names content rendered inline, beside it, as Headless UI's menu is", () => {
+  const open = node("button", { hasPopup: "menu", expanded: "true", controls: "menu-1", text: true });
+  const items = node("div", { role: "menu", id: "menu-1", styles: FILLED });
+  assert.deepEqual(chooseMeasuredElement(root(open, items), [], []), { kind: "tree", path: [1], element: 'div[role="menu"]', notes: [], content: true });
+  // Not one with no box.
+  assert.equal(chooseMeasuredElement(root(open, node("div", { id: "menu-1", rendered: false })), [], []).kind, "tree");
+  assert.deepEqual(chooseMeasuredElement(root(open, node("div", { id: "menu-1", rendered: false })), [], []), { kind: "tree", path: [0], element: "button", notes: [] });
+  // Closed, it names nothing that shows: the trigger is measured, and flagged.
+  const closed = node("button", { hasPopup: "menu", expanded: "false", controls: "menu-1", text: true });
+  const choice = chooseMeasuredElement(root(closed, node("div", { id: "menu-1", rendered: false })), [], []);
+  assert.equal(choice.kind === "tree" && choice.notes[0]?.kind, "closed-trigger");
+});
+
+test("chooseMeasuredElement: without slots, an open trigger's aria-controls names its content", () => {
+  const open = node("button", { hasPopup: "menu", expanded: "true", controls: "menu-1" });
+  const portals = [portal({ id: "other" }), portal({ id: "menu-1", role: "menu" })];
+  assert.deepEqual(chooseMeasuredElement(root(open), portals, ["dropdown"]), { kind: "portal", index: 1, element: 'div[role="menu"]', notes: [] });
+  // Closed, the trigger is what there is.
+  const closed = node("button", { hasPopup: "menu", expanded: "false", controls: "menu-1" });
+  assert.equal(chooseMeasuredElement(root(closed), portals, ["dropdown"]).kind, "tree");
+});
+
+test("chooseMeasuredElement: an open overlay in a portal is measured where the story's root shows nothing that draws, or only a closed trigger", () => {
+  // coder's ConfirmDialog: Radix's Dialog with no trigger, rendered open into
+  // the body, its content role=dialog with no data-slot, beside its backdrop.
+  const portals = [portal({ id: "radix-1" }), portal({ tag: "div" }), portal({ role: "dialog", id: "radix-2", overlay: true })];
+  const dialog = { kind: "portal", index: 2, element: 'div[role="dialog"]', notes: [] };
+  assert.deepEqual(chooseMeasuredElement(root(), portals, ["confirm-dialog"]), dialog);
+  // A decorator's wrapper that draws nothing, holding nothing that does, is no story to measure either.
+  const empty = node("div", { text: false }, [node("div", { text: false, styles: { display: "flex" } })]);
+  assert.deepEqual(chooseMeasuredElement(root(empty), portals, ["confirm-dialog"]), dialog);
+  // A closed trigger, as one an `open` arg bypasses, gives way to the content too.
+  const trigger = node("button", { hasPopup: "dialog", expanded: "false", text: true });
+  assert.deepEqual(chooseMeasuredElement(root(trigger), portals, []), dialog);
+  // What the root shows that draws is measured, as before: text, a fill, an icon.
+  for (const shown of [node("p", { text: true }), node("div", { text: false, styles: FILLED }), node("div", { text: false }, [node("svg", { text: false })])]) {
+    assert.deepEqual(chooseMeasuredElement(root(shown), portals, []).kind, "tree", JSON.stringify(shown));
+  }
+  // Text the page didn't read for counts as drawing.
+  assert.equal(chooseMeasuredElement(root(node("p")), portals, []).kind, "tree");
+  // No overlay open: as before.
+  assert.equal(chooseMeasuredElement(root(), portals.slice(0, 2), []).kind, "none");
+  assert.deepEqual(chooseMeasuredElement(root(trigger), [], []), {
+    kind: "tree", path: [0], element: "button", notes: [{ kind: "closed-trigger", element: "button" }],
+    trigger: { field: false, interactions: ["click", "hover", "focus", "contextmenu"] },
+  });
+  // Content with no box is not measured.
+  assert.equal(chooseMeasuredElement(root(), [portal({ role: "dialog", overlay: true, rendered: false })], []).kind, "none");
+});
+
+test("chooseMeasuredElement: a root that draws only a meter, an outline or a pseudo-element's glyph is measured, not an open overlay", () => {
+  const portals = [portal({ role: "dialog", id: "radix-2", overlay: true })];
+  const glyph = { content: '"★"', styles: { ...DRAWS_NOTHING, display: "inline" } };
+  const outline = { "outline-style": "solid", "outline-width": "2px", "outline-color": "rgb(255, 0, 0)" };
+  for (const shown of [
+    node("progress", { text: false }), node("meter", { text: false }), node("iframe", { text: false }),
+    node("div", { text: false, styles: outline }),
+    node("span", { text: false, pseudos: [glyph] }),
+    // A dot drawn by an empty ::before with a fill.
+    node("span", { text: false, pseudos: [{ content: '""', styles: { ...DRAWS_NOTHING, "background-color": "rgb(34, 197, 94)" } }] }),
+  ]) {
+    assert.equal(chooseMeasuredElement(root(shown), portals, []).kind, "tree", JSON.stringify(shown));
+  }
+  // What draws nothing still gives way to the overlay: an outline of no
+  // width, a transparent one, an empty ::before with nothing to paint, a
+  // glyph that isn't displayed.
+  for (const hidden of [
+    node("div", { text: false, styles: { ...outline, "outline-width": "0px" } }),
+    node("div", { text: false, styles: { ...outline, "outline-color": "rgba(0, 0, 0, 0)" } }),
+    node("div", { text: false, styles: { ...outline, "outline-style": "none" } }),
+    node("span", { text: false, pseudos: [{ content: '""', styles: DRAWS_NOTHING }] }),
+    node("span", { text: false, pseudos: [{ content: '"★"', styles: { ...DRAWS_NOTHING, display: "none" } }] }),
+  ]) {
+    assert.equal(chooseMeasuredElement(root(hidden), portals, []).kind, "portal", JSON.stringify(hidden));
+  }
+});
+
+test("chooseMeasuredElement: the component's slot in the story's root wins over a portal", () => {
+  const choice = chooseMeasuredElement(root(node("div", { slot: "popover", styles: FILLED })), [portal({ slot: "popover-content" })], ["popover"]);
+  assert.deepEqual(choice.kind === "tree" && choice.path, [0]);
+});
+
+test("normalizeTextLayout: records text the browser cut off or wrapped, and leaves a line at its own width out", () => {
+  const raw = { width: 102, lines: 1, overflowsX: false, overflowsY: false, textOverflow: "clip", lineClamp: null };
+  // On one line at its own width: a Figma text that hugs reproduces it.
+  assert.equal(normalizeTextLayout(raw), null);
+  assert.equal(normalizeTextLayout(null), null);
+  // Tailwind's truncate: cut off at the side, with an ellipsis.
+  assert.deepEqual(normalizeTextLayout({ ...raw, overflowsX: true, textOverflow: "ellipsis" }), { width: 102, lines: 1, truncation: "ellipsis" });
+  assert.deepEqual(normalizeTextLayout({ ...raw, overflowsX: true }), { width: 102, lines: 1, truncation: "clip" });
+  // Wrapped onto three lines, all drawn.
+  assert.deepEqual(normalizeTextLayout({ ...raw, lines: 3 }), { width: 102, lines: 3 });
+  // line-clamp-2 over four lines: two drawn, ending in an ellipsis.
+  assert.deepEqual(normalizeTextLayout({ ...raw, lines: 4, overflowsY: true, lineClamp: 2 }), { width: 102, lines: 2, truncation: "ellipsis" });
+  // A clamp the text fits within is only wrapping.
+  assert.deepEqual(normalizeTextLayout({ ...raw, lines: 2, lineClamp: 3 }), { width: 102, lines: 2 });
+  // Rounded as every length snap records, and nothing for a box of no width.
+  assert.deepEqual(normalizeTextLayout({ ...raw, width: 101.996, lines: 2 }), { width: 102, lines: 2 });
+  assert.equal(normalizeTextLayout({ ...raw, width: 0, lines: 2 }), null);
+});
+
+test("normalizeStyles: a text's layout is written only where there is one, so older snaps diff as they did", () => {
+  const text = { color: "rgb(10, 10, 10)", "font-family": "Inter", "font-size": "14px", "font-weight": "500", "text-transform": "none", "letter-spacing": "normal", opacity: "1" };
+  const plain = normalizeStyles(PRIMARY_SM, BOX, text, null, undefined, { width: 102, lines: 1, overflowsX: false, overflowsY: false, textOverflow: "clip", lineClamp: null });
+  assert.equal("layout" in plain.text!, false);
+  const cut = normalizeStyles(PRIMARY_SM, BOX, text, null, undefined, { width: 102, lines: 1, overflowsX: true, overflowsY: false, textOverflow: "ellipsis", lineClamp: null });
+  assert.deepEqual(cut.text!.layout, { width: 102, lines: 1, truncation: "ellipsis" });
+});
+
+test("chooseMeasuredElement: a toast's story has its button raise a toast, and a toast up is what is measured", () => {
+  // shadcn's Sonner story: a "Show Toast" button and the toaster, which draws nothing until a toast is up.
+  const button = node("button", { styles: FILLED });
+  const toaster = node("section", { label: "Notifications alt+T" });
+  const wrapper = node("div", { styles: { display: "flex" } }, [button, node("p", { styles: FILLED }), toaster]);
+  const slots = componentSlots("Toaster", "ui/radix/Sonner");
+  assert.equal(isToastComponent(slots), true);
+  const closed = chooseMeasuredElement(root(wrapper), [], slots);
+  assert.equal(closed.kind, "tree");
+  if (closed.kind !== "tree") return;
+  assert.deepEqual(closed.path, [0]);
+  assert.deepEqual(closed.trigger, { field: false, interactions: ["click"], toast: { at: [0, 0], opener: "button" } });
+  assert.deepEqual(closed.notes, [{ kind: "layout-wrapper", element: "div", children: 3 }]);
+  // Raised: the toast, inside the toaster in the story's root.
+  const toast = node("li", { toast: true, styles: FILLED });
+  const raised = chooseMeasuredElement(root(node("div", { styles: { display: "flex" } }, [button, node("section", {}, [node("ol", {}, [toast])])])), [], slots);
+  assert.deepEqual(raised, { kind: "tree", path: [0, 1, 0, 0], element: "li", notes: [], content: true });
+  // Any other component's button is no toast's opener.
+  assert.equal(chooseMeasuredElement(root(wrapper), [], ["card"]).kind === "tree" && (chooseMeasuredElement(root(wrapper), [], ["card"]) as { trigger?: unknown }).trigger, undefined);
+});
+
+test("chooseMeasuredElement: a select's open field comes with the content it opened; a dialog's trigger doesn't", () => {
+  const select = node("button", { role: "combobox", expanded: "true", controls: "lb", styles: FILLED });
+  const choice = chooseMeasuredElement(root(select), [portal({ role: "listbox", id: "lb", overlay: true })], ["select"]);
+  assert.deepEqual(choice, { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [], field: { path: [0], element: 'button[role="combobox"]' } });
+  // shadcn's, by its content's slot.
+  const slotted = chooseMeasuredElement(root(node("div", {}, [select])), [portal({ slot: "select-content", overlay: true })], ["select"]);
+  assert.deepEqual(slotted.kind === "portal" && slotted.field, { path: [0, 0], element: 'button[role="combobox"]' });
+  // A dialog's content is measured alone.
+  const dialog = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "true", controls: "d", state: "open", styles: FILLED });
+  const content = chooseMeasuredElement(root(dialog), [portal({ role: "dialog", id: "d", overlay: true })], ["dialog"]);
+  assert.equal(content.kind === "portal" && content.field, undefined);
+});
+
+test("chooseMeasuredElement: a combobox on a popover's trigger is a field, by its name or by the parts its content holds", () => {
+  // A Combobox whose trigger is a plain popover trigger, its content a dialog holding a cmdk input and list.
+  const open = node("button", { hasPopup: "dialog", expanded: "true", controls: "pc", state: "open", styles: FILLED });
+  const slots = componentSlots("Combobox", "components/Combobox");
+  const content = [portal({ role: "dialog", id: "pc", overlay: true, picks: true })];
+  assert.deepEqual(chooseMeasuredElement(root(open), content, slots), { kind: "portal", index: 0, element: 'div[role="dialog"]', notes: [], field: { path: [0], element: "button" } });
+  // By its content alone, whatever the component's name.
+  const byContent = chooseMeasuredElement(root(open), content, ["filter-menu"]);
+  assert.deepEqual(byContent.kind === "portal" && byContent.field, { path: [0], element: "button" });
+  // A popover's content that holds none is measured alone.
+  const popover = chooseMeasuredElement(root(open), [portal({ role: "dialog", id: "pc", overlay: true })], componentSlots("Popover", "components/Popover"));
+  assert.equal(popover.kind === "portal" && popover.field, undefined);
+  // Closed, a combobox by its name is its field: measured as it is where it doesn't open, with no closed-trigger note.
+  const closed = node("button", { hasPopup: "dialog", expanded: "false", controls: "pc", state: "closed", styles: FILLED });
+  assert.deepEqual(chooseMeasuredElement(root(closed), [], slots), { kind: "tree", path: [0], element: "button", notes: [], trigger: { field: true, interactions: ["click"] } });
+});
+
+test("chooseMeasuredElement: a toast the story draws itself is measured as it is, its own buttons never clicked", () => {
+  const slots = componentSlots("Toast", "ui/Toast");
+  const toast = () => node("div", { role: "status" }, [node("p", { styles: FILLED }), node("button", { styles: FILLED })]);
+  assert.deepEqual(chooseMeasuredElement(root(toast()), [], slots), { kind: "tree", path: [0], element: 'div[role="status"]', notes: [] });
+  // Two in a wrapper, with no toaster: the wrapper, as any story's, and no opener.
+  const both = chooseMeasuredElement(root(node("div", {}, [toast(), toast()])), [], slots);
+  assert.deepEqual(both, { kind: "tree", path: [0], element: "div", notes: [{ kind: "layout-wrapper", element: "div", children: 2 }] });
 });

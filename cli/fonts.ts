@@ -1,0 +1,295 @@
+// The fonts Figma sets text in, and the stand-ins snap measures text with.
+//
+// Figma's plugin context loads only its own library, Google Fonts and a few
+// more. A CSS keyword such as `system-ui` names no font, and a platform face
+// such as Menlo or Segoe UI is not one Figma has, so the build sets such text
+// in a stand-in: Roboto Mono for a monospace family, Noto Serif for a serif,
+// Inter for anything else. snap used to measure that text in the browser's
+// own face, SF Pro on a Mac, which Inter sets a few percent wider, up to 10%
+// for a short word: a label measured to fit its box wrapped in Figma ("Hom"
+// over "e"), and a title pushed what followed it out of its tile (the third
+// live push). So snap draws such text in the stand-in itself before it
+// measures, and the build asks Figma for the same stand-in. This module is
+// the one place both read the mapping.
+//
+// The faces are Figma's widths. Figma sets each glyph's advance and each
+// kerning value rounded to a 1024th of an em, as HarfBuzz does at 1024 units
+// an em (the fourth push's text probe, fixtures/figma-text-probe-3.json), so
+// Chrome, which sets the font unrounded, made "sales-dashboard.pdf" 139.375
+// wide where Figma needs 139.398, and Figma cut the title short. Inter's
+// Latin faces and Noto Serif's, upright and italic, one per weight, and
+// Roboto Mono's upright Latin ones are rounded so in fonts/, which
+// scripts/figma-stand-ins.py writes from Inter 3.19
+// (@fontsource-variable/inter 5.0.18, the Inter Figma has: axes slnt and
+// wght), Noto Serif (@fontsource-variable/noto-serif 5.3.0) and Roboto
+// Mono (@fontsource-variable/roboto-mono 5.3.0). Inter's carry its symbols
+// from U+2000 to U+2BFF too (arrows, check marks, a Mac keyboard's keys),
+// which no subset of the package has, taken from Inter 3.19 whole, so
+// "Next →" isn't set in whatever font the platform has. Their other
+// subsets and Roboto Mono's italics come from the packages as they ship.
+// Nothing is fetched while measuring. All three are under the SIL Open
+// Font License, whose text ships with each.
+
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The families Figma sets text in where it lacks the one the code asked for. */
+export type StandIn = "Inter" | "Roboto Mono" | "Noto Serif";
+
+export const STAND_INS: readonly StandIn[] = ["Inter", "Roboto Mono", "Noto Serif"];
+
+/**
+ * The stand-in for a family Figma can't load: Roboto Mono for a monospace
+ * one, Noto Serif for a serif, Inter for any other. The build template once
+ * held these two patterns itself; figma code now passes it the answer.
+ */
+export function standInFor(family: string): StandIn {
+  if (/mono|menlo|monaco|consolas|courier|lucida console/i.test(family)) return "Roboto Mono";
+  if (/^(?!.*sans).*(serif|georgia|times)/i.test(family)) return "Noto Serif";
+  return "Inter";
+}
+
+/** CSS's generic families, each resolving to whatever face the platform maps it to. */
+export const GENERIC_FONT_FAMILIES: ReadonlySet<string> = new Set([
+  "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong",
+]);
+
+/**
+ * A platform's name for its own UI font: Safari's `-apple-system`, Chrome's
+ * old `BlinkMacSystemFont`, which Chromium computes to `"system-ui"`, and the
+ * `ui-*` keywords only Safari implements. A system font stack lists several
+ * so that each browser finds one, so one a browser passes over is not a font
+ * that failed to load.
+ */
+export function isSystemFontAlias(family: string): boolean {
+  const name = family.trim().toLowerCase();
+  return name.startsWith("-") || name.startsWith("ui-") || name === "system-ui" || name === "blinkmacsystemfont";
+}
+
+/**
+ * Whether a family is a CSS keyword rather than a font: a generic family or a
+ * platform's alias for its UI font. No font in Figma has that name, so there
+ * is nothing to set it to or compare it with.
+ */
+export function isFontKeyword(family: string | null | undefined): boolean {
+  const name = (family ?? "").trim().toLowerCase();
+  return GENERIC_FONT_FAMILIES.has(name) || isSystemFontAlias(name);
+}
+
+/**
+ * Platform faces Figma's plugin context lacks, lowercased: each was asked of
+ * listAvailableFontsAsync in the live text probe (2026-10-09) and wasn't
+ * there. It has SF Pro, Roboto, Ubuntu, Cantarell and Noto Sans, which are
+ * left alone, as is any font the project loads itself.
+ */
+export const PLATFORM_FACES: ReadonlySet<string> = new Set([
+  "sf pro text", "sf pro display", "sf mono", "sfmono-regular", "san francisco", "segoe ui", "segoe ui variable",
+  "helvetica neue", "helvetica", "arial", "menlo", "monaco", "consolas", "courier new", "courier",
+  "liberation mono", "liberation sans", "lucida grande", "lucida console", "dejavu sans", "dejavu sans mono",
+  "georgia", "times new roman", "times", "verdana", "tahoma", "trebuchet ms",
+]);
+
+/**
+ * The name Figma has a family under, where the CSS name differs. Fontsource's
+ * variable packages name the family `<Family> Variable`, as
+ * @fontsource-variable/geist does `Geist Variable`, and Figma names it
+ * `<Family>`: of its 1938 families none has `Variable` in its name, it has
+ * `Geist` and `Inter`, and it refuses `Geist Variable` and `Inter Variable`
+ * (probe 8e, fixtures/figma-probe-8e-fonts.json). So the build loads this
+ * name first, and verify takes it for the family snap measured.
+ */
+export function figmaFamily(family: string): string {
+  const m = /^(.+?)\s+variable$/i.exec(family.trim());
+  return m ? m[1] : family;
+}
+
+/** Whether a family Figma set a text in is the one measured, by its CSS name or Figma's for it. */
+export function sameFamily(measured: string, figma: unknown): boolean {
+  if (typeof figma !== "string") return false;
+  const f = figma.toLowerCase();
+  return measured.toLowerCase() === f || figmaFamily(measured).toLowerCase() === f;
+}
+
+/** Whether Figma would set text in this family in a stand-in: a CSS keyword, or a platform face it lacks. */
+export function needsStandIn(family: string): boolean {
+  return isFontKeyword(family) || PLATFORM_FACES.has(family.trim().toLowerCase());
+}
+
+/**
+ * What snap names a stand-in in the page: its own family, so a project's
+ * own Inter, should it load one, keeps its faces.
+ */
+export const STAND_IN_PREFIX = "storysync ";
+
+/** The Figma family a family snap added to the page stands for, or null for any other family. */
+export function standInDrawn(family: string): StandIn | null {
+  if (!family.startsWith(STAND_IN_PREFIX)) return null;
+  const name = family.slice(STAND_IN_PREFIX.length);
+  return (STAND_INS as readonly string[]).includes(name) ? (name as StandIn) : null;
+}
+
+/**
+ * The family of a stand-in's faces fonts/ doesn't round, where its rounded
+ * faces are static, one per weight: Inter's other scripts, variable. Chrome
+ * picks one set of faces by weight and doesn't look past it for a glyph, and
+ * between a face of weight 200 and one of 100 to 900 it took the one without
+ * the Latin, setting "a" in Times; a family of their own, after the rounded
+ * one, sets each script in its own faces.
+ */
+export const STAND_IN_SCRIPTS = " scripts";
+
+/** The families snap puts a stand-in's text on, in order: Inter's and Noto Serif's rounded faces are static, so their other subsets have a family of their own. */
+export function standInFamilies(standIn: StandIn): string[] {
+  const family = `${STAND_IN_PREFIX}${standIn}`;
+  return standIn === "Roboto Mono" ? [family] : [family, family + STAND_IN_SCRIPTS];
+}
+
+/** Whether a family is one snap added to the page: a stand-in's, any of them. */
+export function isStandInFamily(family: string): boolean {
+  return family.startsWith(STAND_IN_PREFIX);
+}
+
+/** A computed font-family's families, unquoted, split at the commas outside quotes. */
+export function stackFamilies(stack: string): string[] {
+  const out: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (const ch of stack) {
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ",") {
+      out.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  out.push(current.trim());
+  return out.filter(Boolean);
+}
+
+/**
+ * The family Figma sets a CSS font-family stack's text in, as the build sets
+ * a text's (cli/figma-map.ts, textOf): the stack's first family by Figma's
+ * name for it, `Geist` for `"Geist Variable", sans-serif`, or the stand-in
+ * for a CSS keyword or a platform face Figma lacks, Inter for Tailwind's
+ * `ui-sans-serif, system-ui, sans-serif`. A FONT_FAMILY variable holds this:
+ * Figma's font picker has no family named after a whole stack.
+ */
+export function figmaStackFamily(stack: string): string {
+  const [first] = stackFamilies(stack);
+  if (!first) return stack.trim();
+  return needsStandIn(first) ? standInFor(first) : figmaFamily(first);
+}
+
+/** Whether a typography token names a font family, `font/sans`, as no `font/size/*` or `font/weight/*` one does. */
+export function isFontFamilyToken(name: string): boolean {
+  return /^font\//.test(name) && !/^font\/(?:size|weight)\//.test(name);
+}
+
+/**
+ * The font-family snap draws an element's text with before measuring it,
+ * where Figma would set it in a stand-in: the stand-in ahead of the stack as
+ * written, so a glyph it lacks still falls back as before. That is a stack
+ * whose first family is a CSS keyword or a platform face Figma lacks, as
+ * Tailwind's `ui-sans-serif, system-ui, ...` and `ui-monospace, SFMono-Regular,
+ * Menlo, ...` are. A stack that opens with a font the project loads, Geist or
+ * Inter, keeps it, and so does one snap already put a stand-in in. Null where
+ * the stack stays as it is.
+ */
+export function standInStack(stack: string): { stack: string; standIn: StandIn } | null {
+  const [first] = stackFamilies(stack);
+  if (!first || standInDrawn(first) || !needsStandIn(first)) return null;
+  const standIn = standInFor(first);
+  return { stack: `${standInFamilies(standIn).map((f) => `"${f}"`).join(", ")}, ${stack}`, standIn };
+}
+
+/** One face of a stand-in, as the page adds it with the FontFace API. */
+export interface StandInFace {
+  family: string;
+  style: string;
+  weight: string;
+  unicodeRange: string;
+  /** The woff2 file, base64. */
+  data: string;
+}
+
+/** Each stand-in's package and the stylesheets of its faces: the weight axis, upright and italic. */
+const PACKAGES: Record<StandIn, { name: string; css: string[] }> = {
+  Inter: { name: "@fontsource-variable/inter", css: ["wght.css"] },
+  "Roboto Mono": { name: "@fontsource-variable/roboto-mono", css: ["wght.css", "wght-italic.css"] },
+  "Noto Serif": { name: "@fontsource-variable/noto-serif", css: ["wght.css", "wght-italic.css"] },
+};
+
+/**
+ * The package faces fonts/ holds Figma's widths of, by their file, and the
+ * faces in fonts/ that take each one's place, with their weights: one per
+ * weight Figma has for Inter and for Noto Serif, upright and italic, which
+ * round each weight on their own, and Roboto Mono's whole axis, which is
+ * as wide at every weight.
+ */
+const WEIGHTS = [100, 200, 300, 400, 500, 600, 700, 800, 900];
+const ROUNDED: Record<string, { file: string; weight: string }[]> = {
+  "inter-latin-wght-normal.woff2": WEIGHTS.map((w) => ({ file: `inter-latin-${w}-normal.woff2`, weight: String(w) })),
+  "noto-serif-latin-wght-normal.woff2": WEIGHTS.map((w) => ({ file: `noto-serif-latin-${w}-normal.woff2`, weight: String(w) })),
+  "noto-serif-latin-wght-italic.woff2": WEIGHTS.map((w) => ({ file: `noto-serif-latin-${w}-italic.woff2`, weight: String(w) })),
+  "roboto-mono-latin-wght-normal.woff2": [{ file: "roboto-mono-latin-wght-normal.woff2", weight: "100 700" }],
+  "roboto-mono-latin-ext-wght-normal.woff2": [{ file: "roboto-mono-latin-ext-wght-normal.woff2", weight: "100 700" }],
+};
+
+/** fonts/, beside dist/ in the package and in the repository. */
+const FONTS_DIR = fileURLToPath(new URL("../../fonts/", import.meta.url));
+
+const faces = new Map<StandIn, StandInFace[]>();
+
+/** The characters of each face in fonts/ whose characters aren't its package face's, by file: Inter's carry its symbols too. */
+let ranges: Record<string, string> | null = null;
+function roundedRange(file: string): string | undefined {
+  ranges ??= (JSON.parse(readFileSync(join(FONTS_DIR, "manifest.json"), "utf8")) as { unicodeRange?: Record<string, string> }).unicodeRange ?? {};
+  return ranges[file];
+}
+
+/**
+ * A stand-in's faces, read once: every unicode-range subset of its package,
+ * so text in Cyrillic or Greek is set in it too, with fonts/ in place of the
+ * ones it rounds to Figma's widths. Inter 3.19 has no italic of its own
+ * (Figma's Inter Italic is its slant axis, as wide as its upright), so Chrome
+ * slants the upright, which keeps the widths.
+ */
+export function standInFaces(standIn: StandIn): StandInFace[] {
+  const known = faces.get(standIn);
+  if (known) return known;
+  const pkg = PACKAGES[standIn];
+  const require = createRequire(import.meta.url);
+  const out: StandInFace[] = [];
+  for (const sheet of pkg.css) {
+    const path = require.resolve(`${pkg.name}/${sheet}`);
+    for (const block of readFileSync(path, "utf8").match(/@font-face\s*{[^}]*}/g) ?? []) {
+      const get = (name: string) => new RegExp(`${name}:\\s*([^;]+);`).exec(block)?.[1].trim() ?? "";
+      const file = /url\(([^)]+)\)/.exec(get("src"))?.[1];
+      if (!file) continue;
+      const face = {
+        family: `${STAND_IN_PREFIX}${standIn}`, style: get("font-style") || "normal", weight: get("font-weight") || "400",
+        unicodeRange: get("unicode-range") || "U+0-10FFFF",
+      };
+      const rounded = ROUNDED[basename(file)];
+      if (rounded) {
+        for (const r of rounded) {
+          out.push({ ...face, weight: r.weight, unicodeRange: roundedRange(r.file) ?? face.unicodeRange, data: readFileSync(join(FONTS_DIR, r.file)).toString("base64") });
+        }
+      } else {
+        const [, scripts] = standInFamilies(standIn);
+        out.push({ ...face, ...(scripts ? { family: scripts } : {}), data: readFileSync(join(dirname(path), file)).toString("base64") });
+      }
+    }
+  }
+  if (!out.length) throw new Error(`${pkg.name} has no font faces in ${pkg.css.join(", ")}: reinstall storysync`);
+  faces.set(standIn, out);
+  return out;
+}

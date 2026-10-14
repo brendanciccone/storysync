@@ -12,8 +12,16 @@ inputs:
     required: false
     default: "http://localhost:6006"
   components:
-    description: "Comma-separated list of component names or IDs to validate (default: all). A name that matches no component fails the Map components step, which lists the names available"
+    description: "Comma-separated list of component names, titles or IDs to validate (default: all). A name that matches no component fails the Map components step, which lists the names available"
     required: false
+  exclude_props:
+    description: "Comma-separated prop names never to map as variant properties, in any component, as map's --exclude-props. Give the props the push left out, and write the baseline with the same list"
+    required: false
+    default: ""
+  request_timeout:
+    description: "How long Map components waits for each Storybook MCP request, in milliseconds, as map's --request-timeout (default: storysync's own, five minutes). Raise it for a slow or busy Storybook"
+    required: false
+    default: ""
   node_version:
     description: "Node.js version to use"
     required: false
@@ -26,6 +34,10 @@ inputs:
     description: "Command that installs the project's dependencies, run in working_directory (default: chosen by package.json's packageManager field, or else by the lockfile)"
     required: false
     default: ""
+  snap_dir:
+    description: "Directory of the committed snap (styles.json) whose recorded argTypes and left-out props map uses, as storysync map --snap takes it: props only a story's argTypes declare become variant properties, and props snap left out as behavior stay out. Empty uses none, as --no-snap does"
+    required: false
+    default: ".storysync/snaps"
   baseline:
     description: "Path to baseline mapping JSON for drift detection, as written by storysync map --json"
     required: false
@@ -99,15 +111,17 @@ runs:
       with:
         package_json_file: ${{ steps.storysync.outputs.package_json }}
 
-    - name: Install project dependencies
+    # Which package manager installs the project, found here so a bun
+    # project gets bun from setup-bun below when the runner has none.
+    - name: Find the package manager
+      id: package-manager
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
         INSTALL_COMMAND: ${{ inputs.install_command }}
       run: |
         if [ -n "$INSTALL_COMMAND" ]; then
-          echo "$INSTALL_COMMAND"
-          eval "$INSTALL_COMMAND"
+          echo "install_command is set, so it installs the dependencies"
           exit 0
         fi
 
@@ -154,12 +168,13 @@ runs:
         # packageManager names the one to use, as it does for corepack. A
         # stale lockfile from another package manager left beside the real
         # one is common, and no order of preference is right for everyone.
-        declared="$(node -e '
+        packageManager="$(node -e '
           try {
             const pm = JSON.parse(require("fs").readFileSync("package.json", "utf8")).packageManager;
-            if (typeof pm === "string") console.log(pm.split("@")[0]);
+            if (typeof pm === "string") console.log(pm);
           } catch {}
         ')"
+        declared="${packageManager%%@*}"
         if [ -n "$declared" ]; then
           case "$declared" in
             pnpm | yarn | npm | bun) ;;
@@ -184,8 +199,51 @@ runs:
           fi
           pm="$1"
         fi
+        {
+          echo "manager=$pm"
+          echo "dir=$dir"
+        } >> "$GITHUB_OUTPUT"
 
-        case "$pm" in
+        # Run it rather than look it up: a shim an earlier step put on PATH
+        # answers to `command -v bun` whether or not bun is installed. Where
+        # it doesn't run, setup-bun installs the version packageManager
+        # names, or the latest.
+        if [ "$pm" = bun ] && ! bun --version > /dev/null 2>&1; then
+          version="${packageManager#bun@}"
+          version="${version%%+*}"
+          if [ "$declared" != bun ] || [ -z "$version" ] || [ "$version" = "$packageManager" ]; then
+            version=latest
+          fi
+          echo "bun isn't installed, so setup-bun installs bun $version"
+          {
+            echo "setup_bun=true"
+            echo "bun_version=$version"
+          } >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Setup Bun
+      if: steps.package-manager.outputs.setup_bun == 'true'
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ steps.package-manager.outputs.bun_version }}
+
+    - name: Install project dependencies
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install_command }}
+        MANAGER: ${{ steps.package-manager.outputs.manager }}
+        MANAGER_DIR: ${{ steps.package-manager.outputs.dir }}
+      run: |
+        if [ -n "$INSTALL_COMMAND" ]; then
+          echo "$INSTALL_COMMAND"
+          eval "$INSTALL_COMMAND"
+          exit 0
+        fi
+
+        # Where Find the package manager found the lockfile.
+        cd "$MANAGER_DIR"
+        case "$MANAGER" in
           pnpm)
             cmd=(pnpm install --frozen-lockfile)
             ;;
@@ -223,12 +281,7 @@ runs:
             cmd=(npm ci)
             ;;
           bun)
-            # As for yarn, a shim an earlier step put on PATH answers to
-            # `command -v bun` whether or not bun is installed.
-            if ! bun --version > /dev/null 2>&1; then
-              echo "::error::Found ${lockfiles[*]}, but bun isn't installed. Add oven-sh/setup-bun before this action, or set install_command."
-              exit 1
-            fi
+            # Installed by Setup Bun when the runner had none.
             cmd=(bun install --frozen-lockfile)
             ;;
         esac
@@ -373,6 +426,12 @@ runs:
 
         const current = JSON.parse(fs.readFileSync("storysync-tokens-current.json", "utf8"));
         const collections = current.collections || [];
+        // What tokens warned about, a var() that didn't resolve or a variable
+        // it couldn't categorize, is logged whether or not anything drifted.
+        // One line each: a CSS value can span lines, and a line of it
+        // starting with :: would be read as a workflow command.
+        const warnings = (Array.isArray(current.warnings) ? current.warnings : []).map(w => String(w).replace(/\s+/g, " ").trim());
+        for (const w of warnings) console.log("storysync tokens: " + w);
 
         // The command that writes the baseline, as the action extracts tokens,
         // with the storysync it runs.
@@ -403,7 +462,8 @@ runs:
         try { baseline = JSON.parse(fs.readFileSync(baselinePath, "utf8")); } catch {}
         const isRecord = (v) => typeof v === "object" && v !== null;
         const isCollection = (c) => isRecord(c) && typeof c.category === "string" && Array.isArray(c.tokens)
-          && c.tokens.every(t => isRecord(t) && typeof t.name === "string" && typeof t.value === "string");
+          && c.tokens.every(t => isRecord(t) && typeof t.name === "string" && typeof t.value === "string"
+            && (t.dark === undefined || (isRecord(t.dark) && typeof t.dark.value === "string")));
         if (!isRecord(baseline) || !Array.isArray(baseline.collections) || !baseline.collections.every(isCollection)) {
           const held = isRecord(baseline) && typeof baseline.error === "string" ? " (it holds an error: " + baseline.error.replace(/^Error: /, "") + ")" : "";
           console.log(escape("::error::The token baseline at " + baselinePath + " (relative to " + where + ") is not tokens --json output" + held + ". Recreate it by " + create));
@@ -413,17 +473,29 @@ runs:
         // A category can have several collections: a theme file's fontSizes
         // and fontWeights are both typography. Keyed on the category alone,
         // only the last of them was compared, so each side's are merged into
-        // one map of token name to value, as tokens --check does.
+        // one map of token name to token, as tokens --check does.
         const byCategory = (cols) => {
           const map = new Map();
           for (const c of cols) {
             if (!map.has(c.category)) map.set(c.category, new Map());
-            for (const t of c.tokens) map.get(c.category).set(t.name, t.value);
+            for (const t of c.tokens) map.get(c.category).set(t.name, t);
           }
           return map;
         };
         const baseMap = byCategory(baseline.collections);
         const currMap = byCategory(collections);
+
+        // Dark values are compared, as tokens --check compares them, against
+        // a baseline with modes, which a storysync that reads the dark theme
+        // writes. An earlier one's has none, and every dark token would read
+        // as changed. A token's dark value is its light one where it has none.
+        const darkChecked = Array.isArray(baseline.modes);
+        const darkOf = (t) => (isRecord(t.dark) ? t.dark.value : undefined);
+        const darkChanged = (was, now) => darkChecked && (darkOf(was) !== undefined || darkOf(now) !== undefined)
+          && (darkOf(was) ?? was.value) !== (darkOf(now) ?? now.value);
+        if (!darkChecked && collections.some(c => c.tokens.some(t => darkOf(t) !== undefined))) {
+          console.log(escape("::notice::The token baseline at " + baselinePath + " (relative to " + where + ") was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared. Recreate it by " + create));
+        }
 
         const added = [];
         const removed = [];
@@ -432,12 +504,14 @@ runs:
         for (const [cat, tokens] of currMap) {
           const base = baseMap.get(cat);
           if (!base) { added.push({ category: cat, count: tokens.size }); continue; }
-          let newCount = 0, changedCount = 0;
-          for (const [name, value] of tokens) {
-            if (!base.has(name)) newCount++;
-            else if (base.get(name) !== value) changedCount++;
+          let newCount = 0, changedCount = 0, darkCount = 0;
+          for (const [name, token] of tokens) {
+            const was = base.get(name);
+            if (!was) { newCount++; continue; }
+            if (was.value !== token.value) changedCount++;
+            if (darkChanged(was, token)) darkCount++;
           }
-          if (newCount || changedCount) changed.push({ category: cat, added: newCount, changed: changedCount });
+          if (newCount || changedCount || darkCount) changed.push({ category: cat, added: newCount, changed: changedCount, dark: darkCount });
         }
         for (const [cat, tokens] of baseMap) {
           const curr = currMap.get(cat);
@@ -456,12 +530,17 @@ runs:
         }
 
         output("result", "true");
-        output("error", escape("Design tokens differ from " + baselinePath + " (relative to " + where + "). Detect token drift lists the changes. If they're intended, update the baseline by " + create));
+        // A newer storysync can read tokens an older one left out, shadcn/ui's
+        // radius scale say, which a baseline the older one wrote lists as
+        // added. Said only in the CLI, CI went red with no reason given.
+        const onlyAdded = !removed.length && changed.every(c => !c.changed && !c.dark);
+        const why = onlyAdded ? "If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't" : "If they're intended";
+        output("error", escape("Design tokens differ from " + baselinePath + " (relative to " + where + "). Detect token drift lists the changes. " + why + ", update the baseline by " + create));
 
         let body = "## Token drift\n\n";
         if (!collections.length) {
           body += "No tokens were found this run";
-          if (current.warnings && current.warnings.length) body += " (" + current.warnings.join("; ") + ")";
+          if (warnings.length) body += " (" + warnings.join("; ") + ")";
           body += ".\n\n";
         }
         if (added.length) {
@@ -476,7 +555,18 @@ runs:
         }
         if (changed.length) {
           body += "### Changed collections\n";
-          for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed\n";
+          for (const c of changed) body += "- **" + c.category + "**: " + c.added + " added, " + c.changed + " changed" + (c.dark ? ", " + c.dark + " changed in the dark theme" : "") + "\n";
+          body += "\n";
+        }
+        if (onlyAdded) body += "Every change is an added token. " + why + ", update the baseline by " + create + ".\n\n";
+        // A note that :root was read is no warning. The rest are capped, as
+        // there can be one per uncategorized variable and an issue body
+        // holds 65,536 characters; the step's log has them all.
+        const listed = warnings.filter(w => !w.startsWith("Resolved CSS variable references from "));
+        if (collections.length && listed.length) {
+          body += "### Warnings\n";
+          for (const w of listed.slice(0, 20)) body += "- " + w + "\n";
+          if (listed.length > 20) body += "- and " + (listed.length - 20) + " more, in the Detect token drift log\n";
           body += "\n";
         }
 
@@ -491,11 +581,30 @@ runs:
       env:
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
+        EXCLUDE_PROPS: ${{ inputs.exclude_props }}
+        REQUEST_TIMEOUT: ${{ inputs.request_timeout }}
+        # A line on stderr per component as it is read, so a long map shows
+        # in the log where it is rather than nothing for minutes.
+        STORYSYNC_PROGRESS: "1"
+        SNAP_DIR: ${{ inputs.snap_dir }}
       run: |
         STORYSYNC_CLI="$GITHUB_ACTION_PATH/../dist/cli/index.js"
         ARGS=(--storybook "$STORYBOOK_URL" --json)
         if [ -n "$COMPONENTS" ]; then
           ARGS+=(--components "$COMPONENTS")
+        fi
+        if [ -n "$EXCLUDE_PROPS" ]; then
+          ARGS+=(--exclude-props "$EXCLUDE_PROPS")
+        fi
+        if [ -n "$REQUEST_TIMEOUT" ]; then
+          ARGS+=(--request-timeout "$REQUEST_TIMEOUT")
+        fi
+        # The snap the push was measured into: map takes the props the
+        # stories' argTypes add, and leaves out what snap left out, from it.
+        if [ -n "$SNAP_DIR" ]; then
+          ARGS+=(--snap "$SNAP_DIR")
+        else
+          ARGS+=(--no-snap)
         fi
         # Fails on a components name that matches nothing, listing the names
         # there are, rather than mapping fewer components than asked for.
@@ -539,6 +648,8 @@ runs:
         BASELINE_PATH: ${{ inputs.baseline }}
         STORYBOOK_URL: ${{ inputs.storybook_url }}
         COMPONENTS: ${{ inputs.components }}
+        EXCLUDE_PROPS: ${{ inputs.exclude_props }}
+        SNAP_DIR: ${{ inputs.snap_dir }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         STORYSYNC_VERSION: ${{ steps.storysync.outputs.version }}
       run: |
@@ -560,10 +671,23 @@ runs:
         const baselinePath = process.env.BASELINE_PATH;
         const current = JSON.parse(fs.readFileSync("storysync-current.json", "utf8"));
 
+        // Said once: map couldn't see some stories' argTypes, which only a
+        // snap records, so props they add or mark as behavior were missed.
+        const unseen = current.props && Array.isArray(current.props.argTypesUnseen) ? current.props.argTypesUnseen : [];
+        if (unseen.length) {
+          const missing = current.props.snap ? current.props.snap + " doesn't have them" : process.env.SNAP_DIR ? "there is no snap at " + process.env.SNAP_DIR + "/styles.json" : "snap_dir is empty";
+          console.log(escape("::notice::storysync map couldn't see the argTypes of " + unseen.length + " component" + (unseen.length === 1 ? "" : "s") + " (" + unseen.slice(0, 5).join(", ") + (unseen.length > 5 ? " and " + (unseen.length - 5) + " more" : "") + "): " + missing + ". Commit the snap the push was measured into, or point snap_dir at it."));
+        }
+
         // The command that writes the baseline, as the action maps components,
         // with the storysync it runs.
         let command = "npx " + quote("storysync@" + process.env.STORYSYNC_VERSION) + " map --storybook " + quote(process.env.STORYBOOK_URL);
         if (process.env.COMPONENTS) command += " --components " + quote(process.env.COMPONENTS);
+        // The props left out change the mapping, so the baseline leaves them out too.
+        if (process.env.EXCLUDE_PROPS) command += " --exclude-props " + quote(process.env.EXCLUDE_PROPS);
+        const snapDir = process.env.SNAP_DIR ?? ".storysync/snaps";
+        if (!snapDir) command += " --no-snap";
+        else if (path.normalize(snapDir).replace(/\/+$/, "") !== ".storysync/snaps") command += " --snap " + quote(snapDir);
         command += " --json > " + quote(baselinePath);
         if (path.dirname(baselinePath) !== ".") command = "mkdir -p -- " + quote(path.dirname(baselinePath)) + " && " + command;
         const create = "running this in " + where + " with Storybook running, then commit it: " + command + " (the action's json output holds the same JSON)";
@@ -589,32 +713,87 @@ runs:
           process.exit(1);
         }
 
-        // Components are told apart by their Storybook title, which is unique
-        // where the name needn't be: Forms/Button and Nav/Button are both
-        // Button, and keyed on the name the last of them stood for both.
-        const key = (c) => c.title ?? c.name;
-        // A key on two components, as in a baseline written before map --json
-        // gave titles, or two untitled components of one name, would let one
-        // replace the other in the maps below and hide its drift.
+        // Components are matched by their Storybook ID, which map --json records
+        // for each one and no two components share. Matched by title, two with no
+        // title, Toaster under both ui/base/Sonner and ui/radix/Sonner, had one
+        // key, and the check could never pass. Each is reported by its title.
+        const label = (c) => c.title ?? c.id ?? c.name;
+        const key = (c) => c.id ?? c.title ?? c.name;
+        // Letters and digits, lowercased: what Storybook keeps of a title in the
+        // ID it makes from it. A title storysync 0.3.0 rebuilt from an ID, "UI
+        // Base/Button", comes out the same as Storybook's own, "ui/base/Button".
+        const loose = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+        // A key on two components would let one stand for the other and hide its
+        // drift.
         const repeated = (list) => [...new Set(list.map(key).filter((k, i, all) => all.indexOf(k) !== i))];
-        const baseRepeats = repeated(baseline.components);
+        const baseRepeats = repeated(baseline.components.filter((c) => c.id != null));
         if (baseRepeats.length) {
           console.log(escape("::error::The baseline at " + baselinePath + " (relative to " + where + ") has more than one component keyed " + baseRepeats.map(k => JSON.stringify(k)).join(", ") + ", so they can't be told apart. Recreate it by " + create));
           process.exit(1);
         }
         const currRepeats = repeated(current.components);
         if (currRepeats.length) {
-          console.log(escape("::error::storysync map returned more than one component keyed " + currRepeats.map(k => JSON.stringify(k)).join(", ") + " with no Storybook title to tell them apart, so their drift can't be checked."));
+          console.log(escape("::error::storysync map returned more than one component keyed " + currRepeats.map(k => JSON.stringify(k)).join(", ") + ", so their drift can't be checked."));
           process.exit(1);
         }
-        const baseMap = Object.fromEntries(baseline.components.map(c => [key(c), c]));
-        const currMap = Object.fromEntries(current.components.map(c => [key(c), c]));
 
-        const added = current.components.filter(c => !baseMap[key(c)]);
-        const removed = baseline.components.filter(c => !currMap[key(c)]);
+        // Each baseline component with the current one of its ID. A baseline
+        // written before map --json recorded IDs has none, and titles rebuilt
+        // from the IDs, so its components are matched by title, then by title as
+        // Storybook makes an ID of it, then, with no title, by name: each time
+        // only where one component on each side has the key, so nothing is guessed.
+        // By name, only with a component 0.3.0 would have left untitled too: it
+        // rebuilt a title for any whose ID ends in its name, so a component like
+        // that is not the untitled one, whatever its name.
+        const kebab = (name) => [name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").replace(/\s+/g, "-").toLowerCase(), name.replace(/\s+/g, "").toLowerCase()];
+        const untitledIn030 = (c) => c.id == null || !kebab(c.name).some((k) => c.id.split("--")[0].endsWith("-" + k));
+        const baseOf = new Map();
+        const currById = new Map(current.components.filter((c) => c.id != null).map((c) => [c.id, c]));
+        for (const b of baseline.components) {
+          if (b.id != null && currById.has(b.id)) baseOf.set(currById.get(b.id), b);
+        }
+        const legacy = baseline.components.filter((b) => b.id == null);
+        const ways = [
+          [(b) => b.title, (c) => [c.title]],
+          [(b) => b.title != null ? loose(b.title) : null, (c) => [c.title != null ? loose(c.title) : null, c.id != null ? loose(c.id) : null]],
+          [(b) => b.title == null ? b.name : null, (c) => [untitledIn030(c) ? c.name : null]],
+        ];
+        for (const [baseKey, currKeys] of ways) {
+          const matched = new Set(baseOf.values());
+          const bases = new Map();
+          for (const b of legacy) {
+            const k = matched.has(b) ? null : baseKey(b);
+            if (k) bases.set(k, [...(bases.get(k) ?? []), b]);
+          }
+          const currs = new Map();
+          for (const c of current.components) {
+            if (baseOf.has(c)) continue;
+            for (const k of new Set(currKeys(c).filter(Boolean))) currs.set(k, [...(currs.get(k) ?? []), c]);
+          }
+          for (const [k, sharing] of bases) {
+            const found = currs.get(k) ?? [];
+            if (sharing.length === 1 && found.length === 1 && !baseOf.has(found[0])) baseOf.set(found[0], sharing[0]);
+          }
+        }
+        if (legacy.length) {
+          console.log(escape("::warning::The baseline at " + baselinePath + " (relative to " + where + ") was written before map --json recorded each component's Storybook ID, so its components were matched by title. Recreate it by " + create));
+        }
+
+        // The mapping is what is compared. A component's ID, title and category
+        // say which component it is, and a title rebuilt from an ID, in an old
+        // baseline or without Storybook's index, differs from Storybook's own as
+        // letters and digits never do. So a title counts only if those changed,
+        // as when a story moves to another folder under an ID of its own.
+        // What was left out, and why, is said with a change rather than
+        // being one: a prop left out is a change to variantProperties.
+        const mapping = ({ id, title, category, excludedProps, ...rest }) => JSON.stringify(rest);
+        const retitled = (b, c) => b.title != null && c.title != null && loose(b.title) !== loose(c.title);
+        const matched = new Set(baseOf.values());
+        const added = current.components.filter(c => !baseOf.has(c));
+        const removed = baseline.components.filter(b => !matched.has(b));
         const changed = current.components.filter(c => {
-          const b = baseMap[key(c)];
-          return b && JSON.stringify(b) !== JSON.stringify(c);
+          const b = baseOf.get(c);
+          return b && (mapping(b) !== mapping(c) || retitled(b, c));
         });
 
         if (!added.length && !removed.length && !changed.length) {
@@ -631,20 +810,55 @@ runs:
 
         if (added.length) {
           body += "### Added\n";
-          for (const c of added) body += "- **" + key(c) + "** (" + c.combinations + " combinations)\n";
+          for (const c of added) body += "- **" + label(c) + "** (" + c.combinations + (c.combinations === 1 ? " combination" : " combinations") + ")\n";
           body += "\n";
         }
         if (removed.length) {
           body += "### Removed\n";
-          for (const c of removed) body += "- **" + key(c) + "**\n";
+          for (const c of removed) body += "- **" + label(c) + "**\n";
           body += "\n";
         }
+        // What changed in a component whose counts didn't, which the counts
+        // alone leave unsaid: a baseline from storysync 0.3.0 lists values in
+        // the order the type declares them, where map now puts the default
+        // first, and has no defaultAssumed.
+        const why = (b, c) => {
+          const reasons = [];
+          if (b.name !== c.name) reasons.push("name " + b.name + " → " + c.name);
+          const before = new Map(b.variantProperties.map((p) => [p.name, p]));
+          const after = new Map(c.variantProperties.map((p) => [p.name, p]));
+          for (const p of c.variantProperties) if (!before.has(p.name)) reasons.push("adds " + p.name);
+          for (const p of b.variantProperties) if (!after.has(p.name)) reasons.push("drops " + p.name);
+          const both = (x) => x.variantProperties.map((p) => p.name).filter((n) => before.has(n) && after.has(n)).join("\n");
+          if (both(b) !== both(c)) reasons.push("props reordered");
+          for (const p of c.variantProperties) {
+            const o = before.get(p.name);
+            if (!o) continue;
+            if (o.type !== p.type) reasons.push(p.name + " " + o.type + " → " + p.type);
+            const added = p.values.filter((v) => !o.values.includes(v));
+            const dropped = o.values.filter((v) => !p.values.includes(v));
+            if (added.length) reasons.push(p.name + " adds " + added.join(", "));
+            if (dropped.length) reasons.push(p.name + " drops " + dropped.join(", "));
+            if (!added.length && !dropped.length && o.values.join("\n") !== p.values.join("\n")) reasons.push(p.name + "'s values reordered");
+            if (o.defaultValue !== p.defaultValue) reasons.push(p.name + "'s default " + o.defaultValue + " → " + p.defaultValue);
+            if (!!o.defaultAssumed !== !!p.defaultAssumed) reasons.push(p.name + "'s default " + (p.defaultAssumed ? "is now assumed, since the docs give none" : "is no longer assumed"));
+          }
+          if (!!b.capped !== !!c.capped) reasons.push(c.capped ? "now capped" : "no longer capped");
+          if ((b.error ?? null) !== (c.error ?? null)) reasons.push(c.error ? "fails to map" : "no longer fails to map");
+          return reasons;
+        };
+
         if (changed.length) {
           body += "### Changed\n";
           for (const c of changed) {
-            const b = baseMap[key(c)];
-            body += "- **" + key(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
-            body += b.combinations + " → " + c.combinations + " combinations\n";
+            const b = baseOf.get(c);
+            body += "- **" + label(c) + "**: " + b.variantProperties.length + " → " + c.variantProperties.length + " props, ";
+            body += b.combinations + " → " + c.combinations + " combinations" + (retitled(b, c) ? ", was " + label(b) : "");
+            const reasons = b.variantProperties.length === c.variantProperties.length && b.combinations === c.combinations ? why(b, c) : [];
+            // A prop the baseline had that is now left out, and why.
+            const left = (Array.isArray(c.excludedProps) ? c.excludedProps : []).filter((e) => b.variantProperties.some((p) => p.name === e.name));
+            for (const e of left) reasons.push(e.name + " left out (" + (e.reason === "excluded" ? "--exclude-props" : e.reason === "no-op" ? "every value measured the same" : e.reason === "opens" ? "measured open, with " + e.name + "=" + e.value : "the story's argTypes mark it as behavior") + ")");
+            body += (reasons.length ? " (" + reasons.join("; ") + ")" : "") + "\n";
           }
           body += "\n";
         }
@@ -659,21 +873,28 @@ runs:
         console.log(body);
         SCRIPT
 
+    # Also after a step that failed, such as Detect drift on a baseline that
+    # isn't map --json output: token drift found before it is still filed.
     - name: Create or update issue
-      if: inputs.create_issue == 'true' && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
+      if: inputs.create_issue == 'true' && !cancelled() && (steps.drift.outputs.result == 'true' || steps.token-drift.outputs.result == 'true')
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
         GH_TOKEN: ${{ github.token }}
+        COMPONENT_DRIFT: ${{ steps.drift.outputs.result }}
+        TOKEN_DRIFT: ${{ steps.token-drift.outputs.result }}
       run: |
         gh label create storysync-drift --description "Storybook-to-Figma mapping drift" --color "d93f0b" 2>/dev/null || true
-        # Combine token drift and component drift into one issue body
+        # Combine token drift and component drift into one issue body. Each
+        # report only if its step ran and found drift this time: one that was
+        # skipped, after Map components failed, didn't remove a report an
+        # earlier run of this action in the job left.
         BODY=""
-        if [ -f storysync-token-drift.md ]; then
+        if [ "$TOKEN_DRIFT" = true ] && [ -f storysync-token-drift.md ]; then
           BODY=$(cat storysync-token-drift.md)
           BODY="$BODY"$'\n'
         fi
-        if [ -f storysync-drift.md ]; then
+        if [ "$COMPONENT_DRIFT" = true ] && [ -f storysync-drift.md ]; then
           BODY="$BODY$(cat storysync-drift.md)"
         fi
         echo "$BODY" > storysync-combined-drift.md

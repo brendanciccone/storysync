@@ -9,7 +9,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
@@ -17,7 +17,7 @@ import type { AddressInfo, Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { useFigma, set, component } from "./figma-standin.js";
+import { useFigma, set, component, startFigmaStandIn } from "./figma-standin.js";
 import type { FileSpec, UseFigmaCall } from "./figma-standin.js";
 
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
@@ -30,7 +30,7 @@ const LIST = [
 ].join("\n");
 
 const DOCS: Record<string, string> = {
-  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n}\n```",
+  "forms-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n  shape?: \"round\" | \"square\";\n  asChild?: boolean = false;\n  tone?: \"info\" | number;\n}\n```",
   "data-display-card": "A card with no props.",
 };
 
@@ -38,7 +38,7 @@ const DOCS: Record<string, string> = {
 // the code, Card is in code too, and Badge exists only in Figma.
 const FIGMA_FILE: FileSpec = {
   pages: [
-    { name: "Forms", nodes: [set("Button", { size: ["sm", "lg"] })] },
+    { name: "Forms", nodes: [set("Button", { size: ["sm", "lg"], shape: ["round", "square"] })] },
     { name: "Data display", nodes: [component("Card")] },
     { name: "Feedback", nodes: [component("Badge")] },
   ],
@@ -63,7 +63,18 @@ interface StandIn {
  * `docs-show forms-button`, it fails for that component alone. use_figma
  * runs its code against `figma`.
  */
-async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = [], figma: FileSpec = FIGMA_FILE): Promise<StandIn> {
+/** What the stand-in Storybook serves: its docs list, each component's docs, and its index.json, or none. */
+interface Catalog {
+  list: string;
+  docs: Record<string, string>;
+  index?: unknown;
+  /** Whether a request for index.json is never answered. */
+  indexHangs?: boolean;
+  /** Storybook's component manifest, which the docs cache keys by; none served unless given. */
+  manifest?: unknown;
+}
+
+async function startStandIn(docs: { list: string; show: string } | null, failing: string[] = [], figma: FileSpec = FIGMA_FILE, catalog: Catalog = { list: LIST, docs: DOCS }): Promise<StandIn> {
   const calls: string[] = [];
   const figmaCalls: UseFigmaCall[] = [];
   const tools = [...(docs ? [docs.list, docs.show] : ["preview-stories"]), "use_figma"];
@@ -72,8 +83,8 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
     calls.push(args.id ? `${name} ${args.id}` : name);
     const text = (t: string) => ({ content: [{ type: "text", text: t }] });
     if (failing.includes(name) || failing.includes(`${name} ${args.id}`)) return { ...text(`Storybook index could not be built (${name})`), isError: true };
-    if (name === docs?.list) return text(LIST);
-    if (name === docs?.show) return text(DOCS[args.id ?? ""] ?? "");
+    if (name === docs?.list) return text(catalog.list);
+    if (name === docs?.show) return text(catalog.docs[args.id ?? ""] ?? "");
     return useFigma(figma, args.code ?? "", figmaCalls);
   }
 
@@ -91,6 +102,15 @@ async function startStandIn(docs: { list: string; show: string } | null, failing
   }
 
   const server = createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/index.json" && catalog.indexHangs) return;
+    if (req.method === "GET" && req.url === "/index.json" && catalog.index !== undefined) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(catalog.index));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/manifests/components.json" && catalog.manifest !== undefined) {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(catalog.manifest));
+      return;
+    }
     // No standalone event stream: the client asks for one and carries on
     // without it when refused.
     if (req.method !== "POST") {
@@ -147,8 +167,13 @@ after(() => {
  * keeping the whole run alive.
  */
 function run(...args: string[]): Promise<{ status: number; stdout: string; out: string }> {
+  return runIn(process.cwd(), ...args);
+}
+
+/** Runs the CLI as run() does, in `cwd`. */
+function runIn(cwd: string, ...args: string[]): Promise<{ status: number; stdout: string; out: string }> {
   return new Promise((resolve) => {
-    execFile(process.execPath, [CLI, ...args], { encoding: "utf8", timeout: 25_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
+    execFile(process.execPath, [CLI, ...args], { cwd, encoding: "utf8", timeout: 25_000, killSignal: "SIGKILL" }, (err, stdout, stderr) => {
       const status = err ? Number((err as { code?: unknown }).code ?? -1) : 0;
       resolve({ status, stdout, out: `${stdout}${stderr}`.replace(/\u001b\[[0-9;]*m/g, "") });
     });
@@ -176,7 +201,25 @@ test("map CLI: matches names and IDs as snap does, ignoring case and spacing", a
   const r = await run("map", "--storybook", storybook, "--components", " button , DATA-DISPLAY-CARD", "--json");
   assert.equal(r.status, 0, r.out);
   const data = JSON.parse(r.stdout) as { components: { name: string; combinations: number }[] };
-  assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 2], ["Card", 1]]);
+  assert.deepEqual(data.components.map((c) => [c.name, c.combinations]), [["Button", 4], ["Card", 1]]);
+});
+
+test("map CLI: --exclude-props leaves the named props out, ignoring case", async () => {
+  const r = await run("map", "--storybook", storybook, "--components", "Button", "--exclude-props", "SHAPE, nothing", "--json");
+  assert.equal(r.status, 0, r.out);
+  const [button] = (JSON.parse(r.stdout) as { components: { variantProperties: { name: string }[]; combinations: number }[] }).components;
+  assert.deepEqual(button.variantProperties.map((p) => p.name), ["size"]);
+  assert.equal(button.combinations, 2);
+});
+
+test("map CLI: --json marks a default the docs don't give, and only that one", async () => {
+  const r = await run("map", "--storybook", storybook, "--components", "Button", "--json");
+  assert.equal(r.status, 0, r.out);
+  const [button] = (JSON.parse(r.stdout) as { components: { variantProperties: unknown[] }[] }).components;
+  assert.deepEqual(button.variantProperties, [
+    { name: "size", type: "VARIANT", values: ["sm", "lg"], defaultValue: "sm" },
+    { name: "shape", type: "VARIANT", values: ["round", "square"], defaultValue: "round", defaultAssumed: true },
+  ]);
 });
 
 /**
@@ -257,7 +300,7 @@ test("diff CLI: when Storybook can't be listed, --components still narrows Figma
   assert.equal(r.status, 0, r.out);
   assert.match(r.out, /Failed to list Storybook components/);
   assert.match(r.out, /"docs-list" failed: Storybook index could not be built/);
-  assert.match(r.out, /Storybook listing failed — component results are partial/);
+  assert.match(r.out, /Storybook listing failed, so the component results are partial/);
   assert.doesNotMatch(r.out, /matched no component/);
   assert.doesNotMatch(r.out, /Card|Badge|No differences found|Components in sync/);
 
@@ -320,24 +363,98 @@ test("diff CLI: compares the components on every page of the Figma file, not onl
   assert.ok(standIn.figmaCalls.every((c) => !c.error));
 });
 
-test("diff CLI: a name on two Figma pages is counted once, as ambiguous, not also as matched", async () => {
-  // An archive page keeps an old Button. The first page's Button agrees with
-  // the code, but comparing it as well counted Button twice in the summary,
-  // "2 matched" beside "1 ambiguous" for the two components code has.
+test("diff CLI: of a name on two Figma pages, the set on the component's page is compared and the other is not in code", async () => {
+  // An archive page keeps an old Button. Compared by name alone, which of the
+  // two was Button's was never chosen, so neither was compared.
   const standIn = await startStandIn(ADDON_MCP_10_6, [], {
     pages: [...FIGMA_FILE.pages, { name: "Archive", nodes: [set("Button", { size: ["sm"] })] }],
   });
   standIns.push(standIn);
   const r = await diffAgainst(standIn);
-  assert.match(r.out, /\? Button ambiguous 2 Figma components share this name, and code has one; none was compared/);
-  assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 ambiguous$/m);
+  assert.match(r.out, /- Archive\/Button not in code/);
+  assert.match(r.out, /^Components: 2 matched, 2 Figma-only$/m);
 
   const strict = await diffAgainst(standIn, "--strict", "--json");
   assert.equal(strict.status, 1, strict.out);
   const data = JSON.parse(strict.stdout) as DiffJson & { summary: { componentsMatched: number; componentsAmbiguous: number } };
-  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Button", "ambiguous"], ["Badge", "figma_only"]]);
-  assert.equal(data.summary.componentsMatched, 1);
-  assert.equal(data.summary.componentsAmbiguous, 1);
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"], ["Archive/Button", "figma_only"]]);
+  assert.equal(data.summary.componentsMatched, 2);
+  assert.equal(data.summary.componentsAmbiguous, 0);
+});
+
+test("diff CLI: a name on two Figma pages, neither the component's, is counted once, as ambiguous, not also as matched", async () => {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [
+      { name: "Library", nodes: [set("Button", { size: ["sm", "lg"] })] },
+      { name: "Archive", nodes: [set("Button", { size: ["sm"] })] },
+      ...FIGMA_FILE.pages.slice(1),
+    ],
+  });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn);
+  assert.match(r.out, /\? Button ambiguous 2 Figma components share this name, and code has one; none was compared, in code for Forms; in Figma on Library, Archive/);
+  assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 ambiguous$/m);
+});
+
+test("diff CLI: --exclude-props leaves out the props the push left out, so they aren't reported missing from Figma", async () => {
+  // The push ran snap with --exclude-props shape, so Figma's Button has no
+  // shape. diff mapped every prop, and reported it missing on every run.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm", "lg"] })] }, ...FIGMA_FILE.pages.slice(1)],
+  });
+  standIns.push(standIn);
+  const plain = await diffAgainst(standIn, "--components", "Button", "--json");
+  type Json = Omit<DiffJson, "components"> & { components: { name: string; status: string; details: string[] }[] };
+  assert.deepEqual((JSON.parse(plain.stdout) as Json).components.map((c) => [c.name, c.status, c.details]), [
+    ["Button", "variant_mismatch", ['prop "shape" missing from Figma']],
+  ]);
+  const excluded = await diffAgainst(standIn, "--components", "Button", "--exclude-props", "SHAPE, loop", "--strict");
+  assert.equal(excluded.status, 0, excluded.out);
+  assert.match(excluded.out, /Components in sync/);
+});
+
+test("diff CLI: a set Figma flags as errored is reported by name, page and node, and the rest of its page is still compared", async () => {
+  // 0.3.0 pushed a component with no variant properties as a set of one
+  // variant named "", which Figma flags as errored. Reading its properties
+  // threw, failing the whole page's read, and so the whole diff.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [
+      { name: "Forms", nodes: [set("Button", { "": [""] }, { errored: true })] },
+      { name: "Data display", nodes: [set("Toolbar", { size: ["sm"] }), component("Card")] },
+    ],
+  });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /! Button \(page Forms, node 1:1\) errored in Figma \(can't read its properties\): in get_componentPropertyDefinitions: Component set has existing errors/);
+  assert.match(r.out, /^Components: 1 matched, 1 Figma-only, 1 errored in Figma$/m);
+  assert.doesNotMatch(r.out, /Figma read failed|No differences found|Components in sync/);
+
+  const strict = await diffAgainst(standIn, "--strict", "--json");
+  assert.equal(strict.status, 1, strict.out);
+  const data = JSON.parse(strict.stdout) as Omit<DiffJson, "components"> & { components: { name: string; status: string; page?: string; nodeId?: string }[]; summary: { componentsErrored: number } };
+  assert.equal(data.figmaReadFailed, false);
+  assert.deepEqual(data.components.map((c) => [c.name, c.status, c.page, c.nodeId]), [
+    ["Button", "errored", "Forms", "1:1"],
+    ["Toolbar", "figma_only", "Data display", undefined],
+  ]);
+  assert.equal(data.summary.componentsErrored, 1);
+});
+
+test("diff CLI: a set the push stored a Storybook ID on is compared with that component, wherever it was moved", async () => {
+  // Moved to an archive page and renamed, Button's set was a name only
+  // Figma had, and the code's Button not in Figma.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [
+      { name: "Archive", nodes: [set("Old button", { size: ["sm", "lg"], shape: ["round", "square"] }, { storybookId: "forms-button" })] },
+      ...FIGMA_FILE.pages.slice(1),
+    ],
+  });
+  standIns.push(standIn);
+  const r = await diffAgainst(standIn, "--json");
+  const data = JSON.parse(r.stdout) as DiffJson & { summary: { componentsMatched: number } };
+  assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
+  assert.equal(data.summary.componentsMatched, 2);
 });
 
 test("diff CLI: a Figma component too big for one use_figma response fails the read, and --strict", async () => {
@@ -350,7 +467,7 @@ test("diff CLI: a Figma component too big for one use_figma response fails the r
   const r = await diffAgainst(standIn);
   assert.match(r.out, /Failed to read Figma components/);
   assert.match(r.out, /Failed to read page "Icons" of the Figma file: .*Component "Icon" on page "Icons" comes to \d+ bytes as use_figma returns it, more than the 17000 one call can carry under its 20kb response limit/);
-  assert.match(r.out, /Figma read failed — diff results above are partial/);
+  assert.match(r.out, /Figma read failed, so the diff results above are partial/);
   assert.doesNotMatch(r.out, /not in Figma|not in code|No differences found|Components in sync/);
 
   const strict = await diffAgainst(standIn, "--strict", "--json");
@@ -372,24 +489,25 @@ test("diff CLI: a component code has but couldn't map is reported, never as not 
     pages: [{ name: "Data display", nodes: [component("Card")] }],
   });
   standIns.push(withButton, withoutButton);
-  type Failures = DiffJson & { hasDifferences: boolean; mappingFailures: { name: string; error: string }[] };
+  type Failures = DiffJson & { hasDifferences: boolean; mappingFailures: { name: string; id: string; title?: string; error: string }[] };
   const unmapped = /^Error: Storybook MCP tool "docs-show" failed: Storybook index could not be built \(docs-show\)$/;
 
   const text = await diffAgainst(withButton);
   assert.equal(text.status, 0, text.out);
-  assert.match(text.out, /Skipped 1 component\(s\) due to mapping errors:\n {2}Button: Error: Storybook MCP tool "docs-show" failed/);
-  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\) — component results are partial: Button was not compared/);
+  // Each failure is named by its title, which says which Button it is.
+  assert.match(text.out, /Skipped 1 component\(s\) due to mapping errors:\n {2}Forms\/Button: Error: Storybook MCP tool "docs-show" failed/);
+  assert.match(text.out, /Mapping failed for 1 Storybook component\(s\), so the component results are partial: Forms\/Button was not compared/);
   assert.doesNotMatch(text.out, /Button not in code|No differences found/);
   assert.match(text.out, /- Badge not in code/);
   const json = await diffAgainst(withButton, "--json");
   const data = JSON.parse(json.stdout) as Failures;
   assert.deepEqual(data.components.map((c) => [c.name, c.status]), [["Badge", "figma_only"]]);
-  assert.deepEqual(data.mappingFailures.map((f) => f.name), ["Button"]);
+  assert.deepEqual(data.mappingFailures.map((f) => [f.name, f.id, f.title]), [["Button", "forms-button", "Forms/Button"]]);
   assert.match(data.mappingFailures[0].error, unmapped);
 
   const clean = await diffAgainst(withoutButton);
   assert.equal(clean.status, 0, clean.out);
-  assert.match(clean.out, /component results are partial: Button was not compared/);
+  assert.match(clean.out, /component results are partial: Forms\/Button was not compared/);
   assert.doesNotMatch(clean.out, /Components in sync|No differences found/);
   const strict = await diffAgainst(withoutButton, "--strict", "--json");
   assert.equal(strict.status, 1, strict.out);
@@ -398,6 +516,295 @@ test("diff CLI: a component code has but couldn't map is reported, never as not 
   assert.deepEqual(partial.components, []);
   assert.deepEqual(partial.mappingFailures.map((f) => f.name), ["Button"]);
   assert.match(partial.mappingFailures[0].error, unmapped);
+});
+
+// --- A Storybook whose components share their names ---
+
+// A shadcn registry: each component as Base UI's and as Radix's, the Sonner
+// stories documenting Toaster, with Storybook's index.json beside its MCP
+// server.
+const REGISTRY: Catalog = {
+  list: [
+    "# Components", "",
+    "- Button (ui-base-button)", "  - Default (ui-base-button--default)", "  - Outline (ui-base-button--outline)",
+    "- Button (ui-radix-button)", "  - Default (ui-radix-button--default)",
+    "- Toaster (ui-base-sonner)", "  - Default (ui-base-sonner--default)",
+    "- Toaster (ui-radix-sonner)", "  - Default (ui-radix-sonner--default)",
+  ].join("\n"),
+  docs: {
+    "ui-base-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n}\n```",
+    "ui-radix-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" | \"xl\" = \"sm\";\n}\n```",
+    "ui-base-sonner": "A toaster.",
+    "ui-radix-sonner": "A toaster.",
+  },
+  index: {
+    v: 5,
+    entries: Object.fromEntries([
+      ["ui-base-button--default", "ui/base/Button"], ["ui-base-button--outline", "ui/base/Button"],
+      ["ui-radix-button--default", "ui/radix/Button"],
+      ["ui-base-sonner--default", "ui/base/Sonner"], ["ui-radix-sonner--default", "ui/radix/Sonner"],
+    ].map(([id, title]) => [id, { id, title, name: "Default", importPath: "./x.stories.tsx", type: "story", tags: [] }])),
+  },
+};
+
+// The file the push makes of it: a page per category, each set named by its
+// title's last segment. Radix's Button lacks a size.
+const REGISTRY_FIGMA: FileSpec = {
+  pages: [
+    { name: "ui/base", nodes: [set("Button", { size: ["sm", "lg"] }), component("Sonner")] },
+    { name: "ui/radix", nodes: [set("Button", { size: ["sm", "lg"] }), component("Sonner")] },
+  ],
+};
+
+async function registry(): Promise<StandIn> {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], REGISTRY_FIGMA, REGISTRY);
+  standIns.push(standIn);
+  return standIn;
+}
+
+test("list CLI: each component by its Storybook title and ID, its stories counted in words", async () => {
+  const standIn = await registry();
+  const r = await run("list", "--storybook", standIn.url);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /^ {2}ui\/base\/Button ui-base-button \(2 stories\)$/m);
+  assert.match(r.out, /^ {2}ui\/radix\/Sonner ui-radix-sonner \(1 story\)$/m);
+  assert.doesNotMatch(r.out, /1 stories|Toaster|rebuilt/);
+
+  const json = await run("list", "--storybook", standIn.url, "--json");
+  assert.equal(json.status, 0, json.out);
+  assert.deepEqual((JSON.parse(json.stdout) as { components: unknown[] }).components[2], {
+    id: "ui-base-sonner", name: "Toaster", title: "ui/base/Sonner", category: "ui/base", storyIds: ["ui-base-sonner--default"],
+  });
+
+  // Without an index.json, titles are rebuilt from IDs, and list says so.
+  const derived = await run("list", "--storybook", storybook);
+  assert.match(derived.out, /^ {2}Forms\/Button forms-button \(1 story\)$/m);
+  assert.match(derived.out, /2 titles were rebuilt from IDs, since Storybook's index\.json couldn't be read or doesn't list them\./);
+});
+
+// shadcn's registry, cut down: a Button with a component behind its
+// stories, and a design/* token page, a table of swatches with none.
+const TOKEN_PAGES: Catalog = {
+  list: [
+    "# Components", "",
+    "- Button (ui-base-button)", "  - Default (ui-base-button--default)",
+    "- Color (design-base-color)", "  - Functional (design-base-color--functional)",
+  ].join("\n"),
+  docs: {
+    "ui-base-button": "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" = \"sm\";\n}\n```",
+    "design-base-color": "# Color\n\n## Stories\n\n### Functional\n\nStory ID: design-base-color--functional",
+  },
+  index: {
+    v: 5,
+    entries: {
+      "ui-base-button--default": { id: "ui-base-button--default", title: "ui/base/Button", name: "Default", importPath: "./button.stories.tsx", componentPath: "./button.tsx", type: "story", tags: [] },
+      "design-base-color--docs": { id: "design-base-color--docs", title: "design/base/Color", name: "Docs", importPath: "./color.stories.tsx", type: "docs", tags: [] },
+      "design-base-color--functional": { id: "design-base-color--functional", title: "design/base/Color", name: "Functional", importPath: "./color.stories.tsx", type: "story", tags: [] },
+    },
+  },
+  manifest: { v: 0, components: { "ui-base-button": { id: "ui-base-button", name: "Button" }, "design-base-color": { id: "design-base-color", error: { name: "No component found" } } } },
+};
+
+test("list CLI: an entry whose stories name no component is listed as skipped, and map and diff leave it out unless named", async () => {
+  // design/base holds a set an earlier push made for the token page, named and by its Storybook ID.
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], { pages: [{ name: "ui/base", nodes: [set("Button", { size: ["sm", "lg"] })] }, { name: "design/base", nodes: [set("Color", { size: ["sm"] }, { storybookId: "design-base-color" })] }] }, TOKEN_PAGES);
+  standIns.push(standIn);
+  const r = await run("list", "--storybook", standIn.url);
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /^1 components:\n\n {2}ui\/base\/Button ui-base-button \(1 story\)\n\n1 entry skipped, as Storybook's index shows its stories name no component \(no meta\.component\), so there is none to push; name one with --components to measure it anyway:\n\n {2}design\/base\/Color design-base-color \(1 story\)$/m);
+  const json = await run("list", "--storybook", standIn.url, "--json");
+  assert.deepEqual((JSON.parse(json.stdout) as { components: { id: string; docsOnly?: boolean }[] }).components.map((c) => [c.id, c.docsOnly]), [["ui-base-button", undefined], ["design-base-color", true]]);
+
+  const mapped = await run("map", "--storybook", standIn.url, "--no-snap", "--no-cache", "--json");
+  assert.equal(mapped.status, 0, mapped.out);
+  assert.deepEqual((JSON.parse(mapped.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["ui-base-button"]);
+  assert.ok(!standIn.calls.includes("docs-show design-base-color"), standIn.calls.join(", "));
+  const text = await run("map", "--storybook", standIn.url, "--no-snap", "--no-cache");
+  assert.match(text.out, /Skipped 1 entry whose stories name no component \(see list\)/);
+
+  // Named, it is mapped, as what the user asked for.
+  const named = await run("map", "--storybook", standIn.url, "--components", "design/base/Color", "--no-snap", "--no-cache", "--json");
+  assert.equal(named.status, 0, named.out);
+  assert.deepEqual((JSON.parse(named.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["design-base-color"]);
+
+  // diff compares the Button alone: the token page isn't missing from Figma,
+  // nor its set, which an earlier push made, missing from code.
+  const diffed = await diffAgainst(standIn, "--no-snap", "--no-cache", "--strict");
+  assert.equal(diffed.status, 0, diffed.out);
+  assert.match(diffed.out, /Components in sync/);
+});
+
+test("map CLI: the docs cache serves each component's docs until Storybook's index or the component's manifest entry changes; --no-cache reads them", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "storysync-cache-cli-"));
+  const catalog: Catalog = structuredClone(TOKEN_PAGES);
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, catalog);
+  standIns.push(standIn);
+  const shows = () => standIn.calls.filter((c) => c === "docs-show ui-base-button").length;
+  try {
+    const map = (...more: string[]) => runIn(cwd, "map", "--storybook", standIn.url, "--no-snap", "--json", ...more);
+    const first = await map();
+    assert.equal(first.status, 0, first.out);
+    assert.equal(shows(), 1);
+    assert.ok(existsSync(join(cwd, ".storysync", "cache", "docs")));
+    const second = await map();
+    assert.equal(second.stdout, first.stdout);
+    assert.equal(shows(), 1, "the second map asked Storybook again");
+    await map("--no-cache");
+    assert.equal(shows(), 2);
+    // A prop changed: the manifest entry the docs are made from changes with it.
+    (catalog.manifest as { components: Record<string, unknown> }).components["ui-base-button"] = { id: "ui-base-button", name: "Button", props: ["size", "tone"] };
+    catalog.docs["ui-base-button"] = "```ts\nexport type Props = {\n  size?: \"sm\" | \"lg\" | \"xl\" = \"sm\";\n}\n```";
+    const changed = await map();
+    assert.equal(shows(), 3);
+    assert.deepEqual((JSON.parse(changed.stdout) as { components: { variantProperties: { values: string[] }[] }[] }).components[0].variantProperties[0].values, ["sm", "lg", "xl"]);
+    // A story added changes the index, and so every component's key.
+    (catalog.index as { entries: Record<string, unknown> }).entries["ui-base-button--outline"] = { id: "ui-base-button--outline", title: "ui/base/Button", name: "Outline", importPath: "./button.stories.tsx", componentPath: "./button.tsx", type: "story", tags: [] };
+    await map();
+    assert.equal(shows(), 4);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+/** A snap's styles.json in a directory of its own, as --snap takes it. */
+function snapDir(components: object[]): string {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-snap-props-"));
+  writeFileSync(join(dir, "styles.json"), JSON.stringify({ version: 1, components }));
+  return dir;
+}
+
+// What snap recorded of the stand-in's Button: its story declares `disabled`,
+// which the docs don't list, and every shape measured the same.
+const BUTTON_SNAP = {
+  id: "forms-button",
+  argTypes: { disabled: { type: "boolean", control: "boolean", initial: false }, size: { type: "enum", options: ["sm", "lg"] } },
+  excludedProps: [{ name: "shape", reason: "no-op", markup: "changed" }],
+};
+
+test("map CLI: takes the props a snap's argTypes add and leaves out what it left out, says what it can't see, and --keep-props keeps one", async () => {
+  const dir = snapDir([BUTTON_SNAP]);
+  try {
+    const r = await run("map", "--storybook", storybook, "--snap", dir, "--json");
+    assert.equal(r.status, 0, r.out);
+    const data = JSON.parse(r.stdout) as { components: { id: string; variantProperties: { name: string }[]; excludedProps?: unknown }[]; props: { snap: string; argTypesUnseen: string[] } };
+    const [button, card] = data.components;
+    assert.deepEqual(button.variantProperties.map((p) => p.name), ["size", "disabled"]);
+    assert.deepEqual(button.excludedProps, [{ name: "shape", reason: "no-op", markup: "changed" }]);
+    assert.equal(card.excludedProps, undefined);
+    assert.equal(data.props.snap, join(dir, "styles.json"));
+    assert.deepEqual(data.props.argTypesUnseen, ["data-display-card"]);
+
+    const text = await run("map", "--storybook", storybook, "--snap", dir);
+    assert.match(text.out, /^ {6}left out `shape` \(every value measured the same though the markup changed with it: behavior only\); to make it a variant property again, pass --keep-props shape$/m);
+    assert.match(text.out, /can't see the argTypes of 1 of 2 components \(data-display-card\): .*styles\.json doesn't have those\./);
+
+    const kept = await run("map", "--storybook", storybook, "--snap", dir, "--keep-props", "shape", "--json");
+    assert.deepEqual((JSON.parse(kept.stdout) as typeof data).components[0].variantProperties.map((p) => p.name), ["size", "shape", "disabled"]);
+    const both = await run("map", "--storybook", storybook, "--snap", dir, "--keep-props", "shape", "--exclude-props", "Shape", "--json");
+    assert.equal(both.status, 1);
+    assert.match((JSON.parse(both.stdout) as { error: string }).error, /--exclude-props and --keep-props both name "Shape"/);
+
+    // With no snap, the docs alone, and said so.
+    const none = await run("map", "--storybook", storybook, "--no-snap");
+    assert.match(none.out, /Without a browser, storysync can't see the stories' argTypes: there is no snap to read them from\./);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("inspect CLI: says which props the story's argTypes add, and which are left out and why", async () => {
+  const dir = snapDir([BUTTON_SNAP]);
+  try {
+    const r = await run("inspect", "--storybook", storybook, "--component", "Button", "--snap", dir);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /shape \(union\) -> left out: every value measured the same though the markup changed with it: behavior only$/m);
+    assert.match(r.out, /disabled \(boolean\) -> BOOLEAN \[true, false\], default false \(from the story's argTypes\)$/m);
+    assert.match(r.out, /2 variant properties, 4 combinations/);
+    assert.match(r.out, /To make one a variant property again, pass --keep-props shape\./);
+    assert.doesNotMatch(r.out, /can't see/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("diff CLI: leaves out what the snap records the push left out, without --exclude-props", async () => {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm", "lg"], disabled: ["true", "false"] })] }, ...FIGMA_FILE.pages.slice(1)],
+  });
+  standIns.push(standIn);
+  const dir = snapDir([BUTTON_SNAP]);
+  try {
+    const r = await diffAgainst(standIn, "--components", "Button", "--snap", dir, "--strict");
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /Components in sync/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("list CLI: an index.json that never answers holds the listing up for seconds, not half a minute", async () => {
+  const standIn = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { ...REGISTRY, indexHangs: true });
+  standIns.push(standIn);
+  const started = Date.now();
+  const r = await run("list", "--storybook", standIn.url, "--json");
+  assert.equal(r.status, 0, r.out);
+  assert.ok(Date.now() - started < 15_000, `took ${Date.now() - started}ms`);
+  // Rebuilt, as --json says of each title it rebuilt.
+  const components = (JSON.parse(r.stdout) as { components: { title?: string; titleDerived?: boolean }[] }).components;
+  assert.deepEqual(components.map((c) => [c.title, c.titleDerived]), [["UI Base/Button", true], ["UI Radix/Button", true], [undefined, undefined], [undefined, undefined]]);
+});
+
+test("map CLI: every component carries its ID and Storybook's title, and --components takes a title", async () => {
+  const standIn = await registry();
+  const r = await run("map", "--storybook", standIn.url, "--json");
+  assert.equal(r.status, 0, r.out);
+  const data = JSON.parse(r.stdout) as { components: { id: string; name: string; title?: string; category?: string }[] };
+  assert.deepEqual(data.components.map((c) => [c.id, c.name, c.title, c.category]), [
+    ["ui-base-button", "Button", "ui/base/Button", "ui/base"],
+    ["ui-radix-button", "Button", "ui/radix/Button", "ui/radix"],
+    ["ui-base-sonner", "Toaster", "ui/base/Sonner", "ui/base"],
+    ["ui-radix-sonner", "Toaster", "ui/radix/Sonner", "ui/radix"],
+  ]);
+
+  // Said by title, and a component with no variants as one combination.
+  const text = await run("map", "--storybook", standIn.url);
+  assert.match(text.out, /✓ ui\/radix\/Sonner no variants -> 1 combination\n/);
+  assert.match(text.out, /✓ ui\/radix\/Button size\(3\) -> 3 combinations\n/);
+
+  const picked = await run("map", "--storybook", standIn.url, "--components", "ui/radix/Sonner,Button", "--json");
+  assert.equal(picked.status, 0, picked.out);
+  assert.deepEqual((JSON.parse(picked.stdout) as { components: { id: string }[] }).components.map((c) => c.id), ["ui-base-button", "ui-radix-button", "ui-radix-sonner"]);
+});
+
+test("inspect CLI: a name two components share is an error naming both, until one is picked by ID or title", async () => {
+  const standIn = await registry();
+  const before = standIn.calls.length;
+  const r = await run("inspect", "--storybook", standIn.url, "--component", "Button");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /"Button" names 2 components: ui\/base\/Button \(ui-base-button\), ui\/radix\/Button \(ui-radix-button\)\. Pass the ID or title of the one to inspect\./);
+  assert.deepEqual(standIn.calls.slice(before), ["docs-list"]);
+
+  const picked = await run("inspect", "--storybook", standIn.url, "--component", "ui/radix/Button");
+  assert.equal(picked.status, 0, picked.out);
+  assert.match(picked.out, /^ui\/radix\/Button ui-radix-button$/m);
+  assert.match(picked.out, /size \(union\) -> VARIANT \[sm, lg, xl\]/);
+});
+
+test("diff CLI: components that share their names are compared, each with the set on its category's page", async () => {
+  // Paired by name alone, every name was ambiguous, and nothing compared.
+  const standIn = await registry();
+  const r = await diffAgainst(standIn, "--json");
+  assert.equal(r.status, 0, r.out);
+  const data = JSON.parse(r.stdout) as { components: { name: string; status: string; id?: string; page?: string; details: string[] }[]; summary: { componentsMatched: number; componentsAmbiguous: number } };
+  assert.deepEqual(data.components.map((c) => [c.name, c.status, c.id, c.page, c.details]), [
+    ["ui/radix/Button", "variant_mismatch", "ui-radix-button", "ui/radix", ["size: values [xl] missing from Figma"]],
+  ]);
+  assert.deepEqual([data.summary.componentsMatched, data.summary.componentsAmbiguous], [3, 0]);
+
+  // One picked by ID is compared with its own page's set alone.
+  const one = await diffAgainst(standIn, "--components", "ui-base-button", "--strict");
+  assert.equal(one.status, 0, one.out);
+  assert.match(one.out, /Components in sync/);
 });
 
 // --- Errors from Storybook end list, map and inspect cleanly ---
@@ -451,9 +858,21 @@ test("inspect CLI: finds a component by name or ID, ignoring case", async () => 
   for (const name of ["button", "FORMS-BUTTON"]) {
     const r = await run("inspect", "--storybook", storybook, "--component", name);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.out, /^Button$/m);
+    // By its title and ID, which tell it from another of its name.
+    assert.match(r.out, /^Forms\/Button forms-button$/m);
     assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\]/);
   }
+});
+
+test("inspect CLI: says why each prop left out was skipped, and gives each variant's default", async () => {
+  const r = await run("inspect", "--storybook", storybook, "--component", "Button");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /size \(union\) -> VARIANT \[sm, lg\], default sm$/m);
+  // The docs give shape no default, so its first value stands in for one.
+  assert.match(r.out, /shape \(union\) -> VARIANT \[round, square\], default round \(assumed: the docs give no usable default\)$/m);
+  assert.match(r.out, /asChild \(boolean\) -> skipped: composition prop/);
+  assert.match(r.out, /tone \(union\) -> skipped: union with non-literal members: number$/m);
+  assert.match(r.out, /2 variant properties, 4 combinations/);
 });
 
 // --- A Storybook or Figma that can't be reached ---
@@ -468,6 +887,60 @@ async function unreachable(): Promise<string> {
 }
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+test("snap CLI: --stories reaches the run, which refuses a name no component has, or a story not the component's, before any browser starts", async () => {
+  // A story override that names the wrong thing would measure the default
+  // story under the component's name, so the run refuses it after listing
+  // the components and before launching anything: no browser is needed here.
+  const out = mkdtempSync(join(tmpdir(), "storysync-stories-"));
+  try {
+    const unknown = await run("snap", "--storybook", storybook, "--out", out, "--stories", "Nope=forms-button--primary", "--json");
+    assert.equal(unknown.status, 1, unknown.out);
+    assert.match((JSON.parse(unknown.stdout) as { error?: string }).error ?? "", /--stories names "Nope", which is none of the components being measured \(forms-button, data-display-card\)/);
+    const other = await run("snap", "--storybook", storybook, "--out", out, "--stories", "forms-button=data-display-card--default");
+    assert.equal(other.status, 1, other.out);
+    assert.match(other.out, /--stories gives forms-button the story "data-display-card--default", which isn't one of its stories: forms-button--primary/);
+    // Given twice, both pairs are read: the second is the one refused.
+    const twice = await run("snap", "--storybook", storybook, "--out", out, "--stories", "Button=forms-button--primary", "--stories", "Card=nope--x");
+    assert.equal(twice.status, 1, twice.out);
+    assert.match(twice.out, /--stories gives data-display-card the story "nope--x"/);
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("snap CLI: --no-channel-args reaches the run, which records it in meta.json", async () => {
+  // A Storybook with an MDX page and no components: snap writes its files without a browser.
+  const empty = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { list: "# Docs\n- Introduction (introduction--docs)", docs: {} });
+  standIns.push(empty);
+  const out = mkdtempSync(join(tmpdir(), "storysync-channel-"));
+  try {
+    const meta = () => JSON.parse(readFileSync(join(out, "meta.json"), "utf8")) as { channelArgs?: boolean };
+    const off = await run("snap", "--storybook", empty.url, "--out", out, "--no-channel-args", "--json");
+    assert.ok(existsSync(join(out, "meta.json")), off.out);
+    assert.equal(meta().channelArgs, false);
+    await run("snap", "--storybook", empty.url, "--out", out, "--json");
+    assert.equal(meta().channelArgs, undefined, "a run that sets values through the preview says nothing of it");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
+test("snap CLI: --no-open-overlays reaches the run, which records it in meta.json", async () => {
+  const empty = await startStandIn(ADDON_MCP_10_6, [], FIGMA_FILE, { list: "# Docs\n- Introduction (introduction--docs)", docs: {} });
+  standIns.push(empty);
+  const out = mkdtempSync(join(tmpdir(), "storysync-overlays-"));
+  try {
+    const meta = () => JSON.parse(readFileSync(join(out, "meta.json"), "utf8")) as { openOverlays?: boolean };
+    const off = await run("snap", "--storybook", empty.url, "--out", out, "--no-open-overlays", "--json");
+    assert.ok(existsSync(join(out, "meta.json")), off.out);
+    assert.equal(meta().openOverlays, false);
+    await run("snap", "--storybook", empty.url, "--out", out, "--json");
+    assert.equal(meta().openOverlays, undefined, "a run that opens overlays says nothing of it");
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});
 
 test("map, snap and diff CLI: a Storybook that can't be reached is an error that parses under --json", async () => {
   // The reason went only to stderr, so a script piping the output to jq got
@@ -616,6 +1089,18 @@ test("map, snap, list, inspect and diff CLI: a --connect-timeout that isn't a po
   }
 });
 
+test("map, snap, list, inspect and diff CLI: a --request-timeout that isn't a positive number, or is past Node's longest timer, fails before connecting", async () => {
+  const url = await unreachable();
+  for (const value of ["0", "-1", "soon", "2147483648"]) {
+    for (const command of [["map"], ["snap"], ["list"], ["inspect", "--component", "Button"], ["diff", "--figma", `${url}/mcp`, "--file-key", "x"]]) {
+      const r = await run(...command, "--storybook", url, "--request-timeout", value);
+      assert.equal(r.status, 1, r.out);
+      assert.match(r.out, value === "2147483648" ? /--request-timeout can be at most 2147483647 milliseconds/ : new RegExp(`--request-timeout must be a positive number of milliseconds, received "${value}"`), command[0]);
+      assert.doesNotMatch(r.out, /MCP/, command[0]);
+    }
+  }
+});
+
 test("map CLI: a --connect-timeout past Node's longest timer is refused, not fired at once", async () => {
   // setTimeout fires after 1ms for anything above 2^31 - 1, so such a value
   // would fail every connect while telling the user to raise it.
@@ -625,5 +1110,38 @@ test("map CLI: a --connect-timeout past Node's longest timer is refused, not fir
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /--connect-timeout can be at most 2147483647 milliseconds/);
     assert.doesNotMatch(r.out, /MCP/);
+  }
+});
+
+test("diff CLI: the code's dark theme is compared with each variable's Dark mode, and a mode compared with nothing is named", async () => {
+  const rgb = (hex: string) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a: 1 });
+  const figma = await startFigmaStandIn({
+    pages: [{ name: "Cover", nodes: [] }],
+    collections: [{
+      name: "Colors",
+      modes: ["Light", "Dark", "High contrast"],
+      variables: [
+        { name: "background", type: "COLOR", values: [rgb("#ffffff"), rgb("#111111"), rgb("#ffffff")] },
+        { name: "foreground", type: "COLOR", values: [rgb("#171717"), rgb("#ededed"), rgb("#000000")] },
+      ],
+    }],
+  });
+  const project = mkdtempSync(join(tmpdir(), "storysync-diff-cli-"));
+  try {
+    mkdirSync(join(project, "app"));
+    writeFileSync(join(project, "app", "globals.css"), ":root { --background: #ffffff; --foreground: #171717; }\n.dark { --background: #0a0a0a; --foreground: #ededed; }\n");
+    const text = await run("diff", "--figma", figma.url, "--file-key", "x", "--project", project, "--strict");
+    assert.equal(text.status, 1, text.out);
+    assert.match(text.out, /~ colors\/background \(Dark\) code=#0a0a0a figma=#111111\n/);
+    assert.doesNotMatch(text.out, /colors\/foreground/);
+    assert.match(text.out, /Tokens: 1 tokens matched, 1 value mismatches\nNot compared: the High contrast mode of Colors\n/);
+
+    const json = JSON.parse((await run("diff", "--figma", figma.url, "--file-key", "x", "--project", project, "--json")).stdout) as { tokens: unknown[]; modesNotCompared: unknown[] };
+    assert.deepEqual(json.tokens, [{ category: "colors", name: "background", codeValue: "#0a0a0a", figmaValue: "#111111", status: "value_mismatch", mode: "Dark" }]);
+    assert.deepEqual(json.modesNotCompared, [{ collection: "Colors", modes: ["High contrast"] }]);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+    figma.server.closeAllConnections();
+    figma.server.close();
   }
 });

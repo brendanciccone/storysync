@@ -16,7 +16,7 @@
 //                   worktree to check an older or newer build
 //   KEEP_WORKDIR=1  keep the temporary directory for inspection
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -29,6 +29,9 @@ const EXAMPLE_BUTTON = join(ROOT, "examples", "storybook-vite", "src", "Button.t
 const EXAMPLE_STORIES = join(ROOT, "examples", "storybook-vite", "src", "Button.stories.tsx");
 const STORYBOOK = (process.env.STORYBOOK_URL ?? "http://localhost:6006").replace(/\/+$/, "");
 const WORK = mkdtempSync(join(tmpdir(), "storysync-acceptance-"));
+// Frozen's story ignores its args, so snap leaves its one prop out as measuring
+// the same; the push checks build it as a set of three, so it is kept there.
+const KEEP_FROZEN = ["--keep-props", "variant"];
 
 const results = [];
 let section = "";
@@ -57,6 +60,68 @@ function assert(condition, message) {
 function cli(args, opts = {}) {
   const r = spawnSync(process.execPath, [opts.bin ?? CLI, ...args], { encoding: "utf8", cwd: opts.cwd ?? WORK });
   return { status: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+/** Runs the built CLI without blocking, so a server in this process can answer it. */
+function cliAsync(args, opts = {}) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [opts.bin ?? CLI, ...args], { cwd: opts.cwd ?? WORK });
+    let out = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { out += chunk; });
+    child.on("close", (status) => done({ status, out }));
+  });
+}
+
+/**
+ * The example's Storybook behind a proxy that serves the module at `path`,
+ * as Vite compiles it, through `rewrite`: a story changed for one check
+ * while the example's files stay as they are. Everything else, its MCP
+ * endpoint and Vite's websocket included, passes through untouched.
+ */
+async function rewritingStorybook(path, rewrite) {
+  const { createServer, request } = await import("node:http");
+  const { connect } = await import("node:net");
+  const target = new URL(STORYBOOK);
+  const port = Number(target.port || 80);
+  const server = createServer((req, res) => {
+    const rewritten = req.url.split("?")[0] === path;
+    const headers = { ...req.headers, host: target.host };
+    if (rewritten) headers["accept-encoding"] = "identity";
+    const upstream = request({ hostname: target.hostname, port, path: req.url, method: req.method, headers }, (answer) => {
+      if (!rewritten) {
+        res.writeHead(answer.statusCode, answer.headers);
+        answer.pipe(res);
+        return;
+      }
+      const chunks = [];
+      answer.on("data", (chunk) => chunks.push(chunk));
+      answer.on("end", () => {
+        const { "content-length": _length, etag: _etag, ...rest } = answer.headers;
+        res.writeHead(answer.statusCode, rest).end(rewrite(Buffer.concat(chunks).toString("utf8")));
+      });
+    });
+    upstream.on("error", (err) => res.writeHead(502).end(String(err)));
+    req.pipe(upstream);
+  });
+  server.on("upgrade", (req, socket, head) => {
+    const upstream = connect(port, target.hostname, () => {
+      const lines = Object.entries({ ...req.headers, host: target.host }).map(([name, value]) => `${name}: ${value}`);
+      upstream.write(`${req.method} ${req.url} HTTP/1.1\r\n${lines.join("\r\n")}\r\n\r\n`);
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on("error", () => socket.destroy());
+    socket.on("error", () => upstream.destroy());
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((done) => {
+      server.closeAllConnections?.();
+      server.close(() => done());
+    }),
+  };
 }
 
 function readJson(path) {
@@ -164,14 +229,14 @@ function rgb01(hex) {
   };
 }
 
-/** The alpha of a `#rrggbbaa` colour, 1 for `#rrggbb`. */
+/** The alpha of a `#rrggbbaa` color, 1 for `#rrggbb`. */
 function alpha01(hex) {
   const h = hex.replace("#", "");
   return h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
 }
 
 /**
- * A SOLID paint of a colour snap measured, as Figma holds it: the colour's
+ * A SOLID paint of a color snap measured, as Figma holds it: the color's
  * alpha, from `#rrggbbaa`, in the paint's opacity, and each number a 32-bit
  * float, as Figma reports them. `extra` overrides the paint's own fields.
  */
@@ -225,25 +290,42 @@ function renderBounds(node) {
  * strokeWeight of 1 Figma gives every node. A box shadow becomes an effect.
  * As in Figma, the node's own width and height leave out the stroke outside
  * them, so they are the measured border box less that stroke, and
- * absoluteRenderBounds is what Figma's would be. A translucent colour's alpha
+ * absoluteRenderBounds is what Figma's would be. A translucent color's alpha
  * is its paint's opacity. `strokeAlign` builds the stroke another way: INSIDE,
  * at the measured size, as the skill says to for a frame given a fixed size,
- * or CENTER. `strokeHidden` builds a transparent border's stroke as a designer
- * might, a paint of full opacity hidden with the eye icon, `visible: false`.
+ * or CENTER. With `hugging`, an INSIDE stroke is on a frame that hugs its
+ * content, as for a fill that runs under a transparent border: with
+ * `strokesIncludedInLayout` the stroke adds to the frame's size, which comes
+ * to the measured size, and without it the stroke eats into the padding and
+ * the frame is the measured size less the stroke. `strokeHidden` builds a transparent
+ * border's stroke as a designer might, a paint of full opacity hidden with the
+ * eye icon, `visible: false`. A width or height of 0, a closed Collapsible's,
+ * is built at 0.01, the least Figma takes, as the skill says. A label is built
+ * as the skill says too: see textNode below.
  */
-function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } = {}) {
+function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false, strokesIncludedInLayout = false, hugging = false, textHugs = false } = {}) {
   const text = st.text ?? { color: st.color, fontFamily: st.fontFamily, fontSize: st.fontSize, fontWeight: st.fontWeight };
+  // As the skill builds a label: hugging its content, or, where snap
+  // measured how the browser fitted it, fixed at that width and cut off
+  // after as many lines as the browser drew; with `textHugs`, hugging all
+  // the same, as a push before snap measured it built Attachment's title.
+  const layout = textHugs ? null : text.layout ?? null;
   const textNode = {
     type: "TEXT",
     fills: text.color ? [solidPaint(text.color)] : [],
     fontSize: text.fontSize,
     // What Figma actually reports: a style *name*, e.g. Inter 600 is "Semi Bold".
     fontName: { family: text.fontFamily, style: STYLE_NAME[text.fontWeight] ?? "Regular" },
+    textAutoResize: layout ? "HEIGHT" : "WIDTH_AND_HEIGHT",
+    textTruncation: layout?.truncation ? "ENDING" : "DISABLED",
+    maxLines: layout?.truncation ? layout.lines : null,
+    width: layout ? layout.width : Math.max(1, Math.round(st.width - st.padding.left - st.padding.right)),
   };
   const border = Object.fromEntries(SIDES.map((side) => [side, st.borderUniform ?? st.border?.[side.toLowerCase()] ?? null]));
   const drawn = SIDES.map((side) => border[side]).find(Boolean) ?? null;
   const weight = Object.fromEntries(SIDES.map((side) => [side, drawn ? border[side]?.width ?? 0 : 1]));
-  const share = drawn ? OUTSIDE_SHARE[strokeAlign] : 0;
+  // How much of the stroke the node's own size leaves out of the measured one.
+  const share = !drawn ? 0 : strokeAlign === "INSIDE" && hugging && !strokesIncludedInLayout ? 1 : OUTSIDE_SHARE[strokeAlign];
   const node = {
     name,
     fills: st.backgroundColor ? [solidPaint(st.backgroundColor)] : [],
@@ -253,6 +335,7 @@ function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } =
     strokeWeight: new Set(Object.values(weight)).size === 1 ? weight.Top : MIXED,
     ...Object.fromEntries(SIDES.map((side) => [`stroke${side}Weight`, weight[side]])),
     strokeAlign,
+    strokesIncludedInLayout,
     effects: (st.boxShadow ?? []).map((shadow) => ({
       type: shadow.inset ? "INNER_SHADOW" : "DROP_SHADOW",
       color: { ...rgb01(shadow.color ?? "#000000"), a: shadow.color ? alpha01(shadow.color) : 0 },
@@ -271,8 +354,8 @@ function figmaNode(name, st, { strokeAlign = "OUTSIDE", strokeHidden = false } =
     itemSpacing: st.gap?.column ?? 0,
     opacity: st.opacity,
     // Figma rounds text to whole pixels, so the border box lands near, not on, CSS.
-    width: Math.round(st.width) - share * (weight.Left + weight.Right),
-    height: Math.round(st.height) - share * (weight.Top + weight.Bottom),
+    width: Math.max(0.01, Math.round(st.width) - share * (weight.Left + weight.Right)),
+    height: Math.max(0.01, Math.round(st.height) - share * (weight.Top + weight.Bottom)),
     findOne: (predicate) => (predicate(textNode) ? textNode : null),
   };
   Object.defineProperty(node, "absoluteRenderBounds", { enumerable: true, get: () => renderBounds(node) });
@@ -285,9 +368,95 @@ function expandVariants(component) {
     .map((v) => ({ ...v, styles: { ...component.base.styles, ...(v.delta ?? {}) } }));
 }
 
+/** A variant's name as the skill gives it: '' for a component with no variant properties. */
 function figmaVariantName(combination) {
-  const entries = Object.entries(combination ?? {});
-  return entries.length ? entries.map(([k, v]) => `${k}=${v}`).join(", ") : "default";
+  return Object.entries(combination ?? {}).map(([k, v]) => `${k}=${v}`).join(", ");
+}
+
+/** Text HTML-escaped, as Figma returns a component's description. */
+function htmlEscaped(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/**
+ * A component set or component whose description behaves as a live push
+ * found Figma's: `description` returns its text HTML-escaped, `"` as
+ * `&quot;` and `&` as `&amp;`, and setting it stores the text as given and
+ * empties `descriptionMarkdown`, as it read back after a push set it.
+ * `descriptionMarkdown` holds a designer's formatted description as
+ * markdown; setting it stores that, with the text shown as the markdown less
+ * its emphasis and escapes. Whether Figma returns the markdown escaped too no
+ * run has shown, so `escapeMarkdown` returns it both ways. `stored` is what
+ * Figma keeps, for the checks to read.
+ */
+function describedNode(id, type, { text = "", markdown = "", escapeMarkdown = false } = {}) {
+  const stored = { text: markdown ? shownText(markdown) : text, markdown };
+  const node = { id, type, stored };
+  Object.defineProperty(node, "description", {
+    enumerable: true,
+    get: () => htmlEscaped(stored.text),
+    set: (value) => Object.assign(stored, { text: String(value), markdown: "" }),
+  });
+  Object.defineProperty(node, "descriptionMarkdown", {
+    enumerable: true,
+    get: () => (escapeMarkdown ? htmlEscaped(stored.markdown) : stored.markdown),
+    set: (value) => Object.assign(stored, { markdown: String(value), text: shownText(String(value)) }),
+  });
+  return node;
+}
+
+/** The text markdown shows: without its `**`, `__` and single `*` or `_` emphasis, and its backslash escapes undone. */
+function shownText(markdown) {
+  const kept = [];
+  const out = markdown.replace(/\\(.)/g, (_, c) => `\u0000${kept.push(c) - 1}\u0000`)
+    .replace(/\*\*|__|[*_]/g, "");
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+}
+
+/**
+ * The pages for the label call, each `[name, layers]`, the user on the one
+ * at `current`, the first unless given: as use_figma loads them, only that
+ * one is loaded when the call starts, and another lists no layers until the
+ * call loads it, with its `loadAsync` or by switching to it. Figma refuses
+ * to remove the page it is on, or the last one. `figma` serves them;
+ * `pages` is what is left.
+ */
+function labelPages(spec, current = 0) {
+  const pages = [];
+  const loaded = new Set();
+  for (const [index, [name, layers]] of spec.entries()) {
+    const page = { type: "PAGE", id: `0:${index + 1}`, name, layers: Array.from({ length: layers }, (_, i) => ({ id: `${name}:${i}` })) };
+    Object.defineProperty(page, "children", { get: () => (loaded.has(page) ? page.layers : []) });
+    page.loadAsync = async () => { loaded.add(page); };
+    page.remove = () => {
+      if (figma.currentPage === page) throw new Error("Cannot remove the current page");
+      if (pages.length === 1) throw new Error("Cannot remove the last page");
+      pages.splice(pages.indexOf(page), 1);
+    };
+    pages.push(page);
+  }
+  loaded.add(pages[current]);
+  const figma = {
+    root: { children: pages },
+    currentPage: pages[current],
+    setCurrentPageAsync: async (page) => {
+      loaded.add(page);
+      figma.currentPage = page;
+    },
+  };
+  return { figma, pages };
+}
+
+/**
+ * Runs the skill's label call over `nodes`, by id, in a file of `pages`, a
+ * labelPages figma, a page of components alone unless one is given, with
+ * the NOTES table set to each run's notes.
+ */
+function labelCall(code, nodes, pages = labelPages([["ui/base", 1]]).figma) {
+  const withNotes = (notes) => code.replace(/const NOTES = \{[\s\S]*?\n\s*\};/, () => `const NOTES = ${JSON.stringify(notes)};`);
+  const figma = { ...pages, getNodeByIdAsync: async (id) => nodes[id] ?? null };
+  Object.defineProperty(figma, "currentPage", { get: () => pages.currentPage });
+  return async (notes) => JSON.parse(await new AsyncFunction("figma", withNotes(notes))(figma));
 }
 
 const AsyncFunction = (async () => {}).constructor;
@@ -298,6 +467,27 @@ const AsyncFunction = (async () => {}).constructor;
 const CODE_LIMIT = 50000;
 const RESPONSE_LIMIT = 20000;
 const GUARD = 17000;
+
+/**
+ * The largest variant snap measured live on shadcn/ui's registry, Command's,
+ * 1,019 characters: a real entry to price a build part at, where the
+ * example's are smaller. A live push's own code, its applyStyles and helpers,
+ * came to AGENT_CODE.
+ */
+const SHADCN_COMMAND = {
+  display: "flex", flexDirection: "column", alignItems: "normal", justifyContent: "normal", gap: null, width: 384, height: 311,
+  backgroundColor: "#ffffff", color: "#0a0a0a",
+  border: Object.fromEntries(["top", "right", "bottom", "left"].map((side) => [side, { width: 1, style: "solid", color: "#e5e5e5" }])),
+  borderUniform: { width: 1, style: "solid", color: "#e5e5e5" },
+  borderRadius: { topLeft: 14, topRight: 14, bottomRight: 14, bottomLeft: 14 }, borderRadiusUniform: 14,
+  padding: { top: 4, right: 4, bottom: 4, left: 4 }, fontFamily: "system-ui", fontSize: 16, fontWeight: 400, lineHeight: 24, letterSpacing: 0,
+  boxShadow: [
+    { offsetX: 0, offsetY: 4, blur: 6, spread: -1, color: "#0000001a", inset: false },
+    { offsetX: 0, offsetY: 2, blur: 4, spread: -2, color: "#0000001a", inset: false },
+  ],
+  opacity: 1, boxSizing: "border-box", fontAvailable: null, text: { color: "#737373", fontFamily: "system-ui", fontSize: 12, fontWeight: 500 },
+};
+const AGENT_CODE = 7038;
 
 /** Every use_figma code block in the skill, with the description it is sent with. */
 function useFigmaBlocks() {
@@ -349,7 +539,7 @@ function jsTable(entries) {
  * The smallest slice whose encoded size passes the guard, measured with the
  * guard lifted, then run as shipped: it has to be refused, and the slice one
  * smaller returned. It lands under 20kb, and under the guard before encoding,
- * so a guard loosened towards 20kb, or one measuring the string before
+ * so a guard loosened toward 20kb, or one measuring the string before
  * use_figma encodes it, returns it and fails here. `run(n, guarded)` makes one
  * call over the first n items and returns the string the template returns;
  * the refusal has to say what to do, matching `remedy`.
@@ -424,7 +614,20 @@ function loadSkillReadback(mutate = null) {
   // `clock`, the time in ms Figma's Date gives the call, for a readback read
   // at another time: the template's own Date is shadowed with one fixed there.
   const run = async (componentSet, slugByName, sourceBySlug, opts) => {
-    const figma = { getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null) };
+    // The file's local variables, opts.variables, none unless given: each
+    // { id, name, resolvedType, valuesByMode, variableCollectionId, scopes },
+    // as Figma gives one, and their collections, opts.collections, each
+    // { id, name }. A variable given no scopes has ALL_SCOPES, Figma's default.
+    const variables = (opts?.variables ?? []).map((v) => ({ scopes: ["ALL_SCOPES"], ...v }));
+    const collections = opts?.collections ?? [];
+    const figma = {
+      getNodeByIdAsync: async (id) => (id === componentSet.id ? componentSet : null),
+      variables: {
+        getLocalVariablesAsync: async () => variables,
+        getLocalVariableCollectionsAsync: async () => collections,
+        getVariableByIdAsync: async (id) => variables.find((v) => v.id === id) ?? null,
+      },
+    };
     return new AsyncFunction("figma", "Date", code(componentSet.id, slugByName, sourceBySlug, opts))(figma, clockAt(opts?.clock));
   };
   const read = async (...args) => JSON.parse(await run(...args));
@@ -507,8 +710,9 @@ async function readSet(readback, { componentSet, slugByName, sourceBySlug }, bat
     const read = Object.keys(slice.readback);
     assert(read.join() === slugs.join(), `a call naming ${slugs.join(", ")} read back ${read.join(", ") || "nothing"}`);
     for (const slug of read) assert(!(slug in variants), `${slug} was read back in two slices`);
-    assert(slice.total === componentSet.children.length,
-      `the slice reports a total of ${slice.total}, but the set holds ${componentSet.children.length} variants`);
+    // A plain component is its own one variant.
+    const size = componentSet.type === "COMPONENT" ? 1 : componentSet.children.length;
+    assert(slice.total === size, `the slice reports a total of ${slice.total}, but the set holds ${size} variants`);
     Object.assign(variants, slice.readback);
     total = slice.total;
   }
@@ -542,10 +746,12 @@ async function buildReadback(snapDir, { mutate, withholdSource, onRead, readback
  * wrong: a transparent 1px border is in the border box, 2px each way, though
  * it paints nothing; a box shadow is not; a border on one side only makes
  * Figma report strokeWeight as mixed; and the outline Button's 2px border is
- * built INSIDE at a fixed size, and CENTER. The same transparent border built
+ * built INSIDE at a fixed size, and CENTER. The transparent border is built
+ * INSIDE too, on a hugging frame with strokesIncludedInLayout, as the skill
+ * says for one the fill runs under. The same transparent border built
  * with its paint hidden by the eye icon, visible at full opacity but for
  * `visible: false`, draws nothing either. And a translucent fill, border and
- * text colour, snap's `#rrggbbaa` (the soft Chip's background is #4b556322),
+ * text color, snap's `#rrggbbaa` (the soft Chip's background is #4b556322),
  * are Figma paints whose opacity holds the alpha.
  */
 function edgeVariants(snapDir) {
@@ -568,6 +774,7 @@ function edgeVariants(snapDir) {
     { edge: "inside-stroke", styles: outline, strokeAlign: "INSIDE" },
     { edge: "center-stroke", styles: outline, strokeAlign: "CENTER" },
     { edge: "hidden-stroke", styles: transparent, strokeHidden: true },
+    { edge: "clear-inside", styles: transparent, strokeAlign: "INSIDE", strokesIncludedInLayout: true, hugging: true },
     {
       edge: "translucent",
       styles: {
@@ -579,14 +786,13 @@ function edgeVariants(snapDir) {
 }
 
 /**
- * Scores the edge variants through a readback template: a snap holding them
+ * Scores the edge variants, or `edges`, through a readback template: a snap holding them
  * as one component, a simulated set built from them, read back a slice at a
  * time, and verify's verdict on each, keyed by edge. Each has to report a
  * width and a height, so a template that drops them cannot pass by having
  * nothing compared.
  */
-async function scoreEdges(snapDir, readback) {
-  const edges = edgeVariants(snapDir);
+async function scoreEdges(snapDir, readback, edges = edgeVariants(snapDir)) {
   const slug = (e) => `edge-${e.edge}`;
   const dir = join(WORK, "snap-edges");
   mkdirSync(dir, { recursive: true });
@@ -607,7 +813,7 @@ async function scoreEdges(snapDir, readback) {
     const name = `edge=${e.edge}`;
     slugByName[name] = slug(e);
     sourceBySlug[slug(e)] = "measured";
-    return figmaNode(name, e.styles, { strokeAlign: e.strokeAlign, strokeHidden: e.strokeHidden });
+    return figmaNode(name, e.styles, e);
   });
   const componentSet = { id: "set:Edges", type: "COMPONENT_SET", name: "Edges", children };
   const { variants } = await readSet(readback, { componentSet, slugByName, sourceBySlug }, READ_BATCH);
@@ -697,6 +903,15 @@ const KIDS = Symbol("children");
  * x or y does nothing, as in Figma. `ignorePositions(true)` makes every x and
  * y written from then on do nothing too, for a write Figma ignores that
  * nothing else would catch.
+ *
+ * Nodes keep shared plugin data and can be removed. `variable(name, hex)`
+ * adds a color variable, and a paint or effect bound to one with
+ * figma.variables takes its color as Figma does when assigned: a paint bound
+ * afresh, to a variable its node's paint at that place was not bound to,
+ * gets the variable's alpha as its opacity, as a live push found it set to 1,
+ * and one bound as before keeps the opacity it is given; an effect takes the
+ * variable's color, alpha and all. loadFontAsync loads only `FONTS`, as the
+ * plugin context has only the fonts Figma can load: no system-ui, no Menlo.
  */
 function figmaDocument() {
   let count = 0;
@@ -704,6 +919,7 @@ function figmaDocument() {
   let ignored = false;
   const byId = new Map();
   const pages = [];
+  const variables = new Map();
   // Where auto layout puts a node, or null when its parent has none.
   const flowed = (node, axis) => {
     const parent = node.parent;
@@ -717,8 +933,19 @@ function figmaDocument() {
     }
     return at;
   };
+  const boundTo = (paint) => paint?.boundVariables?.color?.id ?? null;
+  // What Figma stores when a node's fills, strokes or effects are assigned.
+  const stored = (key, before, list) => list.map((paint, i) => {
+    const id = boundTo(paint);
+    if (!id) return { ...paint };
+    const { r, g, b, a } = variables.get(id).value;
+    if (key === "effects") return { ...paint, color: { r, g, b, a } };
+    return { ...paint, color: { r, g, b }, opacity: boundTo(before[i]) === id ? paint.opacity : a };
+  });
   const create = (type, name) => {
     const node = { id: `${count++}:1`, type, name, parent: null, width: 100, height: 100 };
+    // A component's own layers, which the checks keep out of the document.
+    if (type === "COMPONENT") node.children = [];
     const at = { x: 0, y: 0 };
     for (const axis of ["x", "y"]) {
       Object.defineProperty(node, axis, {
@@ -729,6 +956,27 @@ function figmaDocument() {
         },
       });
     }
+    const paints = { fills: [], strokes: [], effects: [] };
+    for (const key of Object.keys(paints)) {
+      Object.defineProperty(node, key, {
+        enumerable: true,
+        get: () => paints[key],
+        set: (list) => {
+          paints[key] = stored(key, paints[key], list);
+        },
+      });
+    }
+    const data = new Map();
+    node.setSharedPluginData = (namespace, key, value) => {
+      if (typeof value !== "string") throw new Error(`setSharedPluginData takes a string, not ${String(value)}`);
+      data.set(`${namespace} ${key}`, value);
+    };
+    node.getSharedPluginData = (namespace, key) => data.get(`${namespace} ${key}`) ?? "";
+    node.remove = () => {
+      if (node.parent) node.parent[KIDS].splice(node.parent[KIDS].indexOf(node), 1);
+      node.parent = null;
+      byId.delete(node.id);
+    };
     byId.set(node.id, node);
     return node;
   };
@@ -752,7 +1000,7 @@ function figmaDocument() {
       adopt(node, child);
     };
     node.resizeWithoutConstraints = (width, height) => {
-      if (!(width > 0 && height > 0)) throw new Error(`cannot resize a ${type} to ${width} by ${height}`);
+      if (!(width >= 0.01 && height >= 0.01)) throw new Error(`cannot resize a ${type} to ${width} by ${height}`);
       Object.assign(node, { width, height });
     };
     node.findAllWithCriteria = ({ types }) => node.children.flatMap((child) => [
@@ -767,6 +1015,10 @@ function figmaDocument() {
     return node;
   };
   page("Page 1");
+  const bind = (item, field, variable) => {
+    const { [field]: _, ...rest } = item.boundVariables ?? {};
+    return { ...item, boundVariables: variable ? { ...rest, [field]: { type: "VARIABLE_ALIAS", id: variable.id } } : rest };
+  };
   const call = () => {
     loaded = new Set([pages[0].id]);
     const figma = {
@@ -795,6 +1047,13 @@ function figmaDocument() {
         set.height = Math.max(...components.map((c) => c.y + c.height));
         return set;
       },
+      variables: {
+        setBoundVariableForPaint: (paint, field, variable) => bind(paint, field, variable),
+        setBoundVariableForEffect: (effect, field, variable) => bind(effect, field, variable),
+      },
+      loadFontAsync: async ({ family, style }) => {
+        if (!FONTS[family]?.includes(style)) throw new Error(`The font "${family} ${style}" could not be loaded`);
+      },
     };
     return figma;
   };
@@ -807,23 +1066,45 @@ function figmaDocument() {
   const ignorePositions = (on) => {
     ignored = on;
   };
-  return { call, nodes, container: inside, ignorePositions };
+  const variable = (name, hex) => {
+    const value = { ...rgb01(hex), a: alpha01(hex) };
+    // Figma's Variable gives its value in each mode, by mode id: this one has one.
+    const made = { id: `VariableID:${variables.size + 1}`, name, resolvedType: "COLOR", value, valuesByMode: { "1:0": value } };
+    variables.set(made.id, made);
+    return made;
+  };
+  return { call, nodes, container: inside, ignorePositions, variable };
 }
+
+/**
+ * The fonts the simulated plugin context can load, with Figma's own style
+ * names: Inter's spaced, Roboto Mono's and Noto Serif's not. Roboto Mono
+ * stops at Bold.
+ */
+const FONTS = {
+  Inter: ["Thin", "Extra Light", "Light", "Regular", "Medium", "Semi Bold", "Bold", "Extra Bold", "Black"],
+  "Roboto Mono": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold"],
+  "Noto Serif": ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black"],
+  // Figma has Geist, and no family named "... Variable" (probe 8e).
+  Geist: ["Thin", "ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold", "Black"],
+};
 
 /**
  * The build template from the shipped skill: one part of a set.
  *
  * Its VARIANTS table is replaced with the part's own variants, and its
  * PROPERTIES table with the component's variantProperties from snap, each
- * written an entry a line, and PAGE_NAME, SET_NAME, SET_ID and PART with the
- * call's own. applyStyles is where the agent writes the Plugin API code that
- * styles a variant; `run()` gives it the simulated node of figmaNode() for
- * those styles, sized as Figma sizes it, so the readback template reads back
- * exactly what the part sent. Everything else, finding
- * the set and its variants, creating what is missing, and laying the set out,
- * runs verbatim. `code(..., { styled: false })` leaves applyStyles as the
- * skill ships it, for pricing what an agent would send. `mutate` rewrites the
- * shipped code, to show a check fails a template that gets something wrong.
+ * written an entry a line, and PAGE_NAME, SET_NAME, ID, TITLE, SET_ID and
+ * PART with the call's own. applyStyles is where the agent writes the Plugin
+ * API code that styles a variant; `run()` gives it the simulated node of
+ * figmaNode() for those styles, sized as Figma sizes it, so the readback
+ * template reads back exactly what the part sent, or, given `styler`, that
+ * code instead, run beside the template's own helpers with `scope`'s names
+ * in reach. Everything else, finding the set and its variants, creating what
+ * is missing, and laying the set out, runs verbatim. `code(..., { styled:
+ * false })` leaves applyStyles as the skill ships it, for pricing what an
+ * agent would send. `mutate` rewrites the shipped code, to show a check fails
+ * a template that gets something wrong.
  */
 function loadSkillBuild(mutate = null) {
   const block = useFigmaBlock(/^Create or update/);
@@ -833,42 +1114,47 @@ function loadSkillBuild(mutate = null) {
   assert(list.test(block), "the build template has no VARIANTS table to loop over");
   assert(table.test(block), "the build template has no PROPERTIES table to lay the set out by");
   assert(styler.test(block), "the build template has no applyStyles for the agent's styling code");
-  for (const name of ["PAGE_NAME", "SET_NAME", "SET_ID", "PART"]) {
+  for (const name of ["PAGE_NAME", "SET_NAME", "ID", "TITLE", "SET_ID", "PART"]) {
     assert(constant(name).test(block), `the build template defines no ${name}`);
   }
   const part = Number(/const PART = (\d+);/.exec(block)?.[1]);
   assert(part > 0, "the build template's PART is not a number");
   const shipped = mutate ? mutate(block) : block;
   assert(!mutate || shipped !== block, "the mutation no longer matches the build template");
-  const code = (variants, constants, properties, { styled = true } = {}) => {
+  const code = (variants, constants, properties, { styled = true, styler: own = null } = {}) => {
     assert(Array.isArray(properties), "a build part needs the component's variantProperties");
     const body = withConstants(shipped, constants)
       .replace(table, () => `const PROPERTIES = [\n${properties.map((p) => `      ${JSON.stringify(p)},`).join("\n")}\n    ];`)
       .replace(list, () => `const VARIANTS = [\n${variants.map(({ name, styles }) => `      ${JSON.stringify({ name, styles })},`).join("\n")}\n    ];`);
-    return styled
-      ? body.replace(styler, () => "const applyStyles = async (variant, styles) => {\n      Object.assign(variant, look(variant.name, styles));\n    };")
-      : body;
+    const styling = own ?? "Object.assign(variant, look(variant.name, styles));";
+    return styled ? body.replace(styler, () => `const applyStyles = async (variant, styles) => {\n      ${styling}\n    };`) : body;
   };
   const look = (name, styles) => {
     const { name: _, ...node } = figmaNode(name, styles);
     return node;
   };
-  const run = async (figma, variants, constants, properties) =>
-    JSON.parse(await new AsyncFunction("figma", "look", code(variants, constants, properties))(figma, look));
+  const run = async (figma, variants, constants, properties, { styler: own = null, scope = {} } = {}) =>
+    JSON.parse(await new AsyncFunction("figma", "look", ...Object.keys(scope), code(variants, constants, properties, { styler: own }))(
+      figma, look, ...Object.values(scope)));
   return { part, code, run, look };
 }
 
 /**
  * Pushes one set the way the skill says to: `variants` in snap's order, in
  * parts of `part`, the first part finding the set by name and every later one
- * by the id the first returned, each carrying the component's `properties`.
- * Returns what each part returned, calling `after` with each as it does.
+ * by the id the first returned, each carrying the component's `properties`
+ * and its Storybook `storyId` and `title`, by default `forms-<set>` and
+ * `Forms/<set>`. `styler` and `scope` style the variants another way, as
+ * `run()` takes them. Returns what each part returned, calling `after` with
+ * each as it does.
  */
-async function pushSet(build, doc, { page, set, variants, part, properties, after = null }) {
+async function pushSet(build, doc, { page, set, variants, part, properties, after = null, storyId = null, title = null, styler = null, scope = {} }) {
   const parts = [];
   let id = null;
-  for (const named of slices(variants, part)) {
-    const result = await build.run(doc.call(), named, { PAGE_NAME: page, SET_NAME: set, SET_ID: id, PART: part }, properties);
+  const named = { ID: storyId ?? `forms-${set.toLowerCase()}`, TITLE: title ?? `Forms/${set}` };
+  for (const slice of slices(variants, part)) {
+    const constants = { PAGE_NAME: page, SET_NAME: set, ...named, SET_ID: id, PART: part };
+    const result = await build.run(doc.call(), slice, constants, properties, { styler, scope });
     assert(id === null || result.id === id, `a part returned the set ${result.id}, not ${id}`);
     id = result.id;
     parts.push(result);
@@ -904,15 +1190,31 @@ async function leftSet(build, doc, variants, { page = "Forms", set = "Button" } 
   return made;
 }
 
+/** A set an earlier push left beside the others on `page`, at 0,0: `variants` in that order. */
+async function besideSet(build, doc, page, set, variants) {
+  const call = doc.call();
+  const onto = call.root.children.find((p) => p.name === page);
+  await call.setCurrentPageAsync(onto);
+  const made = call.combineAsVariants(variants.map(({ name, styles }) => {
+    const node = call.createComponent();
+    Object.assign(node, build.look(name, styles), { name });
+    return node;
+  }), onto);
+  made.name = set;
+  return made;
+}
+
 /**
  * Throws unless `set` is laid out as `rows`, each a list of variant names with
- * null for a gap, and `extra` in a row of its own below: neighbouring columns
+ * null for a gap, and `extra` in a row of its own below: neighboring columns
  * and rows exactly `gap` apart, each column as wide as its widest variant and
  * each row as tall as its tallest, the set reaching `gap` past the last of
  * them, nothing overlapping, and the layers panel reading the same way, row by
- * row. Returns the grid's nodes, null for a gap.
+ * row. Returns the grid's nodes, null for a gap. Lengths agree to within a
+ * millionth of a pixel, as a 0.01-high variant's row adds up in floats.
  */
 function assertGridOf(set, rows, extra, gap) {
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
   const panel = [...set.children].reverse();
   const reading = [...rows.flat().filter(Boolean), ...extra];
   assert(panel.map((n) => n.name).join("; ") === reading.join("; "), `the layers panel reads ${panel.map((n) => n.name).join("; ")}`);
@@ -938,26 +1240,26 @@ function assertGridOf(set, rows, extra, gap) {
   assert(xs[0] === gap && ys[0] === gap, `the first column and row are at ${xs[0]},${ys[0]}, not ${gap},${gap}`);
   xs.slice(1).forEach((x, c) => {
     const space = x - (xs[c] + widths[c]);
-    assert(space === gap, `column ${c + 2} starts ${space} past column ${c + 1}'s widest variant, not ${gap}`);
+    assert(near(space, gap), `column ${c + 2} starts ${space} past column ${c + 1}'s widest variant, not ${gap}`);
   });
   ys.slice(1).forEach((y, r) => {
     const space = y - (ys[r] + heights[r]);
-    assert(space === gap, `row ${r + 2} starts ${space} below row ${r + 1}'s tallest variant, not ${gap}`);
+    assert(near(space, gap), `row ${r + 2} starts ${space} below row ${r + 1}'s tallest variant, not ${gap}`);
   });
   let right = xs[xs.length - 1] + widths[widths.length - 1];
   let bottom = ys[ys.length - 1] + heights[heights.length - 1];
   if (below.length) {
     const space = below[0].y - bottom;
-    assert(space === gap && below.every((n) => n.y === below[0].y), `the extra row starts ${space} below the grid, not ${gap}`);
+    assert(near(space, gap) && below.every((n) => n.y === below[0].y), `the extra row starts ${space} below the grid, not ${gap}`);
     assert(below[0].x === gap, `the extra row starts at ${below[0].x} across, not ${gap}`);
     below.slice(1).forEach((n, k) => {
       const after = n.x - (below[k].x + below[k].width);
-      assert(after === gap, `"${n.name}" starts ${after} past "${below[k].name}", not ${gap}`);
+      assert(near(after, gap), `"${n.name}" starts ${after} past "${below[k].name}", not ${gap}`);
     });
     right = Math.max(right, below[below.length - 1].x + below[below.length - 1].width);
     bottom = below[0].y + Math.max(...below.map((n) => n.height));
   }
-  assert(set.width === right + gap && set.height === bottom + gap,
+  assert(near(set.width, right + gap) && near(set.height, bottom + gap),
     `the set is ${set.width} by ${set.height}, not ${right + gap} by ${bottom + gap}`);
   assertLaidOut(set);
   return grid;
@@ -1037,16 +1339,64 @@ function layoutScenarios(snapDir) {
     },
 
     async defaults(build) {
-      // A component whose defaults are not its first values: the order is
-      // declared, not default first, so the grid is the same, and Figma's
-      // default, the top-left variant, is primary, sm, not disabled.
+      // Each property runs default first. A BOOLEAN that defaults to true
+      // runs true, false, though map lists it true, false whatever its
+      // default, so Figma's default, the top-left variant, is disabled, as
+      // the component's is. A VARIANT's values run as PROPERTIES lists them,
+      // which snap does default first: so outline and lg, called the
+      // defaults here though listed last, stay where they are listed.
       const { gap, properties, measured } = data();
       const shifted = properties.map((p) => ({ ...p, defaultValue: p.type === "BOOLEAN" ? "true" : p.values[p.values.length - 1] }));
       const doc = figmaDocument();
       const set = await leftSet(build, doc, scrambled(measured));
       await pushSet(build, doc, { page: "Forms", set: "Button", variants: measured, part: PART, properties: shifted });
-      assertGridOf(set, GRID, [], gap);
-      return "the same grid with outline, lg and disabled the defaults";
+      const columns = [1, 0, 3, 2].map((c) => COLUMNS[c]);
+      assertGridOf(set, ROWS.map((row) => columns.map((column) => named(row, column))), [], gap);
+      return "disabled first where it defaults to true; outline and lg, called the defaults, where PROPERTIES lists them";
+    },
+
+    async sizes(build) {
+      // snap measures a closed Collapsible's content 0 high, and a Drawer's
+      // closed trigger, 39.34 by 24, in the set of its open panel, 1280 by
+      // 197 or 320 by 800. A zero side is built at 0.01, the least Figma
+      // takes; each column is as wide as its widest variant and each row as
+      // tall as its tallest, so none overlaps or hides another, and the
+      // 0.01-high variant keeps a row of its own.
+      const { gap, measured } = data();
+      const inline = measured[0].styles;
+      const panel = (width, height) => ({ ...inline, display: "block", width, height, border: null, borderUniform: null });
+      const trigger = { ...inline, width: 39.34, height: 24 };
+      const drawer = (direction, open) => `direction=${direction}, open=${open}`;
+      const sets = [
+        {
+          set: "Drawer",
+          properties: [
+            { name: "direction", type: "VARIANT", values: ["bottom", "right"], defaultValue: "bottom" },
+            { name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+          ],
+          variants: [
+            { name: drawer("bottom", true), styles: panel(1280, 197) }, { name: drawer("bottom", false), styles: trigger },
+            { name: drawer("right", true), styles: panel(320, 800) }, { name: drawer("right", false), styles: trigger },
+          ],
+          grid: ["bottom", "right"].map((d) => [drawer(d, false), drawer(d, true)]),
+        },
+        {
+          set: "Collapsible",
+          properties: [{ name: "open", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" }],
+          variants: [{ name: "open=true", styles: panel(1248, 120) }, { name: "open=false", styles: panel(1248, 0) }],
+          grid: [["open=false"], ["open=true"]],
+        },
+      ];
+      const doc = figmaDocument();
+      for (const { set, properties, variants, grid } of sets) {
+        await pushSet(build, doc, { page: "Overlays", set, variants, part: PART, properties });
+        const built = doc.nodes("COMPONENT_SET").find((n) => n.name === set);
+        assertGridOf(built, grid, [], gap);
+        for (const n of built.children) assert(n.width >= 0.01 && n.height >= 0.01, `"${n.name}" is ${n.width} by ${n.height}`);
+      }
+      const [closed] = doc.nodes("COMPONENT").filter((n) => n.name === "open=false");
+      assert(closed.height === 0.01, `the closed Collapsible is ${closed.height} high, not 0.01`);
+      return "a Drawer's 39 by 24 trigger beside its 1280 by 197 and 320 by 800 panels, and a 0.01-high Collapsible, laid out apart";
     },
 
     async frozen(build) {
@@ -1177,21 +1527,309 @@ function layoutScenarios(snapDir) {
   };
 }
 
+/**
+ * The checks on what the build template does besides the layout, each
+ * `(build) => detail`, throwing when `build` gets it wrong, so a mutant of
+ * the template can be run through every one, as the layout's are. Each
+ * reproduces what a live push of shadcn/ui's components ran into.
+ */
+function buildScenarios(snapDir) {
+  let cached = null;
+  const data = () => {
+    if (cached) return cached;
+    const sets = simulatedSets(snapDir);
+    const variantsOf = (component) => expandVariants(component).map((v) => ({ name: figmaVariantName(v.combination), styles: v.styles }));
+    const button = sets.find((s) => s.component.name === "Button").component;
+    const frozen = sets.find((s) => s.component.name === "Frozen").component;
+    cached = { button, frozen, measured: variantsOf(button), frozenVariants: variantsOf(frozen) };
+    return cached;
+  };
+  const refused = async (attempt) => {
+    try {
+      await attempt();
+    } catch (err) {
+      return err.message;
+    }
+    return null;
+  };
+  // The top-level sets and plain components a document's pages hold.
+  const placed = (doc) => ["COMPONENT_SET", "COMPONENT"].flatMap((type) => doc.nodes(type)).filter((n) => n.parent?.type === "PAGE");
+
+  return {
+    async plain(build, readback = loadSkillReadback()) {
+      // map gave Button, Badge, Dialog and Tooltip no variant properties, and
+      // the build made each a set of one variant named '', which Figma
+      // renamed "=" and marked as broken: the readback found no variant
+      // named '', and componentPropertyDefinitions threw on every one. Such
+      // a component is one plain component on its page, restyled in place by
+      // the next push, read back as its own one variant, named '', and
+      // scored by verify under the slug default. A set an earlier push left
+      // of that name is refused, as is a plain one where a set is built.
+      const { measured } = data();
+      const { dir } = await proplessReadback(snapDir);
+      const styles = expandVariants(readJson(join(dir, "styles.json")).components.find((c) => c.name === "Badge"))[0].styles;
+      const doc = figmaDocument();
+      const push = (st, properties = [], name = "") => pushSet(build, doc, {
+        page: "Data", set: "Badge", storyId: "data-badge", title: "Data/Badge", part: 25, properties, variants: [{ name, styles: st }],
+      });
+      const [first] = await push(styles);
+      assert(JSON.stringify({ ...first, id: 0, name: 0 }) === JSON.stringify({ id: 0, name: 0, variants: 1, added: 1, updated: 0, rows: 1, columns: 1, extra: 0, overlaps: 0, fonts: {} }),
+        `the part returned ${JSON.stringify(first)}`);
+      const [component] = doc.nodes("COMPONENT");
+      assert(doc.nodes("COMPONENT_SET").length === 0 && doc.nodes("COMPONENT").length === 1 && component.id === first.id,
+        `a component with no variant properties was built as ${doc.nodes("COMPONENT_SET").length} sets and ${doc.nodes("COMPONENT").length} components`);
+      assert(component.name === "Badge" && component.parent.type === "PAGE" && component.parent.name === "Data",
+        `the component is "${component.name}" on ${component.parent?.type} "${component.parent?.name}"`);
+      const read = async () => (await readSet(readback, { componentSet: component, slugByName: { "": "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH)).variants;
+      const file = join(WORK, "readback-plain.json");
+      writeJson(file, { version: 1, fileKey: "acceptance", components: { "Data/Badge": { nodeId: component.id, variants: await read() } } });
+      const verdict = verifyJson(dir, file).json?.variants?.find((v) => v.component === "Data/Badge");
+      assert(verdict?.slug === "default" && verdict.status === "verified", `verify scored the plain Badge ${JSON.stringify(verdict)}`);
+
+      const [second] = await push({ ...styles, backgroundColor: "#0f766e" });
+      assert(second.id === first.id && second.added === 0 && second.updated === 1 && doc.nodes("COMPONENT").length === 1,
+        `the second push returned ${JSON.stringify(second)}, leaving ${doc.nodes("COMPONENT").length} components`);
+      const again = await read();
+      assert(again.default.backgroundColor === "#0f766e", `the second push left the fill ${again.default.backgroundColor}`);
+
+      // Named other than '', or pushed as a set onto the plain one: refused.
+      const typed = await refused(() => build.run(doc.call(), [{ name: "", styles }],
+        { PAGE_NAME: "Data", SET_NAME: "Badge", ID: "data-badge", TITLE: "Data/Badge", SET_ID: component.id, PART: 25 },
+        [{ name: "variant", type: "VARIANT", values: ["solid"], defaultValue: "solid" }]));
+      assert(typed && typed.includes("COMPONENT_SET") && typed.includes("it is a COMPONENT"), `a later part given the plain Badge's id for a set ${typed ? `failed with: ${typed}` : "was built"}`);
+      const misnamed = await refused(() => push(styles, [], "default"));
+      assert(misnamed && /name the one variant ""/.test(misnamed), `a part naming its one variant "default" ${misnamed ? `failed with: ${misnamed}` : "was built"}`);
+      const variant = [{ name: "variant", type: "VARIANT", values: ["solid"], defaultValue: "solid" }];
+      const grown = await refused(() => push(styles, variant, "variant=solid"));
+      assert(grown && grown.includes(component.id) && /ask the user/.test(grown) && doc.nodes("COMPONENT_SET").length === 0,
+        `a set pushed where the plain Badge is ${grown ? `failed with: ${grown}` : "was built"}`);
+
+      // A set a push before 0.4.0 left, its one variant named "=" by Figma.
+      const old = figmaDocument();
+      const broken = await leftSet(build, old, [{ name: "=", styles: measured[0].styles }], { page: "Data", set: "Badge" });
+      const before = old.nodes("COMPONENT").length;
+      const left = await refused(() => pushSet(build, old, { page: "Data", set: "Badge", part: 25, properties: [], variants: [{ name: "", styles }] }));
+      assert(left && left.includes(broken.id) && /ask the user/.test(left) && old.nodes("COMPONENT").length === before,
+        `a plain Badge pushed beside the broken set ${left ? `failed with: ${left}` : "was built"}, leaving ${old.nodes("COMPONENT").length - before} more components`);
+      return "built, read back and verified as one component, restyled in place; a misnamed variant, a set pushed onto it and the broken set refused";
+    },
+
+    async placed(build) {
+      // Every set the build created landed at 0,0, on top of the page's
+      // others. A new set or component goes 100 below everything on its
+      // page, one already there stays where it is, and each carries its
+      // Storybook id and title, so a set a designer renames is still found.
+      const { button, frozen, measured, frozenVariants } = data();
+      const doc = figmaDocument();
+      const pushes = [
+        { set: "Button", variants: measured, properties: button.variantProperties, storyId: button.id, title: button.title },
+        { set: "Frozen", variants: frozenVariants, properties: frozen.variantProperties, storyId: frozen.id, title: frozen.title },
+        { set: "Badge", variants: [{ name: "", styles: measured[0].styles }], properties: [], storyId: "forms-badge", title: "Forms/Badge" },
+      ];
+      const pushAll = async () => {
+        for (const p of pushes) await pushSet(build, doc, { page: "Forms", part: 25, ...p });
+      };
+      await pushAll();
+      const nodes = placed(doc);
+      assert(nodes.map((n) => n.name).join() === "Button,Frozen,Badge", `the page holds ${nodes.map((n) => n.name).join(", ")}`);
+      nodes.forEach((n, i) => {
+        const above = nodes[i - 1];
+        const y = above ? above.y + above.height + 100 : 0;
+        assert(n.x === 0 && n.y === y, `"${n.name}" is at ${n.x},${n.y}, not 0,${y}`);
+        const p = pushes[i];
+        const kept = [n.getSharedPluginData("storysync", "id"), n.getSharedPluginData("storysync", "title")];
+        assert(kept.join() === [p.storyId, p.title].join(), `"${n.name}" keeps the id and title ${kept.join(", ")}`);
+      });
+      // A designer moves the Button and renames it: the next push finds it by
+      // its id, restyles it there, and moves nothing.
+      const [set] = nodes;
+      const parts = [];
+      const counted = async () => {
+        for (const p of pushes) parts.push(...await pushSet(build, doc, { page: "Forms", part: 25, ...p }));
+      };
+      await counted();
+      assert(parts.every((r) => r.overlaps === 0), `parts on a laid-out page returned overlaps ${parts.map((r) => r.overlaps).join(", ")}`);
+      Object.assign(set, { x: 600, y: -400, name: "Buttons" });
+      const where = () => JSON.stringify(placed(doc).map((n) => [n.id, n.x, n.y]));
+      const before = where();
+      await pushAll();
+      assert(where() === before && placed(doc).length === 3, `a second push moved or added a set: ${where()}`);
+      assert(set.name === "Buttons", `the push renamed the set "${set.name}"`);
+      // A set an earlier push left with no id on it gets one; and where that
+      // push left two at 0,0, one on the other, each part counts the other in
+      // overlaps and moves neither.
+      const old = figmaDocument();
+      const left = await leftSet(build, old, measured, { page: "Forms", set: "Button" });
+      const frozenLeft = await besideSet(build, old, "Forms", "Frozen", frozenVariants);
+      const [stacked] = await pushSet(build, old, { page: "Forms", part: 25, ...pushes[0] });
+      const [under] = await pushSet(build, old, { page: "Forms", part: 25, ...pushes[1] });
+      assert(left.getSharedPluginData("storysync", "id") === button.id, "a set an earlier push left was given no id");
+      assert(stacked.overlaps === 1 && under.overlaps === 1, `two sets at 0,0 returned overlaps ${stacked.overlaps} and ${under.overlaps}`);
+      assert([left, frozenLeft].every((n) => n.x === 0 && n.y === 0), "a part moved a set an earlier push left at 0,0");
+      return "Button, Frozen and Badge 100 apart, each with its id and title and no overlaps; a moved, renamed set found by its id and left where it was; " +
+        "two sets an earlier push stacked at 0,0 each counted in the other's overlaps, unmoved";
+    },
+
+    async found(build) {
+      // The first part matched a set by its name or its id at once, so a
+      // copy of a set (Ctrl+D), which keeps its plugin data, made two and the
+      // part refused; it took a designer's own plain component of the name
+      // for one an earlier push built; and it overwrote another component's
+      // id on a set of its name. It finds a set by name, by id only where
+      // nothing has the name, and refuses a set of the name with another id.
+      const { button, measured } = data();
+      const push = (doc, extra = {}) => pushSet(build, doc, {
+        page: "Forms", set: "Button", part: 25, variants: measured, properties: button.variantProperties, storyId: button.id, title: button.title, ...extra,
+      });
+      const doc = figmaDocument();
+      const [first] = await push(doc);
+      const original = await doc.call().getNodeByIdAsync(first.id);
+      const copy = await besideSet(build, doc, "Forms", "Button copy", measured.slice(0, 2));
+      copy.setSharedPluginData("storysync", "id", button.id);
+      const [again] = await push(doc);
+      assert(again.id === first.id && again.added === 0 && copy.children.length === 2, `a push beside a copy of the set returned ${JSON.stringify(again)}`);
+      // Renamed, beside its copy: nothing has the name, and two have the id.
+      original.name = "Buttons";
+      const two = await refused(() => push(doc));
+      assert(two && two.includes(`"Buttons" (${original.id}`) && two.includes(`"Button copy" (${copy.id}`) && /ask the user which/.test(two),
+        `a push with two sets of its id and none of its name ${two ? `failed with: ${two}` : "was built"}`);
+
+      const own = figmaDocument();
+      const call = own.call();
+      const page = call.createPage();
+      page.name = "Forms";
+      await call.setCurrentPageAsync(page);
+      const designed = call.createComponent();
+      designed.name = "Button";
+      const [beside] = await push(own);
+      assert(beside.added === measured.length && own.nodes("COMPONENT_SET").length === 1 && designed.parent === page && designed.name === "Button",
+        `a push beside a designer's own Button component returned ${JSON.stringify(beside)}`);
+
+      const other = figmaDocument();
+      const taken = await leftSet(build, other, measured, { page: "Forms", set: "Button" });
+      taken.setSharedPluginData("storysync", "id", "forms-iconbutton");
+      const kept = await refused(() => push(other));
+      assert(kept && kept.includes(taken.id) && kept.includes("forms-iconbutton") && /another component/.test(kept)
+        && taken.getSharedPluginData("storysync", "id") === "forms-iconbutton",
+        `a push onto a Button carrying another component's id ${kept ? `failed with: ${kept}` : "was built"}`);
+      return "a copy left alone, a renamed set beside its copy refused, a designer's own Button left alone, another component's set refused";
+    },
+
+    async painted(build) {
+      // A live push bound Attachment's error border, #df22254d, to the
+      // destructive variable, and it read back #df2225: Figma sets a paint
+      // freshly bound to opacity 1 when it is assigned. setPaints puts back
+      // the opacity of a paint whose variable's light value doesn't hold its
+      // alpha, and leaves such a shadow unbound, keeping one whose variable
+      // has its alpha bound.
+      const { measured } = data();
+      const doc = figmaDocument();
+      const vars = {
+        muted: doc.variable("muted", "#4b5563"), destructive: doc.variable("destructive", "#df2225"),
+        black: doc.variable("black", "#000000"), shadow: doc.variable("shadow/sm", "#0000001a"),
+      };
+      const plain = measured[0].styles;
+      const border = { width: 1, style: "solid", color: "#df22254d" };
+      const layer = (offsetY) => ({ offsetX: 0, offsetY, blur: 2 * offsetY, spread: 0, color: "#0000001a", inset: false });
+      const styles = {
+        ...plain, backgroundColor: "#4b556322", width: plain.width + 2, height: plain.height + 2,
+        border: { top: border, right: border, bottom: border, left: border }, borderUniform: border, boxShadow: [layer(1), layer(4)],
+      };
+      const styler = [
+        "Object.assign(variant, look(variant.name, styles));",
+        "setPaints(variant, 'fills', [{ ...variant.fills[0], variable: vars.muted }]);",
+        "setPaints(variant, 'strokes', [{ ...variant.strokes[0], variable: vars.destructive }]);",
+        "setPaints(variant, 'effects', [{ ...variant.effects[0], variable: vars.black }, { ...variant.effects[1], variable: vars.shadow }]);",
+      ].join("\n      ");
+      const properties = [{ name: "state", type: "VARIANT", values: ["error"], defaultValue: "error" }];
+      const [result] = await pushSet(build, doc, {
+        page: "Forms", set: "Attachment", part: 25, properties, variants: [{ name: "state=error", styles }], styler, scope: { vars },
+      });
+      const set = await doc.call().getNodeByIdAsync(result.id);
+      const [variant] = set.children;
+      const bound = (paint) => paint.boundVariables?.color?.id ?? null;
+      assert(bound(variant.fills[0]) === vars.muted.id && bound(variant.strokes[0]) === vars.destructive.id,
+        "setPaints left the fill or the stroke unbound");
+      const slice = await loadSkillReadback().read(set, { "state=error": "state-error" }, { "state-error": "measured" });
+      const read = slice.readback["state-error"];
+      const got = `${read.backgroundColor} ${read.borderUniform?.color}`;
+      assert(got === "#4b556322 #df22254d", `the bound fill and stroke read back ${got}, not #4b556322 #df22254d`);
+      const [unbound, kept] = variant.effects;
+      const alpha = (effect) => Math.round(effect.color.a * 255);
+      assert(bound(unbound) === null && alpha(unbound) === 0x1a, `a shadow bound to an opaque black kept ${bound(unbound)} at alpha ${alpha(unbound)}`);
+      assert(bound(kept) === vars.shadow.id && alpha(kept) === 0x1a, `a shadow bound to shadow/sm kept ${bound(kept)} at alpha ${alpha(kept)}`);
+      return `fill ${read.backgroundColor} and stroke ${read.borderUniform.color} bound; a shadow left unbound where binding took its alpha, one kept bound`;
+    },
+
+    async fonts(build) {
+      // snap records a CSS keyword such as system-ui, and Menlo for a
+      // monospace stack on macOS, and Figma's plugin context loads neither.
+      // loadFont loads the measured family where Figma has it, and otherwise
+      // Inter, or Roboto Mono for a monospace face, at the measured weight in
+      // whichever spelling the family uses, and the part names each stand-in.
+      // A part whose own code throws part way leaves no variant it made loose
+      // on the page, and the set as it was.
+      const { measured } = data();
+      const plain = measured[0].styles;
+      const fonted = (fontFamily, fontWeight) => ({
+        ...plain, fontFamily, fontWeight, text: { color: plain.text?.color ?? plain.color, fontSize: plain.fontSize, fontFamily, fontWeight },
+      });
+      const faces = {
+        keyword: ["system-ui", 600], mono: ["Menlo", 400], named: ["Inter", 500], monoBold: ["ui-monospace", 600],
+        spelled: ["Roboto Mono", 600], heavy: ["Roboto Mono", 800], serif: ["Georgia", 400], heaviest: ["Inter", 950],
+        variable: ["Geist Variable", 600],
+      };
+      const properties = [{ name: "font", type: "VARIANT", values: Object.keys(faces), defaultValue: "keyword" }];
+      const variants = Object.entries(faces).map(([face, [family, weight]]) => ({ name: `font=${face}`, styles: fonted(family, weight) }));
+      const styler = "Object.assign(variant, look(variant.name, styles));\n      variant.findOne((n) => n.type === 'TEXT').fontName = await loadFont(styles.text.fontFamily, styles.text.fontWeight);";
+      const doc = figmaDocument();
+      const [result] = await pushSet(build, doc, { page: "Forms", set: "Fonts", part: 25, properties, variants, styler });
+      const want = {
+        "system-ui 600": "Inter Semi Bold", "Menlo 400": "Roboto Mono Regular", "ui-monospace 600": "Roboto Mono SemiBold",
+        "Roboto Mono 800": "Roboto Mono Bold", "Georgia 400": "Noto Serif Regular",
+      };
+      assert(JSON.stringify(result.fonts) === JSON.stringify(want), `the part named the stand-ins ${JSON.stringify(result.fonts)}`);
+      const set = await doc.call().getNodeByIdAsync(result.id);
+      const names = Object.fromEntries(variants.map((v) => [v.name, v.name]));
+      const slice = await loadSkillReadback().read(set, names, Object.fromEntries(variants.map((v) => [v.name, "measured"])));
+      const read = Object.values(slice.readback).map((e) => `${e.fontFamily} ${e.fontWeight}`).join(", ");
+      // fontsource's Geist Variable is Figma's Geist, no stand-in.
+      assert(read === "Inter 600, Roboto Mono 400, Inter 500, Roboto Mono 600, Roboto Mono 600, Roboto Mono 700, Noto Serif 400, Inter 900, Geist 600", `read back ${read}`);
+
+      // The agent's own code throws on one variant, after the part made it.
+      const throwing = (on) => `if (variant.name === '${on}') throw new Error('applyStyles failed');\n      Object.assign(variant, look(variant.name, styles));`;
+      const fresh = figmaDocument();
+      const first = await refused(() => pushSet(build, fresh, { page: "Forms", set: "Fonts", part: 25, properties, variants, styler: throwing("font=named") }));
+      assert(first === "applyStyles failed" && fresh.nodes("COMPONENT").length === 0 && fresh.nodes("COMPONENT_SET").length === 0,
+        `a first part that failed ${first ? `with "${first}"` : "did not fail, and"} left ${fresh.nodes("COMPONENT").length} components`);
+      const extra = { name: "font=late", styles: fonted("Georgia", 400) };
+      const wider = [{ ...properties[0], values: [...properties[0].values, "late"] }];
+      const later = await refused(() => pushSet(build, doc, { page: "Forms", set: "Fonts", part: 25, properties: wider, variants: [...variants, extra], styler: throwing(extra.name) }));
+      assert(later === "applyStyles failed" && doc.nodes("COMPONENT").length === variants.length && set.children.length === variants.length,
+        `a part that failed on a variant it added left ${doc.nodes("COMPONENT").length} components, ${set.children.length} in the set`);
+      return `stand-ins ${Object.values(want).join(", ")}, named in the part's result, none for Roboto Mono's own SemiBold; a part that failed left nothing loose`;
+    },
+  };
+}
+
 // --- Simulated Figma for the audit -------------------------------------------
 
 /** One use_figma call's figma, serving local variables. */
-function variablesFigma(variables) {
+function variablesFigma(variables, modes = {}) {
   const collections = [];
   const byId = new Map();
   variables.forEach((v, i) => {
     let coll = collections.find((c) => c.name === v.collection);
     if (!coll) {
-      coll = { name: v.collection, modes: [{ modeId: `${v.collection}:default`, name: "Default" }], variableIds: [] };
+      // Its modes, by name, the first its default: one, "Default", unless `modes` gives the collection's.
+      const names = modes[v.collection] ?? ["Default"];
+      coll = { name: v.collection, modes: names.map((name) => ({ modeId: `${v.collection}:${name}`, name })), variableIds: [] };
       collections.push(coll);
     }
     const id = `VariableID:${i}`;
     coll.variableIds.push(id);
-    byId.set(id, { name: v.name, resolvedType: v.type, valuesByMode: { [coll.modes[0].modeId]: v.value } });
+    // `values` gives one per mode, in order; `value` is the default mode's alone.
+    byId.set(id, { name: v.name, resolvedType: v.type, valuesByMode: Object.fromEntries(coll.modes.map((m, at) => [m.modeId, v.values ? v.values[at] : v.value]).filter(([, value]) => value !== undefined)) });
   });
   return {
     variables: {
@@ -1202,19 +1840,25 @@ function variablesFigma(variables) {
 }
 
 /**
- * One use_figma call's figma, serving pages of component sets. As in
- * use_figma, a call starts on the first page with only it loaded, a page loads
- * when the call switches to it and becomes figma.currentPage, and a search
- * from figma.root sees only the loaded pages. `switches` records each switch.
+ * One use_figma call's figma, serving pages of component sets, components and
+ * frames. As in use_figma, a call starts on the first page with only it
+ * loaded, a page loads when the call switches to it and becomes
+ * figma.currentPage, and a search from figma.root sees only the loaded pages.
+ * A search walks every node under the page, a set's variants included, as
+ * Figma's does. `switches` records each switch.
  */
 function pagesFigma(pages, switches = []) {
   const loaded = new Set([pages[0].id]);
-  const nodes = pages.map((p) => ({
-    id: p.id,
-    type: "PAGE",
-    name: p.name,
-    findAllWithCriteria: ({ types }) => (loaded.has(p.id) ? p.sets.filter((s) => types.includes(s.type)) : []),
-  }));
+  const nodes = pages.map((p) => {
+    const page = {
+      id: p.id,
+      type: "PAGE",
+      name: p.name,
+      findAllWithCriteria: ({ types }) => (loaded.has(p.id) ? descendants(p.sets).filter((n) => types.includes(n.type)) : []),
+    };
+    for (const node of p.sets) node.parent = page;
+    return page;
+  });
   const figma = {
     root: {
       children: nodes,
@@ -1231,12 +1875,55 @@ function pagesFigma(pages, switches = []) {
   return figma;
 }
 
-/** A component set as the audit reads it: its properties and its variant count. */
-function auditSet(name, options) {
+/** Every node under `nodes`, each before its children, as a search walks them. */
+function descendants(nodes) {
+  return nodes.flatMap((n) => [n, ...descendants(n.children ?? [])]);
+}
+
+let auditNodeIds = 0;
+
+/** A node's shared plugin data: the Storybook ID the push stored, or "" as Figma reads none. */
+function auditNode(type, name, storybookId = "") {
+  return {
+    type,
+    name,
+    id: `9:${++auditNodeIds}`,
+    children: [],
+    getSharedPluginData: (namespace, key) => (namespace === "storysync" && key === "id" ? storybookId : ""),
+  };
+}
+
+/**
+ * A component set as the audit reads it: its properties, and a variant, a
+ * component, per combination. `errored`, a set Figma flags as errored, as
+ * one of a single variant named "" is: reading its properties throws.
+ */
+function auditSet(name, options, { storybookId = "", errored = false } = {}) {
   const defs = Object.fromEntries(Object.entries(options).map(([prop, values]) =>
     [prop, values === "BOOLEAN" ? { type: "BOOLEAN", defaultValue: false } : { type: "VARIANT", variantOptions: values }]));
   const count = Object.values(options).reduce((n, values) => n * (values === "BOOLEAN" ? 2 : values.length), 1);
-  return { type: "COMPONENT_SET", name, componentPropertyDefinitions: defs, children: Array.from({ length: count }, () => ({})) };
+  const set = auditNode("COMPONENT_SET", name, storybookId);
+  Object.defineProperty(set, "componentPropertyDefinitions", {
+    get() {
+      if (errored) throw new Error("in get_componentPropertyDefinitions: Component set has existing errors");
+      return defs;
+    },
+  });
+  set.children = Array.from({ length: count }, (_, i) => Object.assign(auditNode("COMPONENT", `variant ${i}`), { parent: set }));
+  return set;
+}
+
+/** A component outside any set, as the push makes one with no variant properties, or a designer's own. */
+function auditComponent(name, { storybookId = "" } = {}) {
+  return auditNode("COMPONENT", name, storybookId);
+}
+
+/** A frame holding other nodes, as a designer groups components in one. */
+function auditFrame(name, children) {
+  const frame = auditNode("FRAME", name);
+  frame.children = children;
+  for (const child of children) child.parent = frame;
+  return frame;
 }
 
 /**
@@ -1394,7 +2081,7 @@ async function assertNullsScored(snapDir, { template = loadSkillReadback(), bin 
   const cases = [
     { slug: "textless", styles: { ...plain, text: null }, figma: { text: false } },
     { slug: "flat", styles: block, figma: { layoutMode: "NONE" } },
-    { slug: "unlabelled", styles: plain, figma: { text: false } },
+    { slug: "unlabeled", styles: plain, figma: { text: false } },
     { slug: "ungapped", styles: plain, figma: { layoutMode: "NONE" } },
   ];
   const children = cases.map(({ slug, styles, figma }) => {
@@ -1428,10 +2115,11 @@ async function assertNullsScored(snapDir, { template = loadSkillReadback(), bin 
   assert((v.json.readbackIssues ?? []).length === 0, `a variant with null fields was flagged: ${describeIssues(v.json.readbackIssues)}`);
   const scored = v.json.variants.map((x) => `${x.slug} ${x.status} ${x.matched}/${x.matched + x.mismatched}` +
     (x.differences.length ? ` ${x.differences.map((d) => d.property).join("+")}` : "")).join(", ");
-  const want = "textless verified 12/12, flat verified 10/10, " +
-    "unlabelled drifted 8/12 color+fontSize+fontWeight+fontFamily, ungapped drifted 11/12 gap";
+  // boxShadow among them since the template reads shadows back: none, as snap measured none.
+  const want = "textless verified 13/13, flat verified 11/11, " +
+    "unlabeled drifted 9/13 color+fontSize+fontWeight+fontFamily, ungapped drifted 12/13 gap";
   assert(scored === want, `scored ${scored}, not ${want}`);
-  return `no text and no text measured 12/12, no auto layout on a block element 10/10; ` +
+  return `no text and no text measured 13/13, no auto layout on a block element 11/11; ` +
     `a label lost in Figma drifts on its four text fields, an auto layout lost on its gap`;
 }
 
@@ -1477,11 +2165,11 @@ async function assertComposedFlagged(snapDir, { bin } = {}) {
 }
 
 /**
- * Throws unless one colour edited in a readback the template returned is
+ * Throws unless one color edited in a readback the template returned is
  * flagged on exactly that variant, with nothing in it scored, every other
  * variant still verified, and --strict failed. The edit is the one that hides
  * drift: the variant's fill is magenta in Figma, read back as such, and the
- * file is then changed to the colour snap measured.
+ * file is then changed to the color snap measured.
  */
 async function assertEditFlagged(snapDir, { bin } = {}) {
   const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
@@ -1502,7 +2190,7 @@ async function assertEditFlagged(snapDir, { bin } = {}) {
     `read back as Figma has it, the magenta variant was ${drifted?.status}`);
 
   entry.backgroundColor = measured;
-  const path = join(WORK, "readback-recoloured.json");
+  const path = join(WORK, "readback-recolored.json");
   writeJson(path, file);
   const v = verifyJson(snapDir, path, [], { bin });
   assert(v.json?.summary, `verify did not score the edited readback\n${v.out.trim()}`);
@@ -1516,7 +2204,7 @@ async function assertEditFlagged(snapDir, { bin } = {}) {
   const wrong = others.filter((x) => x.status !== "verified");
   assert(wrong.length === 0 && v.json.fidelity === 1, `the other variants: ${wrong.map((x) => `${x.slug} ${x.status}`).join(", ") || "verified"}, fidelity ${v.json.fidelity}`);
   assert(exitOf(snapDir, path, ["--strict"], { bin }) === 1, "--strict passed");
-  return `the recoloured ${slug} flagged and unscored, the other ${others.length} verified, --strict failed`;
+  return `the recolored ${slug} flagged and unscored, the other ${others.length} verified, --strict failed`;
 }
 
 /**
@@ -1541,10 +2229,10 @@ async function proplessReadback(snapDir, { bin } = {}) {
   const template = loadSkillReadback();
   const components = {};
   for (const name of ["Badge", "Tag"]) {
-    const node = figmaNode(figmaVariantName({}), styles);
-    if (name === "Tag") node.fills = [solidPaint("#ff00ff")];
-    const componentSet = { id: `set:${name}`, type: "COMPONENT_SET", name, children: [node] };
-    const { variants } = await readSet(template, { componentSet, slugByName: { default: "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH);
+    // Built as one plain component, its own one variant, named ''.
+    const componentSet = { ...figmaNode(figmaVariantName({}), styles), id: `component:${name}`, type: "COMPONENT", name };
+    if (name === "Tag") componentSet.fills = [solidPaint("#ff00ff")];
+    const { variants } = await readSet(template, { componentSet, slugByName: { "": "default" }, sourceBySlug: { default: "measured" } }, READ_BATCH);
     components[`Data/${name}`] = { nodeId: componentSet.id, variants };
   }
   const file = { version: 1, fileKey: "acceptance", components };
@@ -1681,25 +2369,149 @@ async function assertStaleFlagged(snapDir, { bin } = {}) {
   return `all ${entries} entries read an hour before the snap flagged stale, nothing scored, --strict failed; read two minutes before it, 100%`;
 }
 
+// --- The element-tree push -------------------------------------------------------
+
+/** use_figma takes at most 50,000 characters a call; figma code packs build calls to this. */
+const MAX_CALL_CHARS = 45000;
+
+/**
+ * The mock Figma the unit tests use (cli/__tests__/mock-figma.ts, built
+ * beside the CLI): the Plugin API's pages, frames, auto layout, text, SVG
+ * import, images and shared plugin data, with use_figma's limits on code,
+ * response and page switches. What the element-tree push sends its calls to.
+ */
+async function mockFigma() {
+  const mod = (path) => import(pathToFileURL(join(ROOT, "dist", "cli", ...path.split("/"))).href);
+  const [M, T] = await Promise.all([mod("__tests__/mock-figma.js"), mod("tree-types.js")]);
+  return { M, expandTree: T.expandTree };
+}
+
+/**
+ * Pushes a tree snap the way the skill has the agent do it, into a mock
+ * Figma: `figma code` writes the calls; each is sent unchanged, in seq
+ * order, and its response saved unchanged where plan.json says; a build
+ * that lists uploads gets an upload_assets response, and `figma upload`
+ * posts the thumbnails to its URLs, served here; and a read whose result has
+ * `more` is continued with `figma next`. Returns the plan and the mock, so a
+ * check can change Figma and send the read calls again.
+ */
+async function treePush(snapPath, out, { tokens = null, mock: given = null } = {}) {
+  const { M, expandTree } = await mockFigma();
+  const r = cli(["figma", "code", "--snap", snapPath, "--out", out, "--json", ...(tokens ? ["--tokens", tokens] : [])]);
+  assert(r.status === 0, `figma code exited ${r.status}\n${r.out.trim()}`);
+  const { planPath, warnings } = JSON.parse(r.out.trim().split("\n").pop());
+  const plan = readJson(planPath);
+  const snap = readJson(snapPath);
+  const trees = snap.components.flatMap((c) => c.variants.filter((v) => v.status === "ok").map((v) => expandTree(c.tree, v.treeDelta)));
+  // Text as wide as Figma sets it in its own fonts, the widths snap
+  // measured for any other family.
+  const mock = given ?? new M.MockFigma({ measure: M.figmaFonts(M.measureFromTrees(trees)), moveNeedsFonts: true });
+  const send = async (file, result) => {
+    const code = readFileSync(file, "utf8");
+    assert(code.length <= MAX_CALL_CHARS, `${file} is ${code.length} characters, over ${MAX_CALL_CHARS}`);
+    const run = await mock.run(code);
+    assert(run.ok, `${file} failed in Figma: ${run.text}`);
+    mkdirSync(dirname(result), { recursive: true });
+    writeFileSync(result, run.text);
+    return run;
+  };
+  const runs = [];
+  for (const call of plan.calls) {
+    const run = await send(join(out, call.file), join(out, call.result));
+    runs.push({ call, run });
+    const uploads = call.kind === "build" ? run.value.uploads ?? [] : [];
+    if (uploads.length) await uploadAssets(mock, planPath, call, uploads);
+    if (call.kind === "read") {
+      for (;;) {
+        const next = cli(["figma", "next", "--plan", planPath, "--seq", String(call.seq), "--json"]);
+        assert(next.status === 0, `figma next exited ${next.status}\n${next.out.trim()}`);
+        const more = JSON.parse(next.out.trim().split("\n").pop()).next;
+        if (!more) break;
+        runs.push({ call: { ...call, result: more.result }, run: await send(more.file, more.result) });
+      }
+    }
+  }
+  return { out, planPath, plan, mock, runs, warnings };
+}
+
+/**
+ * upload_assets for a build's uploads, its response saved unchanged, and
+ * `figma upload` run on it: each URL is served here, putting what is
+ * posted to it on its layer in the mock, as Figma's upload does.
+ */
+async function uploadAssets(mock, planPath, call, uploads) {
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      mock.uploadAssets([decodeURIComponent(req.url.slice(1))], [new Uint8Array(Buffer.concat(chunks))]);
+      res.writeHead(200).end();
+    });
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    writeFileSync(join(dirname(planPath), call.result.replace(/\.json$/, ".upload.json")),
+      JSON.stringify({ uploads: uploads.map(([nodeId]) => ({ submitUrl: `${base}/${encodeURIComponent(nodeId)}`, targetNodeId: nodeId })) }));
+    const r = await cliAsync(["figma", "upload", "--plan", planPath, "--seq", String(call.seq)]);
+    assert(r.status === 0, `figma upload exited ${r.status}\n${r.out.trim()}`);
+  } finally {
+    await new Promise((done) => server.close(done));
+  }
+}
+
+/** Sends a push's read calls again, saving each response over the last, as after a change in Figma. */
+async function readTreeAgain(push) {
+  for (const call of push.plan.calls.filter((c) => c.kind === "read")) {
+    const run = await push.mock.run(readFileSync(join(push.out, call.file), "utf8"));
+    assert(run.ok, `${call.file} failed in Figma: ${run.text}`);
+    writeFileSync(join(push.out, call.result), run.text);
+  }
+}
+
+/** verify --plan, as the skill runs it, with --json. */
+function verifyPlan(planPath, flags = []) {
+  const r = cli(["verify", "--plan", planPath, "--json", ...flags]);
+  let json = null;
+  try {
+    json = JSON.parse(r.out.trim().split("\n").pop());
+  } catch {
+    // callers assert on status
+  }
+  return { status: r.status, json, out: r.out };
+}
+
+/** A variant's keyed layer in the mock, by the variant's slug and the layer's key. */
+function treeLayer(mock, slug, key) {
+  const variant = mock.nodes("COMPONENT").find((v) => v.data["storysync.slug"] === slug);
+  assert(variant, `no variant ${slug} in Figma`);
+  const walk = (view) => (view.data["storysync.k"] === key ? view : (view.children ?? []).map(walk).find(Boolean) ?? null);
+  const found = (variant.children ?? []).map(walk).find(Boolean);
+  assert(found, `no layer ${key} in ${slug}`);
+  return found;
+}
+
 let mutantBuilds = 0;
 
 /**
- * A copy of the built CLI with `mutate` applied to its verify.js, beside a
- * link to this checkout's node_modules so it runs as the original does. With
- * no `mutate`, an unchanged copy: the control for the mutants, since a copy
- * that cannot run would make every one of them look caught.
+ * A copy of the built CLI with `mutate` applied to one of its modules,
+ * verify.js unless `file` names another, beside a link to this checkout's
+ * node_modules so it runs as the original does. With no `mutate`, an
+ * unchanged copy: the control for the mutants, since a copy that cannot run
+ * would make every one of them look caught.
  */
-function mutantCli(mutate) {
+function mutantCli(mutate, file = "verify.js") {
   const dir = join(WORK, `build-${++mutantBuilds}`);
   cpSync(join(ROOT, "dist", "cli"), join(dir, "dist", "cli"), { recursive: true, filter: (src) => !src.includes("__tests__") });
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   symlinkSync(join(ROOT, "node_modules"), join(dir, "node_modules"), "dir");
   if (mutate) {
-    const file = join(dir, "dist", "cli", "verify.js");
-    const shipped = readFileSync(file, "utf8");
+    const path = join(dir, "dist", "cli", file);
+    const shipped = readFileSync(path, "utf8");
     const mutated = mutate(shipped);
-    assert(mutated !== shipped, "the mutation no longer matches verify");
-    writeFileSync(file, mutated);
+    assert(mutated !== shipped, `the mutation no longer matches ${file}`);
+    writeFileSync(path, mutated);
   }
   return join(dir, "dist", "cli", "index.js");
 }
@@ -1749,7 +2561,14 @@ async function main() {
   heading("Measurement");
 
   await check("snap measures every variant of the example", () => {
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all"]);
+    // Root only: every check after this pushes through the skill's shipped
+    // templates, which build and read back each variant's outer element. A
+    // snap with element trees, scored against a readback of roots alone,
+    // fails --strict, as design section 10.7 has it; the tree snap is
+    // checked on its own below. Frozen's story ignores its args, so snap
+    // would leave its variant out as measuring the same (checked below):
+    // kept, it is the set of three the push checks build.
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", snapDir, "--screenshots", "--variants", "all", "--root-only", ...KEEP_FROZEN]);
     assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
     const snap = readJson(join(snapDir, "styles.json"));
     const byName = Object.fromEntries(snap.components.map((c) => [c.name, c]));
@@ -1757,6 +2576,62 @@ async function main() {
     assert(snap.summary.rendered === snap.summary.variants && snap.summary.failed === 0,
       `rendered ${snap.summary.rendered}/${snap.summary.variants}, ${snap.summary.failed} failed`);
     return `${snap.summary.rendered}/${snap.summary.variants} variants across ${snap.summary.components} components`;
+  });
+
+  await check("snap measures each variant's element tree, the same twice, around the roots --root-only measures", () => {
+    // Without --root-only, snap measures the elements under each root as
+    // well (design section 6). The roots are the same measurement either way
+    // (section 7.5): --root-only adds only how many elements it left out.
+    const texts = ["tree", "tree-again"].map((name) => {
+      const out = join(WORK, name);
+      const r = cli(["snap", "--storybook", STORYBOOK, "--out", out, "--variants", "all", ...KEEP_FROZEN]);
+      assert(r.status === 0, `snap exited ${r.status}\n${r.out.trim()}`);
+      return readFileSync(join(out, "styles.json"), "utf8");
+    });
+    assert(texts[0] === texts[1], "two snaps of the same code measured different element trees");
+    const tree = JSON.parse(texts[0]);
+    const roots = readJson(join(snapDir, "styles.json"));
+    assert(tree.treeVersion === 1 && roots.treeVersion === undefined, `treeVersion ${tree.treeVersion}, and ${roots.treeVersion} with --root-only`);
+    const plain = ({ screenshot: _s, treeDelta: _t, innerElements: _i, ...rest }) => JSON.stringify(rest);
+    let nodes = 0;
+    for (const [i, component] of tree.components.entries()) {
+      const root = roots.components[i];
+      assert(component.name === root?.name, `component ${i}: ${component.name}, and ${root?.name} with --root-only`);
+      assert(component.tree?.base?.length > 0 && root.tree === undefined, `${component.name}: ${component.tree?.base?.length ?? "no"} tree nodes, and ${root.tree ? "a tree" : "none"} with --root-only`);
+      nodes += component.tree.base.length;
+      assert(JSON.stringify(component.base) === JSON.stringify(root.base), `${component.name}: its base differs from --root-only's`);
+      for (const [j, variant] of component.variants.entries()) {
+        assert(Number.isInteger(root.variants[j].innerElements), `${component.name} ${variant.slug}: --root-only recorded no innerElements`);
+        assert(plain(variant) === plain(root.variants[j]), `${component.name} ${variant.slug}: its root differs from --root-only's`);
+      }
+    }
+    return `${tree.components.length} components, ${nodes} nodes in their base trees, byte-identical twice`;
+  });
+
+  await check("snap leaves a font the project loads as it is: the example's Inter is measured in Inter, with no stand-in", () => {
+    // Text in a CSS keyword or a platform face Figma lacks is drawn in the
+    // font Figma sets it in before snap measures it (cli/fonts.ts); the
+    // example bundles Inter, which Figma has, so none of its text is.
+    const tree = readJson(join(WORK, "tree", "styles.json"));
+    assert(tree.fontStandIns === undefined && tree.components.every((c) => c.fontStandIns === undefined),
+      `stand-ins recorded: ${JSON.stringify([tree.fontStandIns, ...tree.components.map((c) => c.fontStandIns)])}`);
+    const texts = tree.components.flatMap((c) => c.tree.base.filter((n) => n.tx));
+    assert(texts.length > 0 && texts.every((n) => n.tx.f === "Inter" && n.tx.fs === undefined), `families: ${[...new Set(texts.map((n) => `${n.tx.f}/${n.tx.fs}`))].join(", ")}`);
+    return `${texts.length} texts in Inter, none stood in`;
+  });
+
+  await check("the stand-in fonts snap measures with set text as the mock's Figma metrics say, and as wide as Figma did in the live probe", () => {
+    // scripts/figma-font-metrics.mjs measures the stand-ins in the browser:
+    // a font package or fonts/ updated without the metrics fails here, and
+    // so does Inter, Roboto Mono or Noto Serif set more than 0.001px from a
+    // width the fourth push's text probe read from Figma, or any of the
+    // probe's characters alone set otherwise than Figma set it in Inter.
+    const r = spawnSync(process.execPath, [join(ROOT, "scripts", "figma-font-metrics.mjs"), "--check"], { encoding: "utf8" });
+    assert(r.status === 0, `${r.stdout}${r.stderr}`.trim());
+    const proof = r.stdout.split("\n").filter((line) => /^ok (Inter|Roboto Mono|Noto Serif): Chrome sets (the probe's strings|each of the probe's \d+ characters)/.test(line))
+      .map((line) => line.replace(/ \(worst.*$/, ""));
+    assert(proof.length === 4, `the script proved ${proof.length} of 4 things against the probe (3 families' strings, Inter's characters):\n${r.stdout}`);
+    return `figma-fonts.json matches the installed fonts; ${proof.join("; ")}`;
   });
 
   await check("the push measures every Button combination, with the defaults as the base", () => {
@@ -1785,6 +2660,123 @@ async function main() {
     assert(JSON.stringify(button.cap.uncovered) === JSON.stringify(["disabled=true"]), `uncovered: ${JSON.stringify(button.cap.uncovered)}`);
     assert(/leave out disabled=true/.test(r.out) && !/cover every value/.test(r.out), "warning claims coverage the subset lacks");
     return "12 over a limit of 4: warned, recorded, gap named, --strict failed";
+  });
+
+  await check("the example's stories take every value they're given, and snap records their argTypes", () => {
+    // Its argTypes list every option, so nothing goes through the preview,
+    // and the story's own argTypes are recorded as Storybook holds them.
+    const snap = readJson(join(snapDir, "styles.json"));
+    const button = snap.components.find((c) => c.name === "Button");
+    const through = snap.components.flatMap((c) => c.variants.filter((v) => v.rejectedArgs || v.appliedVia).map((v) => `${c.name} ${v.slug}`));
+    assert(through.length === 0, `variants the story didn't take: ${through.join(", ")}`);
+    // A real Storybook's preview can be read for every variant.
+    const unchecked = snap.components.flatMap((c) => c.variants.filter((v) => v.argsChecked === false).map((v) => `${c.name} ${v.slug}`));
+    assert(unchecked.length === 0, `variants whose args snap couldn't check: ${unchecked.join(", ")}`);
+    assert(!snap.components.some((c) => c.warnings.some((w) => /story URL|Storybook's preview/.test(w))), "an args warning on the example");
+    assert(JSON.stringify(button.argTypes?.variant) === JSON.stringify({ type: "enum", control: "select", options: ["primary", "danger", "outline"], initial: "primary" }),
+      `Button's variant argType: ${JSON.stringify(button.argTypes)}`);
+    assert(button.storyFile === "./src/Button.stories.tsx", `story file: ${button.storyFile}`);
+    return `argTypes ${Object.keys(button.argTypes).join(", ")}, none rejected`;
+  });
+
+  await check("a value the story's argTypes reject is measured through Storybook's preview, as the component renders it", async () => {
+    // Storybook drops a URL value its argTypes options don't list, and hides
+    // an arg whose argTypes `if` fails, rendering the default instead: snap
+    // measured that under the variant's name, as it did for shadcn/ui's
+    // Badge ghost and link, and Figma got 36 variants that looked like the
+    // default. Served here with outline left out of the options and size
+    // hidden for it, every Button variant must still measure as the
+    // unchanged story renders it. Each page load fetches the story's module,
+    // so every copy served is counted, and any without both edits.
+    let served = 0;
+    let unedited = 0;
+    const storybook = await rewritingStorybook("/src/Button.stories.tsx", (code) => {
+      let edits = 0;
+      const changed = code
+        .replace(/options:\s*\[\s*"primary",\s*"danger",\s*"outline"\s*\]/, () => { edits++; return 'options: ["primary", "danger"]'; })
+        .replace(/options:\s*\[\s*"sm",\s*"lg"\s*\]/, () => { edits++; return 'options: ["sm", "lg"], if: { arg: "variant", neq: "outline" }'; });
+      served++;
+      if (edits !== 2) unedited++;
+      return changed;
+    });
+    const out = join(WORK, "rejected");
+    let r;
+    try {
+      r = await cliAsync(["snap", "--storybook", storybook.url, "--components", "Button", "--variants", "all", "--out", out, "--strict"]);
+    } finally {
+      await storybook.close();
+    }
+    assert(served > 0 && unedited === 0, `${unedited} of ${served} copies of the story served without both argTypes changed: Vite compiled ${EXAMPLE_STORIES} differently, so update this check`);
+    assert(r.status === 0, `snap --strict exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+
+    // The true component: all 12 variants measure as the unchanged story renders them.
+    assert(expandVariants(button).length === 12, `measured ${expandVariants(button).length} of 12 Button variants`);
+    const truth = Object.fromEntries(expandVariants(readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button")).map((v) => [v.slug, v.styles]));
+    for (const { slug, styles } of expandVariants(button)) {
+      assert(JSON.stringify(styles) === JSON.stringify(truth[slug]),
+        `${slug} measured ${JSON.stringify(styles)}\n      unchanged story: ${JSON.stringify(truth[slug])}`);
+    }
+    const outline = Object.fromEntries(expandVariants(button).map((v) => [v.slug, v.styles]))["variant-outline--size-lg--disabled-false"];
+    assert(outline?.backgroundColor === null && outline.fontSize === 18, `outline/lg: ${JSON.stringify(outline)}`);
+    assert(JSON.stringify(button.argTypes?.size) === JSON.stringify({ type: "enum", control: "select", options: ["sm", "lg"], if: { arg: "variant", neq: "outline" }, initial: "sm" }),
+      `the rewritten story wasn't served: size is ${JSON.stringify(button.argTypes?.size)}`);
+
+    // Through the preview: the outline variants, each for both reasons.
+    const through = button.variants.filter((v) => v.appliedVia === "preview");
+    assert(through.length === 4 && through.every((v) => v.combination.variant === "outline" && v.status === "ok"),
+      `applied through the preview: ${through.map((v) => `${v.slug} ${v.status}`).join(", ") || "none"}`);
+    const reasons = (v) => v.rejectedArgs.map((a) => `${a.name}=${a.value}:${a.reasons.join("+")}`).join(" ");
+    for (const v of through) {
+      const want = `variant=outline:not-in-options size=${v.combination.size}:hidden-by-if`;
+      assert(reasons(v) === want, `${v.slug} rejected ${reasons(v)}, expected ${want}`);
+    }
+    assert(button.variants.every((v) => v.appliedVia || !v.rejectedArgs), "a variant rejected but not applied");
+
+    // And the story change that would let the URL take them.
+    assert(/add 'outline' to argTypes\.variant\.options in \.\/src\/Button\.stories\.tsx/.test(r.out) &&
+      /remove `if: \{"arg":"variant","neq":"outline"\}` from argTypes\.size in \.\/src\/Button\.stories\.tsx/.test(r.out),
+      `no warning with the story change:\n${r.out.trim()}`);
+    return "4 outline variants through the preview, all 12 as the unchanged story measures";
+  });
+
+  await check("with --no-channel-args, a value the story's argTypes reject is left unmeasured, as arg_rejected, and fails --strict", async () => {
+    // The same story change as above, with the preview route turned off:
+    // nothing may be measured under a name the render didn't take.
+    const storybook = await rewritingStorybook("/src/Button.stories.tsx", (code) =>
+      code.replace(/options:\s*\[\s*"primary",\s*"danger",\s*"outline"\s*\]/, 'options: ["primary", "danger"]'));
+    const out = join(WORK, "no-channel");
+    let r;
+    try {
+      r = await cliAsync(["snap", "--storybook", storybook.url, "--components", "Button", "--variants", "all", "--out", out, "--strict", "--no-channel-args"]);
+    } finally {
+      await storybook.close();
+    }
+    assert(r.status === 1, `snap --strict --no-channel-args exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    const rejected = button.variants.filter((v) => v.status === "arg_rejected");
+    assert(rejected.length === 4 && rejected.every((v) => v.combination.variant === "outline" && !v.appliedVia && !v.delta && !v.treeDelta),
+      `arg_rejected: ${rejected.map((v) => v.slug).join(", ") || "none"}`);
+    assert(button.variants.filter((v) => v.status === "ok").length === 8, "the other variants weren't measured");
+    return "4 outline variants arg_rejected, 8 measured, --strict failed";
+  });
+
+  await check("--stories measures a component from the story it names, refuses a story that isn't the component's, and leaves out a pair for a component a re-measure doesn't measure", () => {
+    const out = join(WORK, "stories");
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
+    assert(r.status === 0, `snap --stories exited ${r.status}\n${r.out.trim()}`);
+    const button = readJson(join(out, "styles.json")).components[0];
+    assert(button.storyId === "forms-button--default", `storyId ${button.storyId}`);
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", join(WORK, "stories-refused"), "--stories", "forms-button=forms-frozen--default"]);
+    assert(refused.status === 1 && /--stories gives forms-button the story "forms-frozen--default", which isn't one of its stories: forms-button--default/.test(refused.out),
+      `a story of another component was taken:\n${refused.out.trim()}`);
+    assert(!existsSync(join(WORK, "stories-refused", "styles.json")), "the refused run wrote a snap");
+    // A re-measure of another component, given the push's same pairs, as the skill says.
+    const merged = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--stories", "Forms/Button=forms-button--default"]);
+    assert(merged.status === 0, `a --merge of Frozen with Button's --stories pair exited ${merged.status}\n${merged.out.trim()}`);
+    const ids = readJson(join(out, "styles.json")).components.map((c) => `${c.id}:${c.storyId}`);
+    assert(ids.join() === "forms-button:forms-button--default,forms-frozen:forms-frozen--default", `after the merge: ${ids.join(", ")}`);
+    return "measured from forms-button--default; Frozen's story refused; Frozen merged in with Button's pair given";
   });
 
   await check("snapshots are stamped with the running version", () => {
@@ -1825,13 +2817,13 @@ async function main() {
     return "fill, border, type, radius and opacity all exact";
   });
 
-  await check("colours written in oklch, oklab, lab, lch, color() and hwb measure to the sRGB hex Chromium paints", async () => {
-    // Chromium reports a computed colour in the space it was written in, and
+  await check("colors written in oklch, oklab, lab, lch, color() and hwb measure to the sRGB hex Chromium paints", async () => {
+    // Chromium reports a computed color in the space it was written in, and
     // Tailwind v4 writes its palette in oklch, so a converter that only read
     // rgb() measured every such fill, text, border and shadow as nothing at
     // all. The example's Button is written in hex, so this renders its own
-    // page through snap's capture and normalisation, in the browser snap
-    // launches. Each colour is set on fill, text, all four borders and a
+    // page through snap's capture and normalization, in the browser snap
+    // launches. Each color is set on fill, text, all four borders and a
     // shadow, and each must come back as the hex given: CSS Color 4's
     // conversion, clipped to sRGB, which is also the pixel Chromium paints
     // for it on an sRGB canvas, checked here too.
@@ -1853,7 +2845,7 @@ async function main() {
       { css: "color(rec2020 0.5 0.2 0.8)", hex: "#a02cdb", computed: /^color\(rec2020 / },
       { css: "hwb(120 20% 30%)", hex: "#33b333", computed: /^rgb\(/ },
     ];
-    const page = join(WORK, "colours.html");
+    const page = join(WORK, "colors.html");
     writeFileSync(page, `<!doctype html><html><body><div id="root">${swatches.map((s, i) =>
       `<div id="swatch-${i}" style="display: inline-block; padding: 4px; background-color: ${s.css}; color: ${s.css}; ` +
       `border: 2px solid ${s.css}; box-shadow: 0 1px 2px ${s.css};">Aa</div>`).join("")}</div>` +
@@ -1894,12 +2886,12 @@ async function main() {
     } finally {
       await browser.close();
     }
-    return `${swatches.length} colours, fill, text, border and shadow each`;
+    return `${swatches.length} colors, fill, text, border and shadow each`;
   });
 
   /**
    * Renders each case on a page of its own through snap's capture and
-   * normalisation, in the browser snap launches, and hands back the styles.
+   * normalization, in the browser snap launches, and hands back the styles.
    * A case with an id is measured by selector; one without is measured as a
    * story is, from #storybook-root down past any wrappers.
    */
@@ -1954,13 +2946,13 @@ async function main() {
     return `${cases.length} radii`;
   });
 
-  await check("a gradient fill, a label's transform, opacity and tracking, and Tailwind's empty shadow slots measure as drawn", async () => {
+  await check("a gradient fill, a background clip, a label's transform, opacity and tracking, and Tailwind's empty shadow slots measure as drawn", async () => {
     const empty = "0 0 #0000";
     const cases = [
       // A gradient has no background-color: recorded as no fill, it was built unfilled.
       { html: `<button id="c0" style="display: inline-flex; border: 0; color: #fff; background: linear-gradient(90deg, #2563eb, #7c3aed)">Go</button>`,
         want: (s) => s.backgroundColor === null && s.backgroundImage === "linear-gradient(90deg, #2563eb, #7c3aed)" },
-      // Tailwind v4's gradient stops are oklch, written as hex like every colour.
+      // Tailwind v4's gradient stops are oklch, written as hex like every color.
       { html: `<button id="c1" style="display: inline-flex; border: 0; background-image: linear-gradient(to right in oklab, oklch(54.6% 0.245 262.881) 0%, oklch(54.1% 0.281 293.009) 100%)">Go</button>`,
         want: (s) => s.backgroundImage === "linear-gradient(to right, #155dfc 0%, #7f22fe 100%)" },
       // A fill under a gradient is kept, as the layer beneath.
@@ -1980,11 +2972,18 @@ async function main() {
           { offsetX: 0, offsetY: 1, blur: 3, spread: 0, color: "#0000001a", inset: false },
           { offsetX: 0, offsetY: 1, blur: 2, spread: -1, color: "#0000001a", inset: false },
         ]) },
+      // shadcn/ui's Button clips its fill to the padding box (bg-clip-padding),
+      // so it stops at the transparent border; its Badge doesn't, and the
+      // fill runs under the border. The build draws the two apart.
+      { html: `<button id="c8" style="display: inline-flex; border: 1px solid transparent; background: #2563eb; background-clip: padding-box">Go</button>`,
+        want: (s) => s.backgroundClip === "padding-box" && s.borderUniform?.color === null },
+      { html: `<span id="c9" style="display: inline-flex; border: 1px solid transparent; background: #2563eb">Go</span>`,
+        want: (s) => !("backgroundClip" in s) && s.borderUniform?.color === null },
     ];
     const measured = await measureCases("drawn", cases.map((c, i) => ({ html: c.html, selector: `#c${i}` })));
     for (const [i, c] of cases.entries()) {
       const { styles } = measured[i];
-      const shown = { backgroundColor: styles.backgroundColor, backgroundImage: styles.backgroundImage, opacity: styles.opacity,
+      const shown = { backgroundColor: styles.backgroundColor, backgroundImage: styles.backgroundImage, backgroundClip: styles.backgroundClip, opacity: styles.opacity,
         letterSpacing: styles.letterSpacing, text: styles.text, boxShadow: styles.boxShadow };
       assert(c.want(styles), `${c.html}\n  measured ${JSON.stringify(shown)}`);
     }
@@ -2010,6 +3009,180 @@ async function main() {
     assert(gradient.styles.backgroundImage === "linear-gradient(90deg, #2563eb, #7c3aed)" && gradient.styles.borderRadiusUniform === 8,
       `gradient wrapper: measured ${JSON.stringify({ backgroundImage: gradient.styles.backgroundImage, radius: gradient.styles.borderRadiusUniform })}, not the banner`);
     return "the button inside both transparent wrappers, the gradient banner itself";
+  });
+
+  /**
+   * Serves each page by name, as Storybook's iframe would serve a story,
+   * and measures it through snap's capture as the component named, in the
+   * browser snap launches. `/slow.png` answers after `slowImageMs`.
+   */
+  async function captureStories(pages, { slowImageMs = 0 } = {}) {
+    const { createServer } = await import("node:http");
+    const { resolveAndLaunch, createContext, captureStory } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-browser.js")).href);
+    const { normalizeStyles } = await import(pathToFileURL(join(ROOT, "dist", "cli", "snap-normalize.js")).href);
+    // A 1x1 PNG.
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+    const server = createServer((req, res) => {
+      const name = decodeURIComponent(req.url.slice(1));
+      if (name === "slow.png") {
+        setTimeout(() => res.writeHead(200, { "content-type": "image/png" }).end(png), slowImageMs);
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><html><head></head><body>${pages[name]?.html ?? ""}</body></html>`);
+    });
+    await new Promise((done) => server.listen(0, "127.0.0.1", done));
+    const { browser } = await resolveAndLaunch();
+    try {
+      const tab = await (await createContext(browser)).newPage();
+      const measured = {};
+      for (const [name, { component, timeoutMs = 10000, standIns }] of Object.entries(pages)) {
+        const started = Date.now();
+        const capture = await captureStory(tab, `http://127.0.0.1:${server.address().port}/${name}`, { timeoutMs, screenshot: false, component: { name: component }, standIns });
+        const styles = capture.status === "ok" ? normalizeStyles(capture.raw, capture.boundingBox, capture.textRaw, capture.fontAvailable, capture.fonts, capture.textLayout) : null;
+        measured[name] = { ...capture, styles, ms: Date.now() - started };
+      }
+      return measured;
+    } finally {
+      await browser.close();
+      server.close();
+    }
+  }
+
+  await check("snap measures the component, not a <noscript>, a story's layout row or an overlay's closed trigger", async () => {
+    // Rendered as shadcn/ui renders them: input-otp puts a <noscript> first
+    // and its data-slot on a transparent <input> over the boxes it draws, a
+    // Switch story wraps the switch and its label in a flex row, and a
+    // Dialog's content renders into a portal only while it is open.
+    const filled = "background: #e5e5e5; border: 1px solid #d4d4d4";
+    const m = await captureStories({
+      otp: { component: "InputOTP", html: `<div id="storybook-root"><noscript><style>.x{}</style></noscript><div style="display: flex; position: relative"><div style="display: flex"><div style="width: 36px; height: 36px; ${filled}"></div><div style="width: 36px; height: 36px; ${filled}"></div></div><div style="position: absolute; inset: 0"><input data-slot="input-otp" style="position: absolute; inset: 0; width: 100%; background: transparent; border: 0"></div></div></div>` },
+      switch: { component: "Switch", html: `<div id="storybook-root"><div style="display: flex; gap: 8px; align-items: center"><button data-slot="switch" style="width: 32px; height: 18px; padding: 0; ${filled}"></button><label>Airplane Mode</label></div></div>` },
+      row: { component: "Toggle", html: `<div id="storybook-root"><div style="display: flex; gap: 8px"><button style="${filled}">On</button><label>Airplane Mode</label></div></div>` },
+      closed: { component: "Dialog", html: `<div id="storybook-root"><button data-slot="dialog-trigger" aria-haspopup="dialog" aria-expanded="false">Open</button></div>` },
+      open: { component: "Dialog", html: `<div id="storybook-root"><button data-slot="dialog-trigger" aria-haspopup="dialog" aria-expanded="true">Open</button></div><div data-slot="dialog-content" role="dialog" style="position: fixed; top: 40px; left: 40px; width: 300px; padding: 24px; background: #ffffff; border-radius: 8px">Hello</div>` },
+    });
+    const seen = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, `${c.status} ${c.element} ${JSON.stringify(c.notes)} ${c.boundingBox?.width}x${c.boundingBox?.height}`]));
+    const say = JSON.stringify(seen, null, 2);
+    assert(m.otp.status === "ok" && m.otp.element === "div" && m.otp.notes.length === 0 && m.otp.boundingBox.height === 38, `InputOTP: ${say}`);
+    assert(m.switch.element === 'button[data-slot="switch"]' && m.switch.boundingBox.width === 32 && m.switch.notes.length === 0, `Switch: ${say}`);
+    assert(m.row.element === "div" && m.row.notes[0]?.kind === "layout-wrapper", `a row with no slot: ${say}`);
+    assert(m.closed.notes[0]?.kind === "closed-trigger", `a closed Dialog: ${say}`);
+    assert(m.open.element === 'div[data-slot="dialog-content"]' && m.open.styles.backgroundColor === "#ffffff" && m.open.boundingBox.width === 348, `an open Dialog: ${say}`);
+    return "the OTP boxes, the switch, the open dialog; the row and the trigger flagged";
+  });
+
+  await check("a story's markup checksum changes with what its args set, leaves out Storybook's own nodes, and is null while it changes", async () => {
+    // InputOTP's textAlign sets only the style of input-otp's hidden input,
+    // so every variant measured the same though the args reached it: the
+    // markup is what tells that from a story that drops its args.
+    const input = (align) => `<div id="storybook-root"><div data-slot="input-otp" style="display: flex; width: 120px; height: 36px; background: #e5e5e5"><input style="text-align: ${align}; opacity: 0"></div></div>`;
+    const docs = (text) => `<div id="storybook-docs">${text}</div><div class="sb-errordisplay">${text}</div><script>window.x = "${text}";</script>`;
+    const m = await captureStories({
+      left: { component: "InputOTP", html: input("left") + docs("one") },
+      leftAgain: { component: "InputOTP", html: input("left") + docs("two") },
+      right: { component: "InputOTP", html: input("right") + docs("one") },
+      // A portal, as Radix renders an open popover's content into the body.
+      portal: { component: "InputOTP", html: `${input("left")}<div data-radix-portal><div role="dialog">Hello</div></div>` },
+      // Markup that changes as the story is measured, as an animation's
+      // would: no evidence either way. Changed on each style read, so it
+      // changes between the two reads of the markup every time.
+      ticking: { component: "InputOTP", html: `${input("left")}<script>const read = window.getComputedStyle; let n = 0; window.getComputedStyle = function (...args) { document.querySelector("input")?.setAttribute("data-n", String(n++)); return read.apply(this, args); };</script>` },
+    });
+    const markup = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.markup : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(markup);
+    assert(typeof markup.left === "string" && markup.left === markup.leftAgain, `the same story with Storybook's own nodes changed: ${say}`);
+    assert(markup.right !== markup.left, `text-align left and right: ${say}`);
+    assert(typeof markup.portal === "string" && markup.portal !== markup.left, `a portal beside the root: ${say}`);
+    assert(markup.ticking === null, `markup that changed while it was measured: ${say}`);
+    return "the same for the same story, apart for a style or a portal, null while ticking";
+  });
+
+  await check("text the browser cuts off or wraps is recorded with the width it was laid out in, and a label on one line isn't", async () => {
+    // Attachment's vertical title has Tailwind's truncate, so the browser cut
+    // it off at the card's width with an ellipsis; snap recorded nothing of
+    // it, and the push built a title that ran 28px past its card.
+    const card = (inner, extra = "") => `<div id="storybook-root"><div data-slot="attachment" style="display: flex; flex-direction: column; width: 120px; padding: 8px; border: 1px solid #e5e5e5; box-sizing: border-box; font: 500 14px/20px sans-serif${extra}">${inner}</div></div>`;
+    const long = "sales-dashboard-quarterly-final-v2.png";
+    const m = await captureStories({
+      truncate: { component: "Attachment", html: card(`<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">${long}</span>`) },
+      clip: { component: "Attachment", html: card(`<span style="display: block; overflow: hidden; white-space: nowrap">${long}</span>`) },
+      wrap: { component: "Attachment", html: card(`<span style="display: block">A quarterly report of sales, by region and by product line</span>`) },
+      clamp: { component: "Attachment", html: card(`<span style="display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden">A quarterly report of sales, by region and by product line, for the board</span>`) },
+      // An inline label wraps and is cut off by the block it is in.
+      inline: { component: "Attachment", html: card(`<div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap"><span>${long}</span></div>`) },
+      label: { component: "Button", html: `<div id="storybook-root"><button data-slot="button" style="display: inline-flex; padding: 4px 8px; font: 600 12px sans-serif">Save</button></div>` },
+    });
+    const layout = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.styles.text?.layout ?? null : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(layout);
+    assert(JSON.stringify(layout.truncate) === JSON.stringify({ width: 102, lines: 1, truncation: "ellipsis" }), `truncate: ${say}`);
+    assert(JSON.stringify(layout.clip) === JSON.stringify({ width: 102, lines: 1, truncation: "clip" }), `clip: ${say}`);
+    assert(layout.wrap?.width === 102 && layout.wrap.lines >= 3 && layout.wrap.truncation === undefined, `wrap: ${say}`);
+    assert(JSON.stringify(layout.clamp) === JSON.stringify({ width: 102, lines: 2, truncation: "ellipsis" }), `clamp: ${say}`);
+    assert(JSON.stringify(layout.inline) === JSON.stringify({ width: 102, lines: 1, truncation: "ellipsis" }), `inline: ${say}`);
+    assert(layout.label === null, `a one-line label: ${say}`);
+    return say;
+  });
+
+  await check("text the browser doesn't show is passed over: an sr-only label, a hidden span, one not displayed or hidden", async () => {
+    // Base UI's Progress keeps a span of text in a fixed 1px box that clips
+    // it: snap measured it as Progress's text, cut off at 1px, and the push
+    // would have built a 1px label. An icon button's sr-only label gave the
+    // button a text it doesn't show in the same way.
+    const v3 = "position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; font-size: 20px";
+    const v4 = "position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border-width: 0; font-size: 20px";
+    const button = (inner) => `<div id="storybook-root"><button data-slot="button" style="display: inline-flex; gap: 4px; padding: 4px 8px; font: 600 12px sans-serif">${inner}</button></div>`;
+    const icon = `<svg width="16" height="16"><rect width="16" height="16"/></svg>`;
+    const m = await captureStories({
+      progress: { component: "Progress", html: `<div id="storybook-root"><div data-slot="progress" style="position: relative; width: 200px; height: 8px; background: #e5e5e5"><div style="width: 50%; height: 100%; background: #171717"></div><span style="position: fixed; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; white-space: nowrap">50%</span></div></div>` },
+      srOnly: { component: "Button", html: button(`${icon}<span style="${v3}">Close</span>`) },
+      srOnlyV4: { component: "Button", html: button(`${icon}<span style="${v4}">Close</span>`) },
+      // The label shown, after a hidden one: the shown one's 13px, not 20px.
+      shownAfter: { component: "Button", html: button(`<span style="${v3}">Close</span><span style="display: none; font-size: 20px">Off</span><span style="visibility: hidden; font-size: 20px">Off</span><span style="font-size: 13px">Save</span>`) },
+      // A label shown inside a box that hides others: visibility is
+      // inherited, and a child can show itself again.
+      shownInside: { component: "Button", html: button(`<span style="visibility: hidden; font-size: 20px">Off <span style="visibility: visible; font-size: 13px">On</span></span>`) },
+    });
+    const text = Object.fromEntries(Object.entries(m).map(([name, c]) => [name, c.status === "ok" ? c.styles.text ?? null : `${c.status}: ${c.error}`]));
+    const say = JSON.stringify(text);
+    for (const name of ["progress", "srOnly", "srOnlyV4"]) assert(text[name] === null, `${name}: ${say}`);
+    for (const name of ["shownAfter", "shownInside"]) assert(text[name]?.fontSize === 13 && text[name].layout === undefined, `${name}: ${say}`);
+    return "no text on Progress or the icon buttons; the shown label's 13px beside hidden ones";
+  });
+
+  await check("a story that throws after load is a render error, found without waiting out --timeout", async () => {
+    // As ResizablePanelGroup does: Storybook paints the error after the load
+    // event, and snap reported no root element, twice --timeout later.
+    const { thrown, empty } = await captureStories({
+      thrown: { component: "ResizablePanelGroup", html: `<div id="storybook-root"></div><div id="error-message"></div><script>setTimeout(() => { document.getElementById("error-message").textContent = "We detected that you use an implicit action arg while rendering"; document.body.classList.add("sb-show-errordisplay"); }, 300)</script>` },
+      empty: { component: "Empty", html: `<div id="storybook-root"></div>`, timeoutMs: 1500 },
+    });
+    assert(thrown.status === "render_error" && /implicit action arg/.test(thrown.error) && thrown.ms < 5000, `a thrown story: ${thrown.status} ${thrown.error} after ${thrown.ms}ms`);
+    assert(empty.status === "element_not_found" && empty.ms < 2 * 1500, `an empty story: ${empty.status} after ${empty.ms}ms, for a --timeout of 1500`);
+    return `render_error in ${thrown.ms}ms; an empty story given up on in ${empty.ms}ms`;
+  });
+
+  await check("a system font stack is drawn in Inter, as wide as Figma sets it, or recorded as the font Chrome drew; an avatar's photo as loaded", async () => {
+    // Tailwind v4's default stack opens with -apple-system, which Chrome
+    // doesn't implement; snap recorded it on every component, warned that
+    // it failed to load, and verify scored it as drift. Chrome draws the
+    // rest in the platform's face, which Figma lacks and sets in Inter, wider,
+    // so snap draws it in Inter itself (cli/fonts.ts). And an Avatar loads
+    // its photo with new Image(), showing its initials until it arrives.
+    const button = `<div id="storybook-root"><button style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; font-weight: 500; display: inline-block; padding: 0; border: 0; background: #171717; color: #fff">Login with Email Button</button></div>`;
+    const m = await captureStories({
+      stack: { component: "Button", html: button },
+      bare: { component: "Button", html: button, standIns: false },
+      avatar: { component: "Avatar", html: `<div id="storybook-root"><span data-slot="avatar" style="display: flex; width: 32px; height: 32px; background: #f5f5f5"><span id="fallback" style="display: flex; color: #737373">CN</span></span></div><script>requestAnimationFrame(() => { const img = new Image(); img.onload = () => { const shown = document.createElement("img"); shown.src = img.src; document.getElementById("fallback").replaceWith(shown); }; img.src = "/slow.png"; })</script>` },
+    }, { slowImageMs: 1000 });
+    const font = (c) => JSON.stringify({ fontFamily: c.styles.fontFamily, fontAvailable: c.styles.fontAvailable, text: c.styles.text?.fontFamily, standIns: c.standIns, width: c.boundingBox.width, probe: c.fonts.root });
+    assert(m.stack.styles.fontFamily === "Inter" && m.stack.styles.fontAvailable === true && m.stack.styles.text?.fontFamily === "Inter"
+      && JSON.stringify(m.stack.standIns) === JSON.stringify([["system-ui", "Inter"]]), `the system stack: ${font(m.stack)}`);
+    // Figma set this label 158 wide in Inter Medium, in the spike and the text probe: a hugging text, rounded up to a pixel.
+    assert(Math.ceil(m.stack.boundingBox.width) === 158, `drawn in Inter ${m.stack.boundingBox.width} wide`);
+    assert(m.bare.styles.fontFamily === "system-ui" && m.bare.styles.fontAvailable === null && m.bare.styles.text?.fontFamily === "system-ui"
+      && m.bare.standIns === undefined && Math.ceil(m.bare.boundingBox.width) !== 158, `without stand-ins: ${font(m.bare)}`);
+    assert(m.avatar.styles.text === null, `the avatar measured its fallback, text ${JSON.stringify(m.avatar.styles.text)}`);
+    return `system-ui drawn in Inter, ${m.stack.boundingBox.width} wide as Figma's 158 rounds it, ${m.bare.boundingBox.width} in the platform's face; no warning; the photo, after 1s`;
   });
 
   await check("a refused connection is a render error even when the story's URL says timeout; a server that never answers is a timeout", async () => {
@@ -2045,7 +3218,7 @@ async function main() {
     // meant to be committed and diffed, so neither a rerun nor a different
     // --out (another machine, another checkout) may change a byte of it.
     const again = join(WORK, "elsewhere", "snap-again");
-    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all"]);
+    const r = cli(["snap", "--storybook", STORYBOOK, "--out", again, "--screenshots", "--variants", "all", "--root-only", ...KEEP_FROZEN]);
     assert(r.status === 0, `second snap exited ${r.status}`);
     const first = readFileSync(join(snapDir, "styles.json"), "utf8");
     const second = readFileSync(join(again, "styles.json"), "utf8");
@@ -2073,7 +3246,15 @@ async function main() {
     const button = cli(["snap", "--storybook", STORYBOOK, "--components", "Button", "--out", join(WORK, "button"), "--strict-warnings"]);
     assert(frozen.status === 1, `Frozen exited ${frozen.status}, expected 1`);
     assert(button.status === 0, `Button exited ${button.status}, expected 0`);
-    return "Frozen fails, Button passes";
+    // Its markup is the same on every variant too, so the story is to blame,
+    // not props that change only what snap doesn't measure.
+    const warnings = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").warnings;
+    assert(warnings.some((w) => /^all 3 rendered variants measured identically and rendered the same markup. The story may not pass args through/.test(w)),
+      `Frozen warned ${JSON.stringify(warnings)}`);
+    // Left out as measuring the same, so Figma gets the one look the story draws.
+    const excluded = readJson(join(WORK, "frozen", "styles.json")).components.find((c) => c.name === "Frozen").excludedProps;
+    assert(JSON.stringify(excluded) === JSON.stringify([{ name: "variant", reason: "no-op", markup: "same" }]), `Frozen left out ${JSON.stringify(excluded)}`);
+    return "Frozen fails, blaming its story, its variant left out; Button passes";
   });
 
   heading("Snap guards");
@@ -2089,6 +3270,34 @@ async function main() {
   await check("a partly misspelled --components list fails rather than dropping the name", () => {
     const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Button,Buton", "--out", join(WORK, "partial")]);
     assert(r.status !== 0, "exited 0 with Buton silently dropped");
+  });
+
+  await check("snap --merge measures one component again and keeps the other as it was", () => {
+    // Re-run for one component alone, snap wrote a styles.json of that one,
+    // and verify scored a whole push on it.
+    const out = join(WORK, "merge");
+    mkdirSync(out, { recursive: true });
+    for (const file of ["styles.json", "meta.json"]) cpSync(join(snapDir, file), join(out, file));
+    const before = readJson(join(out, "styles.json"));
+    const earlier = readJson(join(out, "meta.json")).measuredAt;
+    const r = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--variants", "all", "--merge", "--out", out, "--root-only", ...KEEP_FROZEN]);
+    assert(r.status === 0, `snap --merge exited ${r.status}\n${r.out.trim()}`);
+    const after = readJson(join(out, "styles.json"));
+    const key = (c) => c.title ?? c.id ?? c.name;
+    assert(after.components.map(key).join(", ") === before.components.map(key).join(", "), `components ${after.components.map(key).join(", ")}`);
+    const button = (snap) => JSON.stringify(snap.components.find((c) => c.name === "Button"));
+    assert(button(after) === button(before), "Button changed, though only Frozen was measured again");
+    const meta = readJson(join(out, "meta.json"));
+    const times = meta.componentsMeasuredAt ?? {};
+    const buttonKey = key(after.components.find((c) => c.name === "Button"));
+    const frozenKey = key(after.components.find((c) => c.name === "Frozen"));
+    assert(times[buttonKey] === earlier && times[frozenKey] > earlier, `componentsMeasuredAt: ${JSON.stringify(times)}`);
+    assert(meta.measuredAt === earlier, `measuredAt ${meta.measuredAt}, not the oldest component's, ${earlier}`);
+
+    // Another --variants would mix two kinds of measurement in one snap.
+    const refused = cli(["snap", "--storybook", STORYBOOK, "--components", "Frozen", "--merge", "--out", out, "--root-only", ...KEEP_FROZEN]);
+    assert(refused.status === 1 && /measured with --variants all: pass the same/.test(refused.out), `--variants representative merged: ${refused.out.trim()}`);
+    return "Frozen measured again, Button kept, measuredAt the oldest";
   });
 
   heading("Map guards");
@@ -2120,6 +3329,115 @@ async function main() {
     const r = cli(["inspect", "--storybook", STORYBOOK, "--component", "FORMS-BUTTON"]);
     assert(r.status === 0, `inspect exited ${r.status}\n${r.out.trim()}`);
     assert(/variant \(union\) -> VARIANT \[primary, danger, outline\]/.test(r.out), `variant not mapped\n${r.out.trim()}`);
+  });
+
+  heading("Element-tree push through figma code");
+
+  // The push as the skill now runs it (design section 12): the tree snap
+  // taken above, `figma code`, every call sent unchanged to a mock Figma
+  // and its response saved unchanged, then `verify --plan`. No styling code
+  // is written by hand anywhere in it.
+  const treeSnap = join(WORK, "tree", "styles.json");
+  const treeTokens = join(WORK, "tree-tokens.json");
+  let treeRun = null;
+
+  await check("figma code plans the example's push, every call within use_figma's limits, the same twice", () => {
+    const tokens = cli(["tokens", "--json", "--project", join(ROOT, "examples", "storybook-vite")]);
+    writeFileSync(treeTokens, tokens.out.trim().split("\n").pop());
+    const dirs = ["tree-plan-a", "tree-plan-b"].map((name) => join(WORK, name, "figma"));
+    const plans = dirs.map((out) => {
+      const r = cli(["figma", "code", "--snap", treeSnap, "--tokens", treeTokens, "--out", out]);
+      assert(r.status === 0, `figma code exited ${r.status}\n${r.out.trim()}`);
+      assert(/use_figma calls? \(.*\), planned in /.test(r.out), `figma code didn't say what it planned\n${r.out.trim()}`);
+      return readJson(join(out, "plan.json"));
+    });
+    const kinds = plans[0].calls.map((c) => c.kind);
+    assert(kinds.includes("build") && kinds.includes("label") && kinds.includes("read"), `calls: ${kinds.join(", ")}`);
+    for (const call of plans[0].calls) {
+      const code = readFileSync(join(dirs[0], call.file), "utf8");
+      assert(code.length === call.chars && code.length <= MAX_CALL_CHARS, `${call.file}: ${code.length} characters, plan says ${call.chars}`);
+      assert(code === readFileSync(join(dirs[1], call.file), "utf8"), `${call.file} differs between two runs`);
+    }
+    assert(JSON.stringify(plans[0]) === JSON.stringify(plans[1]), "plan.json differs between two runs");
+    const longest = Math.max(...plans[0].calls.map((c) => c.chars));
+    return `${kinds.length} calls (${[...new Set(kinds)].join(", ")}), the longest ${longest} characters`;
+  });
+
+  await check("every call runs unchanged in Figma, and verify --plan scores every element of the example at 100%", async () => {
+    treeRun = await treePush(treeSnap, join(WORK, "tree-push", "figma"), { tokens: treeTokens });
+    const v = verifyPlan(treeRun.planPath, ["--strict-measured", "--strict-age", "--min-fidelity", "100"]);
+    assert(v.status === 0, `verify --plan exited ${v.status}\n${v.out.trim().slice(0, 2000)}`);
+    const e = v.json.summary.elements;
+    assert(v.json.elementFidelity === 1 && v.json.fidelity === 1, `element fidelity ${v.json.elementFidelity}, properties ${v.json.fidelity}`);
+    assert(e.measured > 0 && e.verified === e.measured && !e.drifted && !e.missing && !e.extra && !e.designerLayers, `elements ${JSON.stringify(e)}`);
+    assert(v.json.plan.problems.length === 0 && existsSync(join(WORK, "tree-push", "figma-readback.json")), `plan: ${JSON.stringify(v.json.plan)}`);
+    const text = cli(["verify", "--plan", treeRun.planPath]);
+    assert(/Fidelity: 100\.0% of elements \(\d+ of \d+ verified\), 100\.0% of properties/.test(text.out), `headline:\n${text.out.trim().slice(0, 600)}`);
+    return `${e.verified}/${e.measured} elements, ${v.json.summary.propertiesMatched} properties, ${treeRun.runs.length} calls sent`;
+  });
+
+  await check("sending the build calls again changes nothing in Figma, and reads back the same", async () => {
+    assert(treeRun, "the push above didn't run");
+    const readback = () => readJson(join(WORK, "tree-push", "figma-readback.json"));
+    const before = readback();
+    for (const call of treeRun.plan.calls.filter((c) => c.kind === "build")) {
+      const run = await treeRun.mock.run(readFileSync(join(treeRun.out, call.file), "utf8"));
+      assert(run.ok && run.created === 0 && run.removed === 0, `${call.file} sent again: created ${run.created}, removed ${run.removed}${run.ok ? "" : `, failed: ${run.text}`}`);
+    }
+    await readTreeAgain(treeRun);
+    const v = verifyPlan(treeRun.planPath, ["--strict"]);
+    assert(v.status === 0, `verify --plan exited ${v.status}\n${v.out.trim().slice(0, 1500)}`);
+    const plain = (file) => JSON.stringify(file, (k, value) => (k === "readAt" || k === "checksum" ? undefined : value));
+    assert(plain(readback()) === plain(before), "the second reading differs from the first apart from readAt and checksum");
+    return "0 layers created or removed; the same readback apart from readAt and checksum";
+  });
+
+  await check("a child element changed in Figma is reported as exactly that drift, by its key and node id, and undoing it passes again", async () => {
+    // The falsification test for children: 0.4.0 compared the outer
+    // element alone, so a label changed inside a button scored 100%.
+    assert(treeRun, "the push above didn't run");
+    const button = readJson(treeSnap).components.find((c) => c.name === "Button");
+    const slug = button.variants[0].slug;
+    const label = treeLayer(treeRun.mock, slug, "#text");
+    const recolor = async (hex) => {
+      const rgb = rgb01(hex);
+      const run = await treeRun.mock.run(`const n = await figma.getNodeByIdAsync(${JSON.stringify(label.id)}); n.fills = [{ type: "SOLID", color: ${JSON.stringify(rgb)} }]; return { kind: "edit" };`);
+      assert(run.ok, run.text);
+      await readTreeAgain(treeRun);
+    };
+    await recolor("#ff00ff");
+    const drifted = verifyPlan(treeRun.planPath, ["--strict"]);
+    assert(drifted.status === 1, `verify --strict exited ${drifted.status} after the label was recolored`);
+    const nodes = drifted.json.variants.flatMap((v) => (v.nodes ?? []).map((n) => ({ slug: v.slug, ...n })));
+    assert(nodes.length === 1 && nodes[0].slug === slug && nodes[0].key === "#text" && nodes[0].figmaId === label.id,
+      `drifted: ${JSON.stringify(nodes.map((n) => [n.slug, n.key, n.figmaId, n.differences.map((d) => d.property)]))}`);
+    const props = nodes[0].differences.map((d) => `${d.property} ${JSON.stringify(d.measured)} -> ${JSON.stringify(d.figma)}`);
+    assert(props.length === 1 && /#ff00ff/i.test(props[0]), `differences: ${props.join("; ")}`);
+    const text = cli(["verify", "--plan", treeRun.planPath]);
+    assert(text.out.includes(`› #text: ${nodes[0].differences[0].property} measured`) && text.out.includes(`(node ${label.id})`), `the drift line names no key and node:\n${text.out.trim().slice(0, 1200)}`);
+    const colors = button.tree.base.find((n) => n.k === "#text").tx.col;
+    await recolor(colors);
+    const again = verifyPlan(treeRun.planPath, ["--strict"]);
+    assert(again.status === 0 && again.json.elementFidelity === 1, `after undoing it: exit ${again.status}, ${again.json?.elementFidelity}`);
+    return `${slug} › #text: ${props[0]}, then 100% again`;
+  });
+
+  await check("a saved response edited by hand is flagged on exactly that entry, and fails --strict", () => {
+    assert(treeRun, "the push above didn't run");
+    const out = join(WORK, "tree-edited", "figma");
+    cpSync(treeRun.out, out, { recursive: true });
+    const read = treeRun.plan.calls.find((c) => c.kind === "read");
+    const path = join(out, read.result);
+    const text = readFileSync(path, "utf8");
+    // One color in one entry, as an agent tidying a response would change it.
+    const edited = text.replace(/"#ffffff"/, '"#fefefe"');
+    assert(edited !== text, "the read result holds no #ffffff to edit");
+    writeFileSync(path, edited);
+    const v = verifyPlan(join(out, "plan.json"), ["--strict"]);
+    assert(v.status === 1, `verify --strict exited ${v.status} on an edited response`);
+    const issues = v.json.readbackIssues;
+    assert(issues.length === 1 && issues[0].problem === "checksum_mismatch", `issues: ${JSON.stringify(issues)}`);
+    return `${issues[0].component} ${issues[0].slug}: checksum_mismatch, and no other entry`;
   });
 
   heading("Round trip through the shipped skill template");
@@ -2185,22 +3503,30 @@ async function main() {
     const reach = ["OUTSIDE", "CENTER", "INSIDE"].map((align) => beyond(node("inside-stroke", align))).join("; ");
     assert(reach === "4,4; 2,2; 0,0", `a visible 2px stroke reaches ${reach} past the node, OUTSIDE, CENTER and INSIDE`);
     assertEdges(await scoreEdges(snapDir, loadSkillReadback()));
+    // The same border INSIDE on a hugging frame without strokesIncludedInLayout
+    // eats into the padding, 2px short each way (the width less the text's
+    // rounding), and verify says so.
+    const { styles: transparent } = edges.find((e) => e.edge === "clear-inside");
+    const eaten = await scoreEdges(snapDir, loadSkillReadback(), [{ edge: "eaten", styles: transparent, strokeAlign: "INSIDE", hugging: true }]);
+    const short = eaten.eaten.differences.filter((d) => d.property === "width" || d.property === "height").map((d) => d.figma - d.measured);
+    assert(short.length === 2 && short.every((d) => Math.abs(d + 2) < 0.5), `an INSIDE stroke that eats into a hugging frame's padding drifted ${JSON.stringify(eaten.eaten.differences)}`);
     return `render bounds would read the transparent border 2px short, hidden or not, and the shadow 24px over; ` +
-      `all ${edges.length}, with the one-sided border and strokes INSIDE and CENTER, scored with no size drift`;
+      `all ${edges.length}, with the one-sided border, strokes INSIDE and CENTER, and a transparent one INSIDE in the layout, ` +
+      `scored with no size drift; INSIDE out of the layout reads 2px short`;
   });
 
-  await check("a translucent fill, stroke and text colour read back as snap writes them, alpha and all", async () => {
-    // snap writes a translucent colour as #rrggbbaa, a soft Chip's background
-    // #4b556322, and verify compares colours as written. Figma keeps a
+  await check("a translucent fill, stroke and text color read back as snap writes them, alpha and all", async () => {
+    // snap writes a translucent color as #rrggbbaa, a soft Chip's background
+    // #4b556322, and verify compares colors as written. Figma keeps a
     // paint's alpha in its opacity, so a readback that converts only the
-    // paint's colour reads #4b5563, and every translucent paint drifts. And a
+    // paint's color reads #4b5563, and every translucent paint drifts. And a
     // stroke hidden with the eye icon reads as null, as snap records a
     // transparent border, whatever its paint's opacity.
     const edges = Object.fromEntries(edgeVariants(snapDir).map((e) => [e.edge, e]));
     const { styles } = edges.translucent;
     const want = { backgroundColor: "#4b556322", color: "#111827b3", border: "#2563eb4d" };
     assert(styles.backgroundColor === want.backgroundColor && (styles.text?.color ?? styles.color) === want.color
-      && styles.borderUniform?.color === want.border, "the translucent edge variant no longer carries the colours this check reads");
+      && styles.borderUniform?.color === want.border, "the translucent edge variant no longer carries the colors this check reads");
     const built = figmaNode("translucent", styles);
     const opacities = [built.fills[0], built.strokes[0], built.findOne(() => true).fills[0]].map((p) => Math.round(p.opacity * 255));
     assert(opacities.join() === "34,77,179", `the simulated paints' opacities come to ${opacities.join()} of 255, not 34,77,179`);
@@ -2217,7 +3543,7 @@ async function main() {
     assert(JSON.stringify(got) === JSON.stringify(want), `read back ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
     const hidden = slice.readback["edge-hidden-stroke"].borderUniform;
     assert(hidden?.width === 1 && hidden.color === null, `a stroke hidden with visible: false read back as ${JSON.stringify(hidden)}`);
-    // An agent may set a paint's opacity to the decimal it recognises, 0.7 for
+    // An agent may set a paint's opacity to the decimal it recognizes, 0.7 for
     // snap's b3 (rgba(0,0,0,0.7) rounds to 179). Figma keeps it as a 32-bit
     // float, 0.69999…, which has to read back b3, not b2.
     const decimal = figmaNode("decimal", { ...styles, backgroundColor: "#000000b3" });
@@ -2232,14 +3558,142 @@ async function main() {
       `${verdicts.translucent.status} and ${verdicts["hidden-stroke"].status}`;
   });
 
-  await check("a readback that reads render bounds, or gets a stroke or a colour wrong, fails these checks", async () => {
+  await check("text the browser cut off is scored on how Figma fits it: a title that hugs and runs past its card drifts", async () => {
+    // A live push built Attachment's vertical title, which Tailwind's
+    // truncate cuts off at 94px with an ellipsis, as a text that hugged its
+    // 140px and ran 28px past a 120px card, and verify scored it 100%.
+    const plain = edgeVariants(snapDir)[0].styles;
+    assert(plain.text, "the example Button's edge variant has no measured text");
+    const cut = { ...plain, text: { ...plain.text, layout: { width: 40, lines: 1, truncation: "ellipsis" } } };
+    const wrapped = { ...plain, text: { ...plain.text, layout: { width: 40, lines: 3 } } };
+    const verdicts = await scoreEdges(snapDir, loadSkillReadback(), [
+      { edge: "plain", styles: { ...plain, borderUniform: null, border: null } },
+      { edge: "cut", styles: cut },
+      { edge: "cut-hugging", styles: cut, textHugs: true },
+      { edge: "wrapped", styles: wrapped },
+      { edge: "wrapped-hugging", styles: wrapped, textHugs: true },
+    ]);
+    const say = JSON.stringify(Object.fromEntries(Object.entries(verdicts).map(([edge, v]) => [edge, `${v.status} ${v.differences.map((d) => d.property).join(",")}`])));
+    for (const edge of ["plain", "cut", "wrapped"]) assert(verdicts[edge].status === "verified", `${edge}: ${say}`);
+    for (const edge of ["cut-hugging", "wrapped-hugging"]) {
+      assert(verdicts[edge].status === "drifted" && verdicts[edge].differences.map((d) => d.property).join() === "textLayout", `${edge}: ${say}`);
+    }
+    return say;
+  });
+
+  await check("the readback says what each field is bound to, and verify names a field bound to nothing at a variable's value", async () => {
+    // A falsification run had to detach the radius variable to edit a radius
+    // by hand. Detached at the same value, the readback, which read values
+    // alone, scored 100%: the link that keeps the library in step with the
+    // code was gone, and nothing said so.
+    const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+    const variants = expandVariants(button);
+    const base = variants[0].styles;
+    const color = (hex) => ({ ...rgb01(hex), a: 1 });
+    // As Tokens step 3 makes them: each kind in a collection of its own.
+    const collections = [{ id: "VariableCollectionId:1:0", name: "Colors" }, { id: "VariableCollectionId:2:0", name: "Radius" }];
+    const variables = [
+      { id: "VariableID:1:1", name: "primary", resolvedType: "COLOR", valuesByMode: { "1:0": color(base.backgroundColor) }, variableCollectionId: "VariableCollectionId:1:0" },
+      { id: "VariableID:1:2", name: "md", resolvedType: "FLOAT", valuesByMode: { "2:0": base.borderRadiusUniform }, variableCollectionId: "VariableCollectionId:2:0" },
+      { id: "VariableID:1:3", name: "alias", resolvedType: "FLOAT", valuesByMode: { "2:0": { type: "VARIABLE_ALIAS", id: "VariableID:1:2" } }, variableCollectionId: "VariableCollectionId:2:0" },
+    ];
+    const alias = (id) => ({ type: "VARIABLE_ALIAS", id });
+    const detached = variants[1].slug;
+    const sets = simulatedSets(snapDir, {
+      mutate: (node, v, component) => {
+        if (component.name !== "Button") return;
+        if (v.styles.backgroundColor === base.backgroundColor) node.fills = [{ ...node.fills[0], boundVariables: { color: alias("VariableID:1:1") } }];
+        // Every radius bound, but one, detached at the same value.
+        if (v.styles.borderRadiusUniform === base.borderRadiusUniform && v.slug !== detached) node.boundVariables = { topLeftRadius: alias("VariableID:1:2") };
+      },
+    });
+    const template = loadSkillReadback();
+    const withVariables = { ...template, read: (set, slugs, sources, opts) => template.read(set, slugs, sources, { ...opts, variables, collections }) };
+    const components = {};
+    for (const set of sets) {
+      const { variants: read } = await readSet(withVariables, set, READ_BATCH);
+      components[set.component.title ?? set.component.name] = { nodeId: set.componentSet.id, variants: read };
+    }
+    const entry = components["Forms/Button"].variants;
+    assert(entry[variants[0].slug].bound.backgroundColor === "primary" && entry[variants[0].slug].bound.borderRadiusUniform === "md",
+      `the first variant read back bound ${JSON.stringify(entry[variants[0].slug].bound)}`);
+    assert(JSON.stringify(entry[detached].unbound) === JSON.stringify(["borderRadiusUniform"]) && !("borderRadiusUniform" in entry[detached].bound),
+      `the detached variant read back ${JSON.stringify({ bound: entry[detached].bound, unbound: entry[detached].unbound })}`);
+    const path = join(WORK, "readback-bindings.json");
+    writeJson(path, { version: 1, fileKey: "acceptance", components });
+    const v = verifyJson(snapDir, path);
+    assert(v.json?.fidelity === 1, `the bound readback scored ${v.json?.fidelity}\n${v.out}`);
+    assert(JSON.stringify(v.json.bindings.unbound) === JSON.stringify([{ component: "Forms/Button", field: "borderRadiusUniform", variants: 1 }]),
+      `verify reported unbound ${JSON.stringify(v.json.bindings)}`);
+    const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path, "--strict"]);
+    assert(text.status === 0 && /Bound to no variable, though a variable of its kind has the value[^\n]*\n\s+Forms\/Button borderRadiusUniform, on 1 variant/.test(text.out),
+      `verify --strict exited ${text.status}:\n${text.out}`);
+    // A readback from before, without bindings, still scores, and says it can't see them.
+    const older = JSON.parse(JSON.stringify({ version: 1, fileKey: "acceptance", components }));
+    for (const component of Object.values(older.components)) {
+      for (const read of Object.values(component.variants)) { delete read.bound; delete read.unbound; delete read.textLayout; delete read.checksum; }
+    }
+    const olderPath = join(WORK, "readback-unbound-older.json");
+    writeJson(olderPath, sealed(older));
+    const old = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", olderPath, "--strict"]);
+    assert(old.status === 0 && /this readback doesn't say what is bound/.test(old.out), `an older readback: exit ${old.status}\n${old.out}`);
+    return `${v.json.bindings.bound} fields bound across ${v.json.bindings.read} variants; the detached radius named; an older readback scored, saying it can't see bindings`;
+  });
+
+  await check("the readback matches a field only with variables of its kind: a padding at a radius's value is no detached radius", async () => {
+    // The readback matched a field with every local variable. shadcn/ui's
+    // only number tokens are its radii (sm 6, md 8, xl 14), so a Button
+    // built and bound faithfully read back its py-2 padding, gap-2 and
+    // text-sm as detached tokens, on nearly every variant.
+    const button = readJson(join(snapDir, "styles.json")).components.find((c) => c.name === "Button");
+    const variant = expandVariants(button)[0];
+    const st = variant.styles;
+    const name = figmaVariantName(variant.combination);
+    const lengths = [st.padding.top, st.padding.right, st.gap?.column, (st.text ?? st).fontSize];
+    assert(new Set([...lengths, st.borderRadiusUniform]).size === 5 && lengths.every((n) => n > 0),
+      `the example Button's padding, gap, font size and radius are no longer five lengths apart: ${lengths}, ${st.borderRadiusUniform}`);
+    const [top, side, gap, size] = lengths;
+    const unbound = async (variables, collections) => (await loadSkillReadback().read(
+      { id: "set:Kinds", type: "COMPONENT_SET", name: "Kinds", children: [figmaNode(name, st)] },
+      { [name]: variant.slug }, { [variant.slug]: "measured" }, { variables, collections },
+    )).readback[variant.slug].unbound.join();
+    const COLLECTIONS = ["Radius", "Spacing", "Typography", "Primitives"].map((n) => ({ id: `VariableCollectionId:${n}`, name: n }));
+    const float = (name, value, collection, scopes) => ({
+      id: `VariableID:${collection}/${name}`, name, resolvedType: "FLOAT", valuesByMode: { "1:0": value },
+      variableCollectionId: `VariableCollectionId:${collection}`, ...(scopes ? { scopes } : {}),
+    });
+    // A file whose only number variables are radii, at every length the
+    // variant shows but its radius: nothing on it is a detached radius.
+    const radii = lengths.map((n) => float(`r${n}`, n, "Radius"));
+    const got = {
+      radii: await unbound(radii, COLLECTIONS),
+      // A spacing variable at the top padding, and a font size, are the
+      // fields' own kind, so named; a line height at the font size is not.
+      ownKind: await unbound([...radii, float("4", top, "Spacing"), float("leading/x", size, "Typography"), float("text/xs", size, "Typography")], COLLECTIONS),
+      noLineHeight: await unbound([float("leading/x", size, "Typography"), float("font/weight/x", size, "Typography")], COLLECTIONS),
+      // Scopes, where they name some, say the kind over the collection's
+      // name, and a number in a collection named for no kind is never
+      // matched.
+      scoped: await unbound([float("a", side, "Radius", ["GAP"]), float("b", gap, "Primitives", ["CORNER_RADIUS"]), float("c", top, "Primitives")], COLLECTIONS),
+    };
+    const want = {
+      radii: "",
+      ownKind: "paddingTop,paddingBottom,fontSize",
+      noLineHeight: "",
+      scoped: "paddingRight,paddingLeft",
+    };
+    assert(JSON.stringify(got) === JSON.stringify(want), `read back unbound ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    return `radii at the padding (${top}, ${side}), gap (${gap}) and font size (${size}) named none of them; a spacing variable and a font size were named; scopes over the collection`;
+  });
+
+  await check("a readback that reads render bounds, or gets a stroke or a color wrong, fails these checks", async () => {
     // Each mutant rewrites the shipped readback template, and has to fail
     // the checks above, which the template passes.
     const T = {
       size: "width: child.width + edge('Left') + edge('Right'),\n        height: child.height + edge('Top') + edge('Bottom'),",
       outside: "const outside = stroke ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;",
       side: "return outside * (typeof own === 'number' ? own : child.strokeWeight);",
-      colour: "color: hexOf(stroke) }",
+      color: "color: hexOf(stroke) }",
       hidden: "if (paint.visible === false) return null;",
       alpha: "+ (alpha < 255 ? byte(alpha) : '');",
       opacity: "* (typeof paint.opacity === 'number' ? paint.opacity : 1) * 255 + 1e-4);",
@@ -2255,11 +3709,11 @@ async function main() {
       "counts a stroke only while its paint shows": (code) => code.replace(T.outside,
         "const outside = stroke && hexOf(stroke) ? { OUTSIDE: 1, CENTER: 0.5 }[child.strokeAlign] || 0 : 0;"),
       "reads strokeWeight, never each side's weight": (code) => code.replace(T.side, "return outside * child.strokeWeight;"),
-      "reports the colour of a stroke that paints nothing": (code) => code.replace(T.colour,
+      "reports the color of a stroke that paints nothing": (code) => code.replace(T.color,
         "color: hexOf({ ...stroke, visible: true, opacity: 1 }) }"),
-      "reports the colour of a stroke hidden with visible: false": (code) => code.replace(T.hidden, ""),
-      "drops a translucent colour's alpha, as toHex(paint.color) did": (code) => code.replace(T.alpha, ";"),
-      "reads a paint's colour without its opacity": (code) => code.replace(T.opacity, "* 255 + 1e-4);"),
+      "reports the color of a stroke hidden with visible: false": (code) => code.replace(T.hidden, ""),
+      "drops a translucent color's alpha, as toHex(paint.color) did": (code) => code.replace(T.alpha, ";"),
+      "reads a paint's color without its opacity": (code) => code.replace(T.opacity, "* 255 + 1e-4);"),
     };
     const failed = [];
     for (const [mutant, mutate] of Object.entries(mutants)) {
@@ -2394,25 +3848,46 @@ async function main() {
   await check("a part of a set built the way the skill says fits use_figma's code limit", async () => {
     // The skill builds a large set in parts. Price one part at the build
     // template with its table filled in with that many variants' names and
-    // full measured styles, each as large as the example's largest, and its
+    // measured styles, written as the skill says, without the border and
+    // borderRadius that borderUniform and borderRadiusUniform repeat, and its
     // properties table with the set's: the agent's own Plugin API code has to
-    // fit in what is left, at least 15,000 characters. Every part carries the
-    // layout, which lays out and checks the whole set, so push all 256
-    // variants through the simulated document too: each part has to return
-    // counts small enough for one response, and leave every variant in the
-    // grid of 4 rows of 64.
+    // fit in what is left, at least 15,000 characters, twice what a live
+    // push's own came to. Priced at shadcn/ui's largest measured variant, the
+    // part has to fit with that code under the length the skill says to
+    // measure a part against, and where an agent keeps the repeats and passes
+    // it, the smaller parts the skill then says to build in have to fit too.
+    // Every part carries the layout, which lays out and checks the whole set,
+    // so push all 256 variants through the simulated document too: each part
+    // has to return counts small enough for one response, and leave every
+    // variant in the grid of 4 rows of 64.
     const md = readFileSync(SKILL, "utf8");
     const part = Number(/in parts of at most (\d+) variants/.exec(md)?.[1]);
     assert(part > 0, "the skill gives no number of variants to build a set in parts of");
+    const smaller = /if it passes ([\d,]+) characters, build that set in parts of (\d+) instead/.exec(md);
+    assert(smaller, "the skill never says to build a set in smaller parts when a part's code is too long");
+    const [threshold, fewer] = [Number(smaller[1].replace(/,/g, "")), Number(smaller[2])];
+    assert(threshold < CODE_LIMIT && fewer < part, `the skill measures a part against ${threshold} and builds a long one in parts of ${fewer}`);
     const build = loadSkillBuild();
     assert(build.part === part, `the build template's PART is ${build.part}, but the skill says to build in parts of ${part}`);
     const set = await realisticSet(snapDir);
     const largest = set.styles.reduce((a, b) => (JSON.stringify(b).length > JSON.stringify(a).length ? b : a));
-    const variants = Object.keys(set.slugByName).map((name) => ({ name, styles: largest }));
+    const written = ({ border, borderRadius, ...rest }) => ({
+      ...rest,
+      ...(rest.borderUniform || border === undefined ? {} : { border }),
+      ...(rest.borderRadiusUniform != null || borderRadius === undefined ? {} : { borderRadius }),
+    });
     const constants = { PAGE_NAME: "Forms", SET_NAME: "Button", SET_ID: "12:34", PART: part };
-    const code = build.code(variants.slice(0, part), constants, set.properties, { styled: false }).length;
+    const names = Object.keys(set.slugByName);
+    const price = (styles, n) => build.code(names.slice(0, n).map((name) => ({ name, styles })), constants, set.properties, { styled: false }).length;
+    const code = price(written(largest), part);
     assert(code <= CODE_LIMIT - 15000, `${part} variants come to ${code} characters before the agent's own code, too close to ${CODE_LIMIT}`);
-    const whole = build.code(variants, constants, set.properties, { styled: false }).length;
+    const slim = price(written(SHADCN_COMMAND), part);
+    assert(slim + AGENT_CODE <= threshold, `${part} of shadcn/ui's largest variants come to ${slim} characters, ${slim + AGENT_CODE} with a live push's own code, over ${threshold}`);
+    const full = price(SHADCN_COMMAND, part);
+    const lowered = price(SHADCN_COMMAND, fewer);
+    assert(full + AGENT_CODE <= threshold || lowered + AGENT_CODE <= threshold,
+      `${fewer} of shadcn/ui's largest variants, border and borderRadius kept, come to ${lowered + AGENT_CODE} characters with a live push's own code, over ${threshold}`);
+    const whole = build.code(names.map((name) => ({ name, styles: largest })), constants, set.properties, { styled: false }).length;
 
     const doc = figmaDocument();
     const named = Object.keys(set.slugByName).map((name, i) => ({ name, styles: set.styles[i % set.styles.length] }));
@@ -2426,7 +3901,8 @@ async function main() {
     const panel = [...built.children].reverse().map((n) => n.name);
     assert(panel.join("\n") === named.map((v) => v.name).join("\n"), "the layers panel does not read in snap's order");
     assertLaidOut(built);
-    return `${part} variants a call: ${code} characters before the agent's own code; all 256 would be ${whole}; ` +
+    return `${part} variants a call: ${code} characters before the agent's own code; ${slim} at shadcn/ui's largest, ${full} with its repeats ` +
+      `(${lowered} in parts of ${fewer}); all 256 would be ${whole}; ` +
       `256 pushed in ${parts.length} parts returning up to ${response} encoded, laid out in 4 rows of 64`;
   });
 
@@ -2543,13 +4019,14 @@ async function main() {
     // A re-push into a set an earlier build had left in another order laid it
     // out in that order: the primary row read sm, lg, sm disabled, lg disabled
     // and the others sm, sm disabled, lg disabled, lg. The layout orders the
-    // set by the variantProperties snap records, in Storybook's declared
-    // order, a BOOLEAN false then true: rows primary, danger and outline,
-    // columns sm, sm disabled, lg, lg disabled, the layers panel reading the
-    // same way, and a variant snap does not have in a row of its own below.
-    // The same set laid out by properties whose defaults are not their first
-    // values comes out the same, since the order is declared, not default
-    // first; and Frozen's one property is a column of 3.
+    // set by the variantProperties snap records, each VARIANT's default first
+    // and then Storybook's declared order, a BOOLEAN's default first, here
+    // false: rows primary, danger and outline, columns sm, sm disabled, lg,
+    // lg disabled, the layers panel reading the same way, and a variant snap
+    // does not have in a row of its own below. With disabled defaulting to
+    // true, its true column comes first, so Figma's default variant is the
+    // component's; a VARIANT runs as PROPERTIES lists it, whatever its
+    // defaultValue says; and Frozen's one property is a column of 3.
     const declared = layout.declared();
     const build = loadSkillBuild();
     return `${declared}; ${await layout.scrambled(build)}; ${await layout.defaults(build)}; ${await layout.frozen(build)}`;
@@ -2567,6 +4044,9 @@ async function main() {
   await check("a set of 20 BOOLEAN properties lays out from its variants, not every combination", async () =>
     layout.booleans(loadSkillBuild()));
 
+  await check("a set of very mixed sizes, and a variant 0 high, lays out with nothing overlapping or lost", async () =>
+    layout.sizes(loadSkillBuild()));
+
   await check("a layout that gets the order, the spacing or a check wrong fails these checks", async () => {
     // Each mutant rewrites the shipped template, and has to fail a layout
     // check the template passes.
@@ -2574,7 +4054,7 @@ async function main() {
       sort: "cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));",
       columns: "const columns = [...new Map(grid.map((c) => [c.key, c.at])).values()].sort(byColumn).map((at) => at.slice(1).join());",
       rows: "const rows = [...new Set(grid.map((c) => c.at[0]))];",
-      values: "p.type === 'BOOLEAN' ? ['false', 'true'] : p.values",
+      values: "p.type !== 'BOOLEAN' ? p.values : p.defaultValue === 'true' ? ['true', 'false'] : ['false', 'true']",
       extras: "extra.sort((a, b) => (a.node.name > b.node.name) - (a.node.name < b.node.name) || byId(a, b));",
       target: "const target = order.map((c) => c.node).reverse();",
     };
@@ -2597,10 +4077,11 @@ async function main() {
       "leaves the extra row in the set's child order": (code) => code.replace(T.extras, ""),
       "takes each property's values default first": (code) => code.replace(T.values,
         "[p.defaultValue, ...p.values.filter((v) => v !== p.defaultValue)]"),
-      "puts a BOOLEAN's true before its false": (code) => code.replace("['false', 'true']", "['true', 'false']"),
+      "puts a BOOLEAN's true before its false": (code) => code.replace(": ['false', 'true']", ": ['true', 'false']"),
+      "lays a BOOLEAN out false, true whatever its default": (code) => code.replace(T.values, "p.type === 'BOOLEAN' ? ['false', 'true'] : p.values"),
       "keeps whichever copy of a name comes first among the children in the grid": (code) => code
         .replace(T.sort, T.sort.replace(" || byId(a, b)", "")),
-      "lays out a set with auto layout": (code) => between(code, "if (componentSet && componentSet.layoutMode !== 'NONE') {", "\n    }\n"),
+      "lays out a set with auto layout": (code) => between(code, "if (componentSet && PROPERTIES.length && componentSet.layoutMode !== 'NONE') {", "\n    }\n"),
       "never checks each variant is where the layout put it": (code) => between(code, "for (const c of order) {\n      if (Math.abs(", "\n    }\n"),
     };
     const failed = [];
@@ -2617,6 +4098,102 @@ async function main() {
         }
       }
       assert(failure, `a template that ${mutant} passed every layout check`);
+      failed.push(mutant);
+    }
+    return `${failed.length} mutants fail`;
+  });
+
+  // What the build does besides the layout, each check run on the shipped
+  // template and then on every mutant of it below.
+  const builds = buildScenarios(snapDir);
+
+  await check("a component with no variant properties is built as one plain component, read back and verified as its one variant", async () =>
+    builds.plain(loadSkillBuild()));
+
+  await check("a new set or component goes below what its page holds, one already placed stays, and each keeps its Storybook id and title", async () =>
+    builds.placed(loadSkillBuild()));
+
+  await check("a translucent color bound to a variable keeps its alpha in a fill, a stroke and a shadow", async () =>
+    builds.painted(loadSkillBuild()));
+
+  await check("a font Figma can't load gets a stand-in the part names, and a part that fails part way leaves nothing loose", async () =>
+    builds.fonts(loadSkillBuild()));
+
+  await check("a new set or component is found by name, then by id, and refuses another component's", async () =>
+    builds.found(loadSkillBuild()));
+
+  await check("a build that makes a set of no properties, stacks sets, takes the wrong set, drops an alpha or fails over a font fails these checks", async () => {
+    // Each mutant rewrites the shipped build template, or the readback, and
+    // has to fail one of the checks above, which the shipped ones pass.
+    const T = {
+      plain: "if (!PROPERTIES.length) {",
+      place: "if (fresh) Object.assign(node, { name: SET_NAME, x: 0, y: below });",
+      id: "node.setSharedPluginData('storysync', 'id', ID || '');",
+      found: "const sets = named.length ? named : all.filter((n) => ID && idOf(n) === ID);",
+      own: "(n.type === want || n.type === 'COMPONENT_SET' || idOf(n))",
+      other: "componentSet && idOf(componentSet) && idOf(componentSet) !== ID ?",
+      overlaps: "const overlaps = (node) => node.parent.children.filter(",
+      restore: "      if (!fx && loose.some(Boolean)) node[key] = node[key].map((p, i) => (loose[i] ? { ...p, opacity: raw[i].opacity } : p));\n",
+      effect: "p.variable && !(fx && loose[i]) ?",
+      families: "for (const f of new Set([named, family, alt, 'Inter'])) {",
+      serif: "? 'Noto Serif' :",
+      ladder: "[i, i + d, i + 2 * d, 3]",
+      clamp: "Math.min(8, Math.max(0, Math.round((weight || 400) / 100) - 1))",
+      spelling: "new Set([STYLES[j], STYLES[j].replace(' ', '')])",
+      named: "if ((f !== family && f !== named) || j !== i) FONTS[family + ' ' + weight] = f + ' ' + s;",
+      cleanup: "      for (const variant of created) variant.remove();\n",
+      readPlain: "componentSet.type === 'COMPONENT' ? [componentSet] : componentSet.children",
+    };
+    const builds_ = {
+      "builds a component with no variant properties as a set of one, as the live push did": (code) => code.replace(T.plain, "if (false) {"),
+      "puts a new set at 0,0, on top of the page's others": (code) => code.replace(T.place, "if (fresh) node.name = SET_NAME;"),
+      "moves and renames a set already on the page": (code) => code.replace(T.place, "Object.assign(node, { name: SET_NAME, x: 0, y: below });"),
+      "keeps no Storybook id on what it builds": (code) => code.replace(T.id, ""),
+      "finds an earlier set by its name alone": (code) => code.replace(T.found, "const sets = named;"),
+      "matches a set by its name or its id at once, so a copy of one makes two": (code) => code.replace(T.found,
+        "const sets = all.filter((n) => n.name === SET_NAME || (ID && idOf(n) === ID));"),
+      "takes a designer's own plain component of the name for one a push built": (code) => code.replace(T.own, "(true)"),
+      "overwrites another component's id on a set of its name": (code) => code.replace(T.other, "false ?"),
+      "counts no overlaps": (code) => code.replace(T.overlaps, "const overlaps = (node) => [].filter("),
+      "assigns a bound paint once, as the live push did": (code) => code.replace(T.restore, ""),
+      "keeps a shadow bound whatever its alpha": (code) => code.replace(T.effect, "p.variable ?"),
+      "loads only the measured family": (code) => code.replace(T.families, "for (const f of [family]) {"),
+      "asks Figma for fontsource's Geist Variable by that name, which Figma has none of": (code) => code.replace(T.families, "for (const f of new Set([family, alt, 'Inter'])) {"),
+      "sets a serif face in Inter": (code) => code.replace(T.serif, "? 'Inter' :"),
+      "falls to Regular for a weight the family lacks": (code) => code.replace(T.ladder, "[i, 3]"),
+      "indexes past Black for a weight over 900": (code) => code.replace(T.clamp, "Math.max(0, Math.round((weight || 400) / 100) - 1)"),
+      "tries a style in Inter's spelling alone": (code) => code.replace(T.spelling, "[STYLES[j]]"),
+      "names no stand-in": (code) => code.replace(T.named, ";"),
+      "names a stand-in where only the spelling differs": (code) => code.replace(T.named,
+        "if (f !== family || s !== STYLES[i]) FONTS[family + ' ' + weight] = f + ' ' + s;"),
+      "leaves a failed part's new variants loose on the page": (code) => code.replace(T.cleanup, ""),
+    };
+    const readbacks = {
+      "reads a plain component's layers as its variants": (code) => code.replace(T.readPlain, "componentSet.children"),
+    };
+    const failed = [];
+    for (const [mutant, mutate] of Object.entries(builds_)) {
+      const build = loadSkillBuild(mutate);
+      let failure = null;
+      for (const scenario of Object.values(builds)) {
+        try {
+          await scenario(build);
+        } catch (err) {
+          failure = err.message;
+          break;
+        }
+      }
+      assert(failure, `a build template that ${mutant} passed every check`);
+      failed.push(mutant);
+    }
+    for (const [mutant, mutate] of Object.entries(readbacks)) {
+      let failure = null;
+      try {
+        await builds.plain(loadSkillBuild(), loadSkillReadback(mutate));
+      } catch (err) {
+        failure = err.message;
+      }
+      assert(failure, `a readback that ${mutant} passed`);
       failed.push(mutant);
     }
     return `${failed.length} mutants fail`;
@@ -2673,6 +4250,133 @@ async function main() {
       `all ${all} in one would be ${JSON.stringify(one).length}; ${refused}`;
   });
 
+  await check("the label call keeps a designer's description and changes only its own line", async () => {
+    // A plain assignment replaced whatever a designer had written on a set,
+    // and nothing took the label off once the component was measured open.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    assert(code.length < 4000, `the label template is ${code.length} characters`);
+    const NL = "\n";
+    const nodes = {
+      "1:1": describedNode("1:1", "COMPONENT_SET", { text: "Use for the main action." }),
+      "1:2": describedNode("1:2", "COMPONENT_SET", { text: `Use for the main action.${NL}storysync: measured from its closed trigger, button, not the open dialog` }),
+      "1:3": describedNode("1:3", "COMPONENT"),
+      "1:4": describedNode("1:4", "COMPONENT_SET", { text: "storysync: measured from its closed trigger, button, not the open dialog" }),
+      "1:5": describedNode("1:5", "COMPONENT_SET"),
+      "1:6": describedNode("1:6", "FRAME"),
+    };
+    const run = labelCall(code, nodes);
+    const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
+    const wrapper = "measured from what may be its story's layout wrapper, div, not Switch";
+    const notes = { "1:1": trigger, "1:2": trigger, "1:3": wrapper, "1:4": "", "1:5": "" };
+
+    const first = await run(notes);
+    const expected = {
+      "1:1": `Use for the main action.${NL}storysync: ${trigger}`,
+      "1:2": `Use for the main action.${NL}storysync: ${trigger}`,
+      "1:3": `storysync: ${wrapper}`,
+      "1:4": "",
+      "1:5": "",
+    };
+    for (const [id, text] of Object.entries(expected)) {
+      assert(nodes[id].stored.text === text, `${id} has ${JSON.stringify(nodes[id].stored.text)}, expected ${JSON.stringify(text)}`);
+    }
+    assert(first.changed.join() === "1:1,1:2,1:3,1:4", `changed ${first.changed.join()}`);
+    // Run again, it changes nothing, and adds no second line.
+    const again = await run(notes);
+    assert(again.changed.length === 0, `a second run changed ${again.changed.join()}`);
+    // Measured open, the set loses the line and keeps the designer's.
+    await run({ "1:1": "" });
+    assert(nodes["1:1"].stored.text === "Use for the main action.", `1:1 kept ${JSON.stringify(nodes["1:1"].stored.text)}`);
+    // Anything but a component set or component is refused.
+    for (const id of ["1:6", "9:9"]) {
+      let refused = false;
+      try { await run({ [id]: trigger }); } catch { refused = true; }
+      assert(refused, `labeled ${id}, which is no component set`);
+    }
+    return `${code.length} characters`;
+  });
+
+  await check("the label call reads Figma's escaped description once, keeps a designer's formatting, and changes nothing a second time", async () => {
+    // Figma returns a description HTML-escaped. Read and written back as it
+    // came, a live push turned Dialog's note into
+    // button[data-slot=&quot;dialog-trigger&quot;], escaped once more on
+    // every push, and a second run reported it changed again.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    const NL = "\n";
+    const designer = `Use "primary" & <b>bold</b> for the main action.`;
+    const trigger = "measured from its closed trigger, button[data-slot=\"dialog-trigger\"], not the open dialog";
+    // The stand-in escapes as Figma does: a template that writes back what it
+    // read gains an escape on every run here.
+    const naive = describedNode("0:1", "COMPONENT_SET", { text: designer });
+    for (let i = 0; i < 2; i++) naive.description = naive.description;
+    assert(naive.stored.text.includes("&amp;quot;"), `the stand-in doesn't escape as Figma does: ${naive.stored.text}`);
+
+    const results = [];
+    for (const escapeMarkdown of [false, true]) {
+      const nodes = {
+        "2:1": describedNode("2:1", "COMPONENT_SET", { text: designer }),
+        "2:2": describedNode("2:2", "COMPONENT_SET", { markdown: `**Use** "primary" & keep _this_ for the main action.`, escapeMarkdown }),
+        "2:3": describedNode("2:3", "COMPONENT", { text: `${designer}${NL}storysync: ${trigger}` }),
+      };
+      const run = labelCall(code, nodes);
+      const notes = { "2:1": trigger, "2:2": trigger, "2:3": "" };
+      const first = await run(notes);
+      assert(first.changed.join() === "2:1,2:2,2:3", `changed ${first.changed.join()}`);
+      for (let i = 0; i < 3; i++) {
+        const again = await run(notes);
+        assert(again.changed.length === 0, `run ${i + 2} changed ${again.changed.join()} again`);
+      }
+      assert(nodes["2:1"].stored.text === `${designer}${NL}storysync: ${trigger}`, `2:1 holds ${JSON.stringify(nodes["2:1"].stored.text)}`);
+      assert(nodes["2:3"].stored.text === designer, `2:3 holds ${JSON.stringify(nodes["2:3"].stored.text)}`);
+      // The designer's bold and italic stay, and the note shows as written.
+      const bs = "\\";
+      assert(nodes["2:2"].stored.markdown === `**Use** "primary" & keep _this_ for the main action.${NL}storysync: measured from its closed trigger, button${bs}[data-slot="dialog-trigger"${bs}], not the open dialog`,
+        `2:2's markdown is ${JSON.stringify(nodes["2:2"].stored.markdown)}`);
+      assert(nodes["2:2"].stored.text.endsWith(`storysync: ${trigger}`), `2:2 shows ${JSON.stringify(nodes["2:2"].stored.text)}`);
+      results.push(escapeMarkdown ? "escaped markdown" : "plain markdown");
+    }
+    return `no escape added over four runs, with Figma's markdown read as ${results.join(" and as ")}`;
+  });
+
+  await check("the label call removes Figma's empty Page 1, keeps one a designer used, or the only page, and leaves the user where they were", async () => {
+    // A live push left Page 1 empty beside the pages it made, and didn't say.
+    // And the call switched to Page 1 to load it, and stayed, so the user's
+    // view jumped at the end of every push.
+    const code = useFigmaBlock(/^Label the sets measured from/);
+    const set = describedNode("3:1", "COMPONENT_SET");
+    const outcome = async (pages, current, refuse = false) => {
+      const doc = labelPages(pages, current);
+      if (refuse) doc.pages.find((p) => p.name === "Page 1").remove = () => { throw new Error("Cannot remove this page"); };
+      const result = await labelCall(code, { "3:1": set }, doc.figma)({ "3:1": "" });
+      return { pageOne: result.pageOne, left: doc.pages.map((p) => p.name).join(), on: doc.figma.currentPage.name };
+    };
+    // Each: the pages, the one the user is on, what the call returns, the
+    // pages left and the one the user is on after.
+    const cases = [
+      [[["Page 1", 0], ["ui/base", 1]], 1, "removed", "ui/base", "ui/base"],
+      // On Page 1, the user is moved off it to remove it.
+      [[["Page 1", 0], ["ui/base", 1]], 0, "removed", "ui/base", "ui/base"],
+      // Not loaded yet, it lists no layers: the call has to load it to see them.
+      [[["ui/base", 1], ["Page 1", 2]], 0, "kept: it holds layers", "ui/base,Page 1", "ui/base"],
+      [[["Page 1", 0]], 0, "kept: it is the only page", "Page 1", "Page 1"],
+      [[["Cover", 0], ["ui/base", 1]], 1, "none", "Cover,ui/base", "ui/base"],
+    ];
+    for (const [pages, current, pageOne, left, on] of cases) {
+      const got = await outcome(pages, current);
+      const want = { pageOne, left, on };
+      assert(JSON.stringify(got) === JSON.stringify(want), `pages ${JSON.stringify(pages)}, on ${pages[current][0]}: ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    }
+    // A removal Figma refuses is said, after the labels, rather than lost in
+    // a throw, and the user is left on the page they were on.
+    const refusal = "kept: Figma refused to remove it (Cannot remove this page)";
+    for (const [current, on] of [[0, "Page 1"], [1, "ui/base"]]) {
+      const got = await outcome([["Page 1", 0], ["ui/base", 1]], current, true);
+      const want = { pageOne: refusal, left: "Page 1,ui/base", on };
+      assert(JSON.stringify(got) === JSON.stringify(want), `a refused removal, on ${on}: ${JSON.stringify(got)}, not ${JSON.stringify(want)}`);
+    }
+    return cases.map(([, , pageOne]) => pageOne).join("; ") + "; " + refusal + ", the user left where they were each time";
+  });
+
   heading("Readback checksums");
 
   await check("the template's checksums survive any layout of the file, and cover what each call returns", () => assertSealed(snapDir));
@@ -2683,7 +4387,7 @@ async function main() {
   await check("a readback rebuilt from snap's values, as the live push wrote it, is flagged on every variant and fails --strict", () =>
     assertComposedFlagged(snapDir));
 
-  await check("a colour edited in the readback after Figma returned it is flagged on exactly that variant", () => assertEditFlagged(snapDir));
+  await check("a color edited in the readback after Figma returned it is flagged on exactly that variant", () => assertEditFlagged(snapDir));
 
   await check("an entry copied onto the same slug in another component is flagged on exactly that one", () => assertCopyFlagged(snapDir));
 
@@ -2701,8 +4405,9 @@ async function main() {
 
   await check("a readback sealed another way, or a verify that skips a readback check, fails these checks", async () => {
     // Each template mutant rewrites the shipped readback template, and each
-    // verify mutant a copy of the built verify.js; every one has to fail the
-    // checks above, which the shipped pair passes.
+    // verify mutant a copy of the built verify.js, or of the module verify
+    // takes a function from (checksum.js, for canonicalJson); every one has
+    // to fail the checks above, which the shipped pair passes.
     const SEALED = "const text = canon({ [setId]: { [slug]: entry } });";
     const READ = "const entry = JSON.parse(JSON.stringify(Object.assign({}, fields, { readAt: new Date().toISOString() })));";
     const templateMutants = {
@@ -2732,7 +4437,9 @@ async function main() {
       "passes an entry with no checksum": (src) => src.replace('issues.push({ component, slug, problem: "no_checksum" });', ";"),
       "flags an entry but scores it anyway": (src) => src.replace("? unverifiedVerdict(component, slug, figma)",
         '? { ...verifyVariant(component, slug, measured, figma, tolerance), status: "unverified_readback" }'),
-      "keeps each object's keys in the order the file wrote them": (src) => src.replace("Object.keys(record).sort()", "Object.keys(record)"),
+      "keeps each object's keys in the order the file wrote them": {
+        file: "checksum.js", mutate: (src) => src.replace("Object.keys(record).sort()", "Object.keys(record)"),
+      },
       "checks a checksum under the slug alone, not the set's id": (src) => src.replace(
         "canonicalJson({ [setId]: { [slug]: JSON.parse(JSON.stringify(rest)) } })", "canonicalJson({ [slug]: JSON.parse(JSON.stringify(rest)) })"),
       "does not require the fields the template always returns": (src) => src.replace(
@@ -2758,8 +4465,9 @@ async function main() {
       const template = loadSkillReadback(mutate);
       if (!(await fails([() => assertSealed(snapDir, { template }), () => assertNullsScored(snapDir, { template })]))) survived.push(`a template that ${name}`);
     }
-    for (const [name, mutate] of Object.entries(verifyMutants)) {
-      if (!(await fails(every({ bin: mutantCli(mutate) })))) survived.push(`a verify that ${name}`);
+    for (const [name, mutant] of Object.entries(verifyMutants)) {
+      const { file, mutate } = typeof mutant === "function" ? { file: "verify.js", mutate: mutant } : mutant;
+      if (!(await fails(every({ bin: mutantCli(mutate, file) })))) survived.push(`a verify that ${name}`);
     }
     assert(survived.length === 0, `these pass every checksum check:\n${survived.join("\n")}`);
     return `${Object.keys(templateMutants).length} template and ${Object.keys(verifyMutants).length} verify mutants fail; an unchanged copy of the build passes`;
@@ -2789,7 +4497,7 @@ async function main() {
     }
 
     const long = Array.from({ length: 400 }, (_, i) => ({
-      collection: "Semantic colours", name: `color/semantic/interactive/surface-${i}/background-hover-pressed`, type: "COLOR", value: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
+      collection: "Semantic colors", name: `color/semantic/interactive/surface-${i}/background-hover-pressed`, type: "COLOR", value: { r: 0.2, g: 0.4, b: 0.6, a: 1 },
     }));
     const refused = await assertGuardRefuses((n, guarded) => {
       const body = withConstants(guarded ? code : liftGuard(code), { START: 0, BATCH: n });
@@ -2798,23 +4506,40 @@ async function main() {
     return `${counts.join(", ")}; ${refused}`;
   });
 
+  await check("the audit's variables read gives each variable's value in every mode of a collection of several, for the Dark one to be compared", async () => {
+    // It read each collection's first mode, and an audit of shadcn/ui said
+    // "39 matched" with no word of a Dark mode it never compared.
+    const code = useFigmaBlock(/^Read all variable collections/);
+    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
+    const variables = Array.from({ length: batch + 3 }, (_, i) => (i < batch
+      ? { collection: "Colors", name: `color/${i}`, type: "COLOR", values: [{ r: 0, g: 0, b: 0, a: 1 }, { r: 1, g: 1, b: 1, a: 1 }] }
+      : { collection: "Radius", name: `radius/${i}`, type: "FLOAT", value: i }));
+    const read = await readAllSlices(code, () => variablesFigma(variables, { Colors: ["Light", "Dark"] }));
+    assert(read.length === 2, `read in ${read.length} calls`);
+    const all = read.flatMap((slice) => slice.variables);
+    const colors = all.filter((v) => v.collection === "Colors");
+    assert(colors.length === batch && colors.every((v) => v.value === "#000000" && JSON.stringify(v.modes) === JSON.stringify({ Light: "#000000", Dark: "#ffffff" })),
+      `a Colors variable reads ${JSON.stringify(colors[0])}`);
+    assert(all.filter((v) => v.collection === "Radius").every((v) => v.modes === undefined), "a collection of one mode gives modes");
+    return `${batch} Colors variables in Light and Dark, 3 Radius in one mode, in 2 slices`;
+  });
+
   await check("the audit reads the component sets on every page, not only the one loaded first", async () => {
     // The push puts each Storybook category on its own page. use_figma loads
     // a page only when a call switches to it, so a search from figma.root
     // would see the first page's sets, and only the first page's, from every
     // call. Each page's call has to return that page's sets and no other's.
-    // Forms holds exactly two slices of sets, so a call past the last slice
-    // would be one too many.
+    // Forms holds more sets than one call returns, so the read goes on from
+    // each slice's next.
     const code = useFigmaBlock(/^Read the component sets/);
-    const batch = Number(/const BATCH = (\d+);/.exec(code)?.[1]);
-    assert(batch > 0, "the component read defines no BATCH");
-    const forms = Array.from({ length: 2 * batch }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
+    const forms = Array.from({ length: 120 }, (_, i) => auditSet(`Field${i}`, { size: ["sm", "md", "lg"], disabled: "BOOLEAN" }));
     const pages = [
       { id: "0:1", name: "Forms", sets: forms },
       { id: "0:2", name: "Navigation", sets: [auditSet("Tabs", { variant: ["line", "pill"] }), auditSet("Breadcrumb", { size: ["sm", "md"] })] },
       { id: "0:3", name: "Archive", sets: [] },
     ];
     const found = [];
+    const calls = [];
     for (const page of pagesFigma(pages).root.children) {
       const read = await readAllSlices(code, () => {
         const switches = [];
@@ -2827,22 +4552,194 @@ async function main() {
         };
         return figma;
       }, { PAGE_ID: page.id });
-      const sets = pages.find((p) => p.id === page.id).sets.length;
-      const calls = Math.max(1, Math.ceil(sets / batch));
-      assert(read.length === calls, `read the ${sets} sets on ${page.name} in ${read.length} calls, not ${calls}, with BATCH ${batch}`);
-      for (const slice of read) found.push(...slice.componentSets.map((s) => `${page.name}/${s.name}`));
+      assert(read.every((slice) => slice.page === page.name), `a call for ${page.name} read ${read.map((slice) => slice.page).join(", ")}`);
+      for (const slice of read) found.push(...slice.components.map((s) => `${page.name}/${s.name}`));
+      calls.push(`${page.name} in ${read.length}`);
     }
+    assert(/^Forms in [2-9]/.test(calls[0]), `read Forms' ${forms.length} sets in one call: the check never reads on from next`);
     const expected = pages.flatMap((p) => p.sets.map((s) => `${p.name}/${s.name}`));
     assert(found.join() === expected.join(), `read ${found.length} sets (${found.slice(0, 3).join(", ")}...), expected ${expected.length} across ${pages.length} pages`);
+    return `${found.length} sets across ${pages.length} pages, ${calls.join(", ")} calls`;
+  });
 
+  await check("the audit reads as many components a call as fit under 20kb, and refuses one too big alone", async () => {
+    // At 25 a call, an icon library's page of a few hundred plain components
+    // took a call per 25, each counting toward Figma's MCP rate limits,
+    // though one entry is a hundred or so characters. Each call takes what
+    // fits under the guard, as use_figma encodes it, and no less.
+    const code = useFigmaBlock(/^Read the component sets/);
     const options = Array.from({ length: 12 }, (_, i) => `option-with-a-long-descriptive-name-${i}`);
-    const wide = Array.from({ length: 120 }, (_, i) => auditSet(`Wide${i}`, { appearance: options, emphasis: options.slice(0, 6), disabled: "BOOLEAN" }));
-    const widePages = [{ id: "1:1", name: "Wide", sets: wide }];
-    const refused = await assertGuardRefuses((n, guarded) => {
-      const body = withConstants(guarded ? code : liftGuard(code), { PAGE_ID: "1:1", START: 0, BATCH: n });
-      return new AsyncFunction("figma", body)(pagesFigma(widePages));
-    }, wide.length);
-    return `${found.length} sets across ${pages.length} pages; ${refused}`;
+    const page = () => [
+      ...Array.from({ length: 400 }, (_, i) => auditComponent(`Icon/"quoted"/arrow-${i}`)),
+      ...Array.from({ length: 40 }, (_, i) => auditSet(`Wide${i}`, { appearance: options, emphasis: options.slice(0, 6), disabled: "BOOLEAN" })),
+    ];
+    const read = async (mutate = null) => {
+      const run = mutate ? mutate(code) : code;
+      assert(run !== code || !mutate, "a mutant of the component read changed nothing in it");
+      const pages = [{ id: "0:1", name: "Icons", sets: page() }];
+      return readAllSlices(run, () => pagesFigma(pages), { PAGE_ID: "0:1" });
+    };
+    const encoded = (slice) => JSON.stringify(JSON.stringify(slice)).length;
+    const assertSlices = (slices) => {
+      const names = slices.flatMap((slice) => slice.components.map((c) => c.name));
+      assert(names.length === 440 && new Set(names).size === 440, `read ${names.length} components (${new Set(names).size} distinct) of 440`);
+      for (const [i, slice] of slices.entries()) {
+        assert(encoded(slice) <= GUARD, `slice ${i + 1} is ${encoded(slice)} characters encoded, over the ${GUARD} guard`);
+        const after = slices[i + 1];
+        if (!after) continue;
+        // One more entry would have passed the guard, or the call stopped short.
+        const more = { ...slice, next: after.components.length > 1 || after.next !== null ? slice.next + 1 : null, components: [...slice.components, after.components[0]] };
+        assert(encoded(more) > GUARD, `slice ${i + 1} stopped at ${slice.components.length} entries, ${encoded(slice)} characters encoded, with room for the next`);
+      }
+    };
+    const slices = await read();
+    assertSlices(slices);
+    assert(slices.length <= 8, `read 440 components in ${slices.length} calls`);
+
+    // One set too big for any call alone is refused, by name, not returned
+    // past 20kb, and not skipped without a word.
+    const huge = auditSet("Glyph", { glyph: Array.from({ length: 2000 }, (_, i) => `glyph-${i}`) });
+    const hugePages = [{ id: "0:1", name: "Icons", sets: [auditComponent("Before"), huge, auditComponent("After")] }];
+    const first = JSON.parse(await new AsyncFunction("figma", withConstants(code, { PAGE_ID: "0:1", START: 0 }))(pagesFigma(hugePages)));
+    assert(first.components.map((c) => c.name).join() === "Before" && first.next === 1, `the slice before the huge set came back as ${JSON.stringify(first).slice(0, 200)}`);
+    let refused = null;
+    try {
+      await new AsyncFunction("figma", withConstants(code, { PAGE_ID: "0:1", START: 1 }))(pagesFigma(hugePages));
+    } catch (err) {
+      refused = err.message;
+    }
+    assert(refused && /"Glyph" alone/.test(refused) && /START \+ 1/.test(refused), `the huge set ${refused ? `failed with: ${refused}` : "was returned"}`);
+
+    const count = await assertMutantsFail({
+      "measures the slice before use_figma encodes it": (c) => c.replace("if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;", "if (slice([...results, entry], next).length > 17000) break;"),
+      "takes 25 a call, as it did": (c) => c.replace("if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;", "if (JSON.stringify(slice([...results, entry], next)).length > 17000 || end - START >= 25) break;"),
+      "takes one entry past the guard": (c) => c.replace("if (JSON.stringify(slice([...results, entry], next)).length > 17000) break;", "if (JSON.stringify(slice(results, next)).length > 17000) break;"),
+    }, read, assertSlices);
+    return `440 components in ${slices.length} calls, each under ${GUARD} encoded and full; a set too big alone refused; ${count} mutants fail`;
+  });
+
+  /**
+   * Runs the component read, or a mutant of it, over one page, from START 0
+   * to the last slice, and returns its entries. A mutation that changes
+   * nothing is a mistake in the check, not a mutant.
+   */
+  async function auditPage(sets, mutate = null) {
+    const shipped = useFigmaBlock(/^Read the component sets/);
+    const code = mutate ? mutate(shipped) : shipped;
+    assert(code !== shipped || !mutate, "a mutant of the component read changed nothing in it");
+    const pages = [{ id: "0:1", name: "ui/base", sets }];
+    const read = await readAllSlices(code, () => pagesFigma(pages), { PAGE_ID: "0:1" });
+    return read.flatMap((slice) => slice.components);
+  }
+
+  /** Throws unless every mutant, run through `assertOk`, fails it. Returns how many did. */
+  async function assertMutantsFail(mutants, run, assertOk) {
+    const survived = [];
+    for (const [name, mutate] of Object.entries(mutants)) {
+      let failure = null;
+      try {
+        assertOk(await run(mutate));
+      } catch (err) {
+        failure = err;
+      }
+      if (!failure || /changed nothing/.test(failure.message)) survived.push(`a read that ${name}${failure ? ` (${failure.message})` : ""}`);
+    }
+    assert(survived.length === 0, `these pass the check:\n${survived.join("\n")}`);
+    return Object.keys(mutants).length;
+  }
+
+  await check("the audit reads the components outside any set, not a set's variants, and the Storybook ID the push stored", async () => {
+    // The push makes a component with no variant properties a plain
+    // component, since a set of one variant named "" is one Figma flags as
+    // errored, and stores each component's Storybook ID on what it makes.
+    // Read for sets only, the audit never saw those components; read for
+    // every component, it would take each variant for one.
+    const sets = () => [
+      auditSet("Button", { size: ["sm", "lg"], disabled: "BOOLEAN" }, { storybookId: "ui-base-button" }),
+      auditComponent("Badge", { storybookId: "ui-base-badge" }),
+      auditFrame("Icons", [auditComponent("Calendar")]),
+    ];
+    const assertRead = (entries) => {
+      const got = entries.map((e) => [e.name, e.type, e.storybookId, e.variantCount, e.variantProperties.map((p) => `${p.name}:${p.values.join("|")}`).join(",")]);
+      const want = [
+        ["Button", "COMPONENT_SET", "ui-base-button", 4, "size:sm|lg,disabled:true|false"],
+        ["Badge", "COMPONENT", "ui-base-badge", 1, ""],
+        ["Calendar", "COMPONENT", null, 1, ""],
+      ];
+      assert(JSON.stringify(got) === JSON.stringify(want), `read ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+      assert(entries.every((e) => /^9:\d+$/.test(e.nodeId) && e.error === undefined), `read ${JSON.stringify(entries)}`);
+    };
+    assertRead(await auditPage(sets()));
+    const mutants = {
+      "finds component sets only, as it did": (code) => code.replace("types: ['COMPONENT_SET', 'COMPONENT']", "types: ['COMPONENT_SET']"),
+      "takes a set's variants for components": (code) => code.replace(".filter(n => n.type === 'COMPONENT_SET' || (n.parent && n.parent.type !== 'COMPONENT_SET'))", ""),
+      "leaves out the Storybook ID the push stored": (code) => code.replace("node.getSharedPluginData('storysync', 'id') || null", "null"),
+    };
+    const count = await assertMutantsFail(mutants, (mutate) => auditPage(sets(), mutate), assertRead);
+    return `2 components and a set, no variants, with their IDs; ${count} mutants fail`;
+  });
+
+  await check("the audit reports a set Figma flags as errored, and reads on through the rest of its page", async () => {
+    // The live push's sets of one variant named "", which Figma renames "="
+    // and flags as errored: reading their componentPropertyDefinitions
+    // threw "Component set has existing errors", and the audit lost every
+    // set on the page.
+    const sets = () => [
+      auditSet("Avatar", { size: ["sm", "lg"] }),
+      auditSet("Button", { "": [""] }, { errored: true }),
+      auditSet("Card", { elevated: "BOOLEAN" }),
+      auditComponent("Separator"),
+    ];
+    const assertRead = (entries) => {
+      assert(JSON.stringify(entries.map((e) => e.name)) === JSON.stringify(["Avatar", "Button", "Card", "Separator"]), `read ${entries.map((e) => e.name).join(", ")}`);
+      const errored = entries[1];
+      assert(/Component set has existing errors/.test(errored.error ?? ""), `the errored set came back as ${JSON.stringify(errored)}`);
+      assert(errored.variantProperties.length === 0 && /^9:\d+$/.test(errored.nodeId), `the errored set came back as ${JSON.stringify(errored)}`);
+      assert(entries[0].variantProperties.length === 1 && entries[2].variantProperties.length === 1 && entries.filter((e) => e.error !== undefined).length === 1,
+        `the sets beside it came back as ${JSON.stringify(entries)}`);
+    };
+    const shipped = await auditPage(sets());
+    assertRead(shipped);
+    const errored = shipped[1];
+    const mutants = {
+      "reads every set's properties with no try, as it did": (code) => code.replace(
+        /let defs = \{\};\s*try \{\s*defs = node\.componentPropertyDefinitions;\s*\} catch \(e\) \{[^}]*\}/, "const defs = node.componentPropertyDefinitions;"),
+      "skips an errored set without saying so": (code) => code.replace("entry.error = String((e && e.message) || e);", ""),
+    };
+    const count = await assertMutantsFail(mutants, (mutate) => auditPage(sets(), mutate), assertRead);
+    return `${errored.name} reported "${errored.error}", 3 others read; ${count} mutants fail`;
+  });
+
+  await check("the audit writes a translucent color variable with its alpha, as tokens writes its hex", async () => {
+    // shadcn/ui's dark tokens are translucent, oklch(1 0 0 / 10%), which
+    // tokens gives as #ffffff1a. The push sets the variable from that hex;
+    // read back as #ffffff, it could never match.
+    const { tokenColorToHex } = await import(pathToFileURL(join(ROOT, "dist", "cli", "tokens.js")).href);
+    const values = ["oklch(1 0 0 / 10%)", "rgba(0, 0, 0, 0.7)", "oklch(0.704 0.191 22.216 / 0.3)", "#171717", "oklch(0.985 0 0)"];
+    const tokens = values.map((value, i) => ({ name: `color/${i}`, hex: tokenColorToHex(value) }));
+    assert(tokens.every((t) => t.hex), `tokens gave no hex for ${values.filter((_, i) => !tokens[i].hex).join(", ")}`);
+    // As figma.util.rgba reads a hex, and as Figma stores the channels: 32-bit floats.
+    const rgba = (hex) => {
+      const [r, g, b, a = 255] = hex.slice(1).match(/../g).map((h) => parseInt(h, 16));
+      return { r: Math.fround(r / 255), g: Math.fround(g / 255), b: Math.fround(b / 255), a: Math.fround(a / 255) };
+    };
+    const variables = tokens.map((t) => ({ collection: "Colors", name: t.name, type: "COLOR", value: rgba(t.hex) }));
+    const read = async (mutate = null) => {
+      const code = useFigmaBlock(/^Read all variable collections/);
+      const run = mutate ? mutate(code) : code;
+      assert(run !== code || !mutate, "a mutant of the variables read changed nothing in it");
+      return (await readAllSlices(run, () => variablesFigma(variables))).flatMap((slice) => slice.variables);
+    };
+    const assertRead = (got) => {
+      const pairs = got.map((v, i) => [v.value, tokens[i].hex]);
+      assert(pairs.every(([figma, code]) => figma === code), `read ${pairs.map(([f, c]) => `${f} for ${c}`).join(", ")}`);
+    };
+    assertRead(await read());
+    const count = await assertMutantsFail({
+      "writes every color as 6-digit hex, as it did": (code) => code.replace("if (a < 255) channels.push(a);", ""),
+      "writes an opaque color with ff on the end": (code) => code.replace("if (a < 255) channels.push(a);", "channels.push(a);"),
+    }, read, assertRead);
+    return `${tokens.map((t) => t.hex).join(", ")} read back as written; ${count} mutants fail`;
   });
 
   heading("Scoring contract");
@@ -2851,7 +4748,7 @@ async function main() {
 
   await check("verify scores an exact reference readback at 100%", () => {
     // The baseline the other scoring checks perturb, built without the skill
-    // template, so each of them isolates one behaviour of verify.
+    // template, so each of them isolates one behavior of verify.
     writeJson(reference, sealed(referenceReadback(snapDir)));
     const v = verifyJson(snapDir, reference);
     assert(v.json?.fidelity === 1, `fidelity ${v.json?.fidelity}\n${v.out.trim()}`);
@@ -2928,15 +4825,19 @@ async function main() {
     assert(exitOf(snapDir, path, ["--strict"]) === 1, "--strict passed");
   });
 
-  await check("a component in Figma that snap never measured fails --strict-measured", () => {
+  await check("a component in Figma that snap never measured fails --strict, naming it", () => {
     const ghost = readJson(reference);
     const [entry] = Object.values(Object.values(ghost.components)[0].variants);
     ghost.components["Forms/Phantom"] = { nodeId: "9:9", variants: { default: { ...entry } } };
     const path = join(WORK, "readback-ghost.json");
     writeJson(path, sealed(ghost));
     assert(exitOf(snapDir, path, ["--strict-measured"]) === 1, "--strict-measured passed");
-    // On provenance alone: its entry carries the checksum verify expects.
-    assert(exitOf(snapDir, path, ["--strict"]) === 0, "--strict failed on a sealed entry snap never measured");
+    // Its entry carries the checksum verify expects, but a snap with no
+    // record of the component at all, as one re-run for other components
+    // without --merge leaves, can't score the push it belongs to.
+    assert(exitOf(snapDir, path, ["--strict"]) === 1, "--strict passed with a component the snap has no record of");
+    const text = cli(["verify", "--snap", join(snapDir, "styles.json"), "--readback", path]).out;
+    assert(/Forms\/Phantom is in the readback but not in the snap.*--merge/.test(text), `not named: ${text.trim()}`);
   });
 
   await check("opacity is not compared with the pixel tolerance", () => {
@@ -3038,6 +4939,71 @@ async function main() {
       for (const run of runs) assert(/--variants all/.test(run), `${file}: "${run}" measures a sample, not every combination`);
     }
     return `${files.length} files`;
+  });
+
+  await check("the push instructions say what snap's args records mean, and name them in the summary", () => {
+    // snap records values a story's argTypes refused (arg_rejected, or
+    // appliedVia "preview" when it set them another way), variants whose
+    // args it couldn't check (argsChecked: false), and choices a story
+    // declares that the docs don't (argsNotInDocs). An agent told nothing
+    // of them builds the set as though all were well, and the user never
+    // hears of the story change or the props Figma won't have.
+    const files = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"];
+    for (const file of files) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const steps = file.startsWith("skills/") ? text.slice(0, text.indexOf("## Audit")) : text;
+      for (const [what, pattern] of [
+        ["says what an arg_rejected variant is", /An `arg_rejected` variant is/],
+        ["says a variant set through the preview was measured", /`appliedVia: "preview"`|`appliedVia` is `"preview"`/],
+        ["says to measure a variant marked argsChecked: false again", /marked `argsChecked: false`[^.]*measure those components again with `--components <their IDs> --merge`/],
+        ["says what argsNotInDocs lists", /`argsNotInDocs` lists choices its story's argTypes declare/],
+        ["says what excludedProps lists", /`excludedProps`[^.]*`reason`/],
+        ["names them in the summary", /any variant snap marked `argsChecked: false`, each component's `argsNotInDocs` and `excludedProps`,/],
+      ]) assert(pattern.test(steps), `${file}: the push never ${what}`);
+    }
+    return `${files.length} files`;
+  });
+
+  await check("the audit instructions leave out the push's excluded props, and map only a scope's components", () => {
+    // The audit ran a plain map of every component: 11.5 minutes on a
+    // shadcn registry for an audit of ten, with every prop the push left out
+    // with --exclude-props reported missing from Figma.
+    const files = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-diff.md"];
+    for (const file of files) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const audit = file.startsWith("skills/") ? text.slice(text.indexOf("## Audit"), text.indexOf("\n## ", text.indexOf("## Audit") + 1)) : text;
+      assert(/npx storysync map /.test(audit), `${file}: the audit never runs map`);
+      for (const [what, pattern] of [
+        ["passes the push's --exclude-props", /--exclude-props/],
+        ["says where snap records them", /`excludedProps`[^.]*`\.storysync\/snaps\/styles\.json`/],
+        ["passes a scope with --components", /--components/],
+        ["lists every component to pair a scope with", /npx storysync list --storybook \S+ --json/],
+        ["pairs by the Storybook ID the push stored", /getSharedPluginData\('storysync', 'id'\)|storybookId/],
+        ["reports a set Figma flags as errored", /errored in Figma \(can't read its properties\)/],
+        ["finds an errored set by its node id", /`nodeId`/],
+        // map exits 1 on a name Storybook lacks, which a scope naming a
+        // Figma-only component has.
+        ["lists the components before it maps a scope", /first run `npx storysync list/],
+        ["maps only the scope's names that list has", /only the (?:scope's names|names in the scope) that list has/],
+        ["skips map when list has none of the scope", /If list has none of them, skip map/],
+        // Base UI's Button paired by ID left Radix's alone in the name, and
+        // paired with any set of it, a designer's on another page included.
+        ["still pairs a shared name's copies by page when IDs paired some", /counting those an ID paired/],
+        // An icon library's components aren't drift.
+        ["counts components outside any set not from the push, without listing them", /don't list it as Figma only, but count it/],
+        ["lets those components leave the audit in sync", /components outside any set not from the push don't count against it/],
+      ]) assert(pattern.test(audit), `${file}: the audit never ${what}`);
+    }
+    // The audit finds the props a push left out in styles.json, which a snap
+    // run without --exclude-props, a re-run included, rewrites without them.
+    const push = ["skills/claude-code.md", "skills/codex.md", "skills/cursor.mdc", "commands/storysync-push.md"];
+    for (const file of push) {
+      const text = readFileSync(join(ROOT, file), "utf8");
+      const steps = file.startsWith("skills/") ? text.slice(0, text.indexOf("## Audit")) : text;
+      assert(/pass the same list to every `snap` you run for this push, re-runs included, and name those props in the summary/.test(steps),
+        `${file}: the push never keeps the props --exclude-props left out across snap runs`);
+    }
+    return `${files.length} audit texts, ${push.length} push texts`;
   });
 
   await check("every use_figma code example in the skill parses", () => {

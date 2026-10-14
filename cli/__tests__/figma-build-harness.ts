@@ -1,0 +1,267 @@
+// Helpers for package B's tests: `figma code` over a snap in a temporary
+// directory, its calls run in the mock Figma, and the built layers read
+// back as the browser measures boxes, to set against snap's facts.
+
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { asciiJson, callSum } from "../checksum.js";
+import { runFigmaCode } from "../figma-code.js";
+import type { FigmaCodeOptions } from "../figma-code.js";
+import { parentKey } from "../tree-types.js";
+import type { Box, FigmaPlan, PlanCall, TreeNode } from "../tree-types.js";
+import { MockFigma, TREE_FIXTURES_DIR, fixtureVariants, measureFromTrees } from "./mock-figma.js";
+import type { MockFigmaOptions, MockRun, NodeView, TreeFixture } from "./mock-figma.js";
+
+export { SHADCN_TOKENS } from "./shadcn-tokens.js";
+
+/**
+ * A readback template standing in for package C's, which is not in this
+ * package: it returns an empty read, so a plan's read calls run.
+ */
+export const STUB_READBACK = "return { kind: 'read', tpl: 3, page: PAGE, sets: [], slices: SLICES, limit: LIMIT };";
+
+/**
+ * A call file with its constant `name` set to `value`, and its SUM written
+ * again to match, as figma code would have written the call with that
+ * value: for a test that needs a call figma code doesn't write. Without
+ * the SUM, the template refuses the call as one changed on its way.
+ */
+export function withConstant(code: string, name: string, value: unknown): string {
+  const line = new RegExp(`\\nconst ${name} = .*;\\n`);
+  if (!line.test(code)) throw new Error(`the call declares no ${name}`);
+  const changed = code.replace(line, () => `\nconst ${name} = ${asciiJson(value)};\n`);
+  const constants: unknown[] = [];
+  for (const m of changed.matchAll(/^const (\w+) = (.*);$/gm)) {
+    if (m[1] === "SUM") break;
+    constants.push(JSON.parse(m[2]));
+  }
+  return changed.replace(/\nconst SUM = .*;\n/, () => `\nconst SUM = ${JSON.stringify(callSum(constants))};\n`);
+}
+
+export interface Coded {
+  dir: string;
+  snapPath: string;
+  out: string;
+  plan: FigmaPlan;
+  warnings: string[];
+  code(call: PlanCall): string;
+}
+
+/**
+ * Writes `snap` as styles.json in a new directory, with any image assets it
+ * names and `tokens` as tokens.json, and runs figma code over it.
+ */
+export async function codeFor(snap: object, options: Partial<FigmaCodeOptions> = {}, tokens?: object): Promise<Coded> {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-figma-code-"));
+  const snapPath = join(dir, "snaps", "styles.json");
+  mkdirSync(dirname(snapPath), { recursive: true });
+  writeFileSync(snapPath, JSON.stringify(snap, null, 2));
+  for (const component of (snap as TreeFixture).components ?? []) {
+    for (const asset of Object.values(component.tree?.assets.img ?? {})) {
+      const to = join(dirname(snapPath), asset.file);
+      mkdirSync(dirname(to), { recursive: true });
+      copyFileSync(join(TREE_FIXTURES_DIR, asset.file), to);
+    }
+  }
+  if (tokens) writeFileSync(join(dir, "tokens.json"), JSON.stringify(tokens));
+  const out = join(dir, "figma");
+  const { plan, warnings } = await runFigmaCode({
+    snap: snapPath, out, templates: { readback: STUB_READBACK }, ...(tokens ? { tokens: join(dir, "tokens.json") } : {}), ...options,
+  });
+  return { dir, snapPath, out, plan, warnings, code: (call) => readFileSync(join(out, call.file), "utf8") };
+}
+
+/**
+ * A mock that measures text as the fixture's browser did, and refuses to
+ * move a layer holding a text whose font the call hasn't loaded, as Figma
+ * does: the build moves layers it didn't make.
+ */
+export function mockFor(fixtures: TreeFixture[], options: MockFigmaOptions = {}): MockFigma {
+  const trees = fixtures.flatMap((f) => fixtureVariants(f).map((v) => v.nodes));
+  return new MockFigma({ measure: measureFromTrees(trees), moveNeedsFonts: true, ...options });
+}
+
+/** Runs a plan's calls in order, `kinds` only when given; throws on a call that fails. */
+export async function runPlan(mock: MockFigma, coded: Coded, kinds?: PlanCall["kind"][]): Promise<MockRun[]> {
+  const runs: MockRun[] = [];
+  for (const call of coded.plan.calls) {
+    if (kinds && !kinds.includes(call.kind)) continue;
+    const run = await mock.run(coded.code(call));
+    if (!run.ok) throw new Error(`call ${call.seq} (${call.kind}) failed: ${run.text}`);
+    runs.push(run);
+  }
+  return runs;
+}
+
+/** The variant components a mock holds, by slug: of the set with storysync id `component` only, when given. */
+export function variantsBySlug(mock: MockFigma, component?: string): Map<string, NodeView> {
+  const out = new Map<string, NodeView>();
+  const walk = (n: NodeView, set: string) => {
+    const slug = n.data["storysync.slug"];
+    const id = n.data["storysync.id"] ?? set;
+    if (n.type === "COMPONENT" && slug && (!component || id === component)) out.set(slug, n);
+    for (const c of n.children ?? []) walk(c, id);
+  };
+  for (const page of mock.pages()) walk(page, "");
+  return out;
+}
+
+/** A frame's strokes built OUTSIDE it, top, right, bottom, left. */
+function outside(mock: MockFigma, id: string): [number, number, number, number] {
+  const h = mock.handle(id) as Record<string, unknown>;
+  if (!("strokeAlign" in h) || h.strokeAlign !== "OUTSIDE" || !(h.strokes as unknown[]).length) return [0, 0, 0, 0];
+  return [h.strokeTopWeight, h.strokeRightWeight, h.strokeBottomWeight, h.strokeLeftWeight] as [number, number, number, number];
+}
+
+/**
+ * A layer's x and y as snap measures a turned one, its box unturned about
+ * its center: Figma's x and y are where its top left corner turned to.
+ */
+function unturned(n: NodeView): [number, number] {
+  const t = ((n.rotation ?? 0) * Math.PI) / 180;
+  return [n.x + ((Math.cos(t) - 1) * n.width) / 2 + (Math.sin(t) * n.height) / 2, n.y - (Math.sin(t) * n.width) / 2 + ((Math.cos(t) - 1) * n.height) / 2];
+}
+
+/**
+ * Each keyed layer's border box relative to the variant root's, by key, the
+ * root `""`: as the browser measures a box, a stroke built outside a frame
+ * included in it, so it compares with absoluteBoxes of snap's facts.
+ */
+export function readBoxes(mock: MockFigma, variant: NodeView): Map<string, Box> {
+  const out = new Map<string, Box>();
+  const visit = (n: NodeView, origin: [number, number], key: string) => {
+    const o = outside(mock, n.id);
+    out.set(key, [origin[0] - o[3], origin[1] - o[0], n.width + o[1] + o[3], n.height + o[0] + o[2]]);
+    if (n.data["storysync.svg"] && key !== "") return;
+    for (const c of n.children ?? []) {
+      const k = c.data["storysync.k"];
+      if (k) visit(c, [origin[0] + unturned(c)[0], origin[1] + unturned(c)[1]], k);
+    }
+  };
+  const o = outside(mock, variant.id);
+  visit(variant, [o[3], o[0]], "");
+  return out;
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * Where a built variant differs from snap's facts beyond tolerance: a
+ * missing layer, or a box off by more than 0.5px (1px for text). A frame's
+ * size may differ by what its children's sizes differ by, as section 10.4
+ * allows a container: so Figma's AUTO line height for a `normal` one, a
+ * fraction off Chrome's, moves no score. Its place may differ by what its
+ * ancestors' places differ by, and by what packs it in its parent: along
+ * a flex row's or column's main axis, the sizes of the siblings between
+ * it and the side the line is packed at (and its own, packed at the end
+ * or the bottom), as a row packed at its end moves a button left by what
+ * Figma's whole-pixel label widths after it add; across it, its own size,
+ * centered or at the end; in any other layout, the siblings that end
+ * before it on that axis, as the blocks above it. An absolute element
+ * moves with its parent alone.
+ */
+export function boxDrift(mock: MockFigma, variant: NodeView, nodes: TreeNode[], factBoxes: Map<string, Box>): string[] {
+  const got = readBoxes(mock, variant);
+  const drift: string[] = [];
+  const grew = (k: string, a: number) => Math.abs((got.get(k)?.[a + 2] ?? 0) - factBoxes.get(k)![a + 2]);
+  const byKey = new Map(nodes.map((n) => [n.k, n]));
+  const moved = new Map<string, [number, number]>();
+  for (const node of nodes) {
+    const parent = node.k === "" ? null : byKey.get(parentKey(node.k) ?? "") ?? null;
+    const above = parent ? moved.get(parent.k) ?? [0, 0] : [0, 0];
+    const own = parent && !node.abs ? [0, 1].map((a) => packedShift(node, parent, a)) : [0, 0];
+    moved.set(node.k, [above[0] + own[0], above[1] + own[1]]);
+  }
+  // How far what packs `node` in `parent` may move it along axis `a`.
+  function packedShift(node: TreeNode, parent: TreeNode, a: number): number {
+    const start = factBoxes.get(node.k)![a];
+    const siblings = nodes.filter((n) => n.k !== node.k && n.k !== "" && !n.abs && parentKey(n.k) === parent.k);
+    const sum = (list: TreeNode[]) => list.reduce((t, n) => t + grew(n.k, a), 0);
+    const layout = parent.L;
+    if (!layout || !/flex/.test(layout.d)) {
+      return sum(siblings.filter((n) => factBoxes.get(n.k)![a] + factBoxes.get(n.k)![a + 2] <= start + 0.5));
+    }
+    const dir = layout.dir ?? "row";
+    const main = dir.startsWith("column") ? 1 : 0;
+    if (a !== main) {
+      const align = layout.ai ?? "normal";
+      return /center/.test(align) ? grew(node.k, a) / 2 : /end/.test(align) ? grew(node.k, a) : 0;
+    }
+    const reverse = dir.endsWith("-reverse");
+    const justify = layout.jc ?? "normal";
+    const atStart = ["normal", "flex-start", "stretch"].includes(justify) ? !reverse
+      : justify === "flex-end" ? reverse
+        : ["start", "left"].includes(justify) ? true : ["end", "right"].includes(justify) ? false : null;
+    const before = siblings.filter((n) => factBoxes.get(n.k)![a] < start);
+    const after = siblings.filter((n) => factBoxes.get(n.k)![a] > start);
+    if (atStart === true) return sum(before);
+    if (atStart === false) return grew(node.k, a) + sum(after);
+    // Centered or spaced: anything in the line may move it.
+    return grew(node.k, a) + sum(siblings);
+  }
+  for (const node of [...nodes].reverse()) {
+    const fact = factBoxes.get(node.k)!;
+    const box = got.get(node.k);
+    if (!box) {
+      drift.push(`${node.k || "(root)"}: missing`);
+      continue;
+    }
+    const tol = node.t === "T" ? 1 : 0.5;
+    const kids = nodes.filter((n) => n.k !== node.k && (node.k === "" ? !n.k.includes("/") && n.k !== "" : n.k.startsWith(`${node.k}/`) && !n.k.slice(node.k.length + 1).includes("/")));
+    const allow = [0, 1].map((a) => kids.reduce((t, k) => t + Math.abs((got.get(k.k)?.[a + 2] ?? 0) - factBoxes.get(k.k)![a + 2]), 0));
+    const bad = [0, 1].some((a) => Math.abs(box[a] - fact[a]) > tol + moved.get(node.k)![a]) || [0, 1].some((a) => Math.abs(box[a + 2] - fact[a + 2]) > tol + allow[a]);
+    if (bad) drift.push(`${node.k || "(root)"}: snap ${fact.join(",")}, Figma ${box.map(r2).join(",")}`);
+  }
+  return drift;
+}
+
+/**
+ * Where a built variant draws in its set, read off the mock: its box, and
+ * each visible layer's that no frame around it clips, with the reach on
+ * each side of its stroke (all of an OUTSIDE one's weight, half a CENTER
+ * one's), its drop shadows, and its layer blur's radius. A turned layer
+ * draws the box its turned corners span, that reach included, and turns
+ * what it holds with it.
+ */
+export function drawnInSet(mock: MockFigma, variant: NodeView): [number, number, number, number] {
+  const out: [number, number, number, number] = [variant.x, variant.y, variant.x + variant.width, variant.y + variant.height];
+  type Shadow = { type: string; visible: boolean; radius: number; spread?: number; offset: { x: number; y: number } };
+  type Stroked = { strokes: { visible?: boolean }[]; strokeAlign: string; strokeWeight: number | symbol; strokeTopWeight: number; strokeRightWeight: number; strokeBottomWeight: number; strokeLeftWeight: number };
+  // A 2x3 transform, [a, b, x, c, d, y]: where a point of a layer lands in the set.
+  type Matrix = [number, number, number, number, number, number];
+  const apply = ([a, b, x, c, d, y]: Matrix, px: number, py: number): [number, number] => [a * px + b * py + x, c * px + d * py + y];
+  const within = (m: Matrix, n: NodeView): Matrix => {
+    const t = ((n.rotation ?? 0) * Math.PI) / 180;
+    const [a2, b2, c2, d2] = [Math.cos(t), Math.sin(t), -Math.sin(t), Math.cos(t)];
+    const [a, b, x, c, d, y] = m;
+    return [a * a2 + b * c2, a * b2 + b * d2, a * n.x + b * n.y + x, c * a2 + d * c2, c * b2 + d * d2, c * n.x + d * n.y + y];
+  };
+  // `frame` is where the frame n's own x and y are in puts a point: a group's children's are in that frame too, not the group.
+  const visit = (n: NodeView, frame: Matrix) => {
+    const h = mock.handle(n.id) as { visible: boolean; effects: Shadow[]; clipsContent?: boolean; type: string };
+    if (!h.visible) return;
+    const reach = [[0, 0, 0, 0], ...h.effects.filter((e) => e.visible && e.type === "DROP_SHADOW").map((e) => {
+      const r = e.radius + (e.spread ?? 0);
+      return [r - e.offset.x, r - e.offset.y, r + e.offset.x, r + e.offset.y];
+    })];
+    const blur = Math.max(0, ...h.effects.filter((e) => e.visible && e.type === "LAYER_BLUR").map((e) => e.radius));
+    // Left, top, right, bottom, as the shadows' reach is.
+    let stroke = [0, 0, 0, 0];
+    if ("strokes" in h) {
+      const s = h as unknown as Stroked;
+      const share = s.strokes.some((p) => p.visible !== false) ? ({ OUTSIDE: 1, CENTER: 0.5 } as Record<string, number>)[s.strokeAlign] ?? 0 : 0;
+      const [top, right, bottom, left] = typeof s.strokeWeight === "number" ? Array<number>(4).fill(s.strokeWeight) : [s.strokeTopWeight, s.strokeRightWeight, s.strokeBottomWeight, s.strokeLeftWeight];
+      stroke = [left, top, right, bottom].map((w) => w * share);
+    }
+    const [l, t, r, b] = [0, 1, 2, 3].map((i) => stroke[i] + Math.max(...reach.map((s) => s[i])) + blur);
+    const own = within(frame, n);
+    const corners = [apply(own, -l, -t), apply(own, n.width + r, -t), apply(own, -l, n.height + b), apply(own, n.width + r, n.height + b)];
+    const drawn = [Math.min(...corners.map((p) => p[0])), Math.min(...corners.map((p) => p[1])), Math.max(...corners.map((p) => p[0])), Math.max(...corners.map((p) => p[1]))];
+    drawn.forEach((v, i) => { out[i] = i < 2 ? Math.min(out[i], v) : Math.max(out[i], v); });
+    const inner = h.type === "GROUP" ? frame : own;
+    if (n.children && !(h.type !== "GROUP" && h.clipsContent)) for (const c of n.children) visit(c, inner);
+  };
+  visit(variant, [1, 0, 0, 0, 1, 0]);
+  return out;
+}

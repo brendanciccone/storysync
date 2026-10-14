@@ -8,11 +8,19 @@ import {
   parseStories,
   resolveDocsTools,
   selectComponents,
-  findComponent,
+  findComponent, selectEach,
   toolResultText,
+  tableCells,
   StorybookClient,
+  indexTitles,
+  indexDocsOnly,
+  indexUrls,
+  titleLeaf,
+  componentKey,
   type DocsTools,
+  type StorybookClientOptions,
 } from "../storybook.js";
+import { mapComponent } from "../mapper.js";
 
 test("deriveCategoryFromId: single-word category", () => {
   assert.equal(deriveCategoryFromId("ui-button", "Button"), "UI");
@@ -172,6 +180,7 @@ async function connectToFakeAddon(
   tools: DocsTools | null,
   list = EXAMPLE_LIST,
   docs: Record<string, string> = { "forms-button": EXAMPLE_BUTTON_DOC },
+  options: StorybookClientOptions = {},
 ): Promise<StorybookClient> {
   const server = new Server({ name: "fake-addon-mcp", version: "0.0.0" }, { capabilities: { tools: {} } });
   const names = tools ? [tools.list, tools.show] : ["preview-stories"];
@@ -189,7 +198,7 @@ async function connectToFakeAddon(
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
-  const client = new StorybookClient("http://localhost:6006");
+  const client = new StorybookClient("http://localhost:6006", options);
   await client.connect(clientSide);
   return client;
 }
@@ -242,6 +251,141 @@ test("StorybookClient: an unknown component ID is an error, not a component with
   } finally {
     await client.disconnect();
   }
+});
+
+// --- Titles from Storybook's index ---
+
+// A shadcn registry's docs list: every component twice, as Base UI's and
+// Radix's, and some named for the story's `component` rather than the title.
+const REGISTRY_LIST = [
+  "# Components", "",
+  "- Button (ui-base-button)", "  - Default (ui-base-button--default)",
+  "- Button (ui-radix-button)", "  - Default (ui-radix-button--default)",
+  "- Toaster (ui-base-sonner)", "  - Default (ui-base-sonner--default)",
+  "- Toaster (ui-radix-sonner)", "  - Default (ui-radix-sonner--default)",
+  "- Color (design-base-color)", "  - Palette (design-base-color--palette)",
+].join("\n");
+
+/** index.json as `storybook dev` serves it, with an entry for each story and docs page. */
+function storybookIndex(titles: Record<string, string>): unknown {
+  const entries: Record<string, unknown> = {};
+  for (const [id, title] of Object.entries(titles)) {
+    for (const story of ["default", "docs"]) {
+      entries[`${id}--${story}`] = { id: `${id}--${story}`, title, name: story, importPath: `./${id}.stories.tsx`, type: story === "docs" ? "docs" : "story", tags: [] };
+    }
+  }
+  return { v: 5, entries };
+}
+
+const REGISTRY_TITLES = {
+  "ui-base-button": "ui/base/Button",
+  "ui-radix-button": "ui/radix/Button",
+  "ui-base-sonner": "ui/base/Sonner",
+  "ui-radix-sonner": "ui/radix/Sonner",
+  "design-base-color": "design/base/Color",
+};
+
+test("StorybookClient: titles and categories come from Storybook's index, not rebuilt from IDs", async () => {
+  // Rebuilt from the IDs, ui/base/Button was "UI Base/Button", and the two
+  // Toasters, whose IDs don't end in their name, had no title at all, so
+  // nothing told them apart.
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex: async () => storybookIndex(REGISTRY_TITLES) });
+  try {
+    const entries = await client.listComponents();
+    assert.deepEqual(entries.map((e) => [e.id, e.name, e.title, e.category, e.titleDerived]), [
+      ["ui-base-button", "Button", "ui/base/Button", "ui/base", undefined],
+      ["ui-radix-button", "Button", "ui/radix/Button", "ui/radix", undefined],
+      ["ui-base-sonner", "Toaster", "ui/base/Sonner", "ui/base", undefined],
+      ["ui-radix-sonner", "Toaster", "ui/radix/Sonner", "ui/radix", undefined],
+      ["design-base-color", "Color", "design/base/Color", "design/base", undefined],
+    ]);
+    assert.equal(new Set(entries.map(componentKey)).size, entries.length);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test("StorybookClient: without Storybook's index, titles are rebuilt from IDs as before, and say so", async () => {
+  for (const readIndex of [null, async () => { throw new Error("404"); }, async () => "<html>"]) {
+    const client = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex });
+    try {
+      const entries = await client.listComponents();
+      assert.deepEqual(entries.map((e) => [e.title, e.category, e.titleDerived]), [
+        ["UI Base/Button", "UI Base", true],
+        ["UI Radix/Button", "UI Radix", true],
+        [undefined, undefined, undefined],
+        [undefined, undefined, undefined],
+        ["Design Base/Color", "Design Base", true],
+      ]);
+      // With no title, the ID keys them, so they still don't collide.
+      assert.deepEqual(entries.slice(2, 4).map(componentKey), ["ui-base-sonner", "ui-radix-sonner"]);
+    } finally {
+      await client.disconnect();
+    }
+  }
+
+  // A component the index doesn't list keeps its rebuilt title.
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex: async () => storybookIndex({ "ui-base-button": "ui/base/Button" }) });
+  try {
+    const [base, radix] = await client.listComponents();
+    assert.deepEqual([base.title, base.titleDerived, radix.title, radix.titleDerived], ["ui/base/Button", undefined, "UI Radix/Button", true]);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test("StorybookClient: an index that doesn't answer is given up soon after the docs list, its request with it", async () => {
+  // With a timeout of its own, 30 seconds, an index.json that never answered
+  // held up every command that lists components for all of it.
+  let signal: AbortSignal | undefined;
+  const hanging = (s: AbortSignal) => {
+    signal = s;
+    return new Promise<unknown>(() => {});
+  };
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex: hanging, indexGraceMs: 20 });
+  try {
+    const started = Date.now();
+    const [base] = await client.listComponents();
+    assert.ok(Date.now() - started < 2_000, `waited ${Date.now() - started}ms`);
+    assert.deepEqual([base.title, base.titleDerived], ["UI Base/Button", true]);
+    assert.equal(signal?.aborted, true);
+  } finally {
+    await client.disconnect();
+  }
+
+  // One that answers after the docs list, within those seconds, is read.
+  const late = () => new Promise<unknown>((resolve) => setTimeout(() => resolve(storybookIndex(REGISTRY_TITLES)), 30));
+  const patient = await connectToFakeAddon(ADDON_MCP_10_6, REGISTRY_LIST, {}, { readIndex: late, indexGraceMs: 5_000 });
+  try {
+    const [base] = await patient.listComponents();
+    assert.deepEqual([base.title, base.titleDerived], ["ui/base/Button", undefined]);
+  } finally {
+    await patient.disconnect();
+  }
+});
+
+test("indexTitles: each component's title, by the ID its stories share", () => {
+  const titles = indexTitles({ v: 5, entries: {
+    "forms-button--primary": { id: "forms-button--primary", title: "Forms/Button" },
+    "forms-button--docs": { id: "forms-button--docs", title: "Forms/Button", type: "docs" },
+    "introduction--docs": { id: "introduction--docs", title: "Introduction", type: "docs" },
+    "broken": { title: 1 },
+    "blank--a": { id: "blank--a", title: " " },
+  } });
+  assert.deepEqual([...(titles ?? [])], [["forms-button", "Forms/Button"], ["introduction", "Introduction"]]);
+  for (const notAnIndex of [null, "", [], { stories: [] }, { entries: null }]) assert.equal(indexTitles(notAnIndex), null);
+});
+
+test("indexUrls: beside the Storybook URL's path, then at its origin's root", () => {
+  assert.deepEqual(indexUrls("http://localhost:6006").map(String), ["http://localhost:6006/index.json"]);
+  assert.deepEqual(indexUrls("http://localhost:6006/?path=/story/x").map(String), ["http://localhost:6006/index.json"]);
+  assert.deepEqual(indexUrls("https://example.com/storybook").map(String), ["https://example.com/storybook/index.json", "https://example.com/index.json"]);
+});
+
+test("titleLeaf: the title's last segment, the name Storybook's sidebar shows", () => {
+  assert.equal(titleLeaf("ui/base/Form (React Hook Form)"), "Form (React Hook Form)");
+  assert.equal(titleLeaf("Button"), "Button");
+  assert.equal(titleLeaf(undefined), undefined);
 });
 
 /** The components StorybookClient reads from a docs list of `list`. */
@@ -339,7 +483,7 @@ test("StorybookClient: a story line without an ID adds no story", async () => {
   assert.deepEqual(entries[0].storyIds, ["forms-button--default"]);
 });
 
-test("StorybookClient: still reads bold, labelled and quoted IDs, non-ASCII IDs and CRLF line ends", async () => {
+test("StorybookClient: still reads bold, labeled and quoted IDs, non-ASCII IDs and CRLF line ends", async () => {
   const entries = await listed([
     "- **Button** (id: `forms-button`)", "  - **Primary** (id: `forms-button--primary`)",
     "- Schaltfläche (formulare-schaltfläche): Ein Knopf (rund).", "  - Standard (formulare-schaltfläche--standard)",
@@ -384,7 +528,7 @@ test("StorybookClient: a component description with its own Props or Docs headin
   // headings of its own; only addon-mcp's generated Props block counts.
   const props = await propsOf([
     "# Notice", "", "ID: x-card", "",
-    "Shows a message.", "", "## Docs", "", "See the guidelines page.", "", "## Props", "", "Pass `level` to set the colour.", "",
+    "Shows a message.", "", "## Docs", "", "See the guidelines page.", "", "## Props", "", "Pass `level` to set the color.", "",
     "## Stories", "", "### Default", "", "Story ID: x-card--default", "",
     "## Props", "",
     "```", "export type Props = {", "  /**", "    ", "  */", '  level?: "info" | "warn" = "info";', "}", "```",
@@ -444,6 +588,61 @@ test("StorybookClient: a line of a prop's description is not a prop", async () =
   assert.deepEqual(props, [["tone", '"neutral" | "success" | "danger"'], ["dot", "boolean"], ["label", "string"]]);
 });
 
+test("StorybookClient: a shadcn component's cva variants, printed with `| null`, map to variant properties", async () => {
+  // addon-mcp 10.6.1 for shadcn/ui's Radix Button (shadcn-storybook-registry).
+  // cva's VariantProps add `| null` to every variant, which once dropped
+  // them all and left Button with asChild as its only property.
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, EXAMPLE_LIST, {
+    "ui-radix-button": [
+      "# Button", "", "ID: ui-radix-button", "", "## Stories", "", "### Default", "", "Story ID: ui-radix-button--default", "",
+      "## Props", "", "```", "export type Props = {",
+      '  variant?: "link" | "default" | "outline" | "secondary" | "ghost" | "destructive" | null = default;',
+      '  size?: "default" | "xs" | "sm" | "lg" | "icon" | "icon-xs" | "icon-sm" | "icon-lg" | null = default;',
+      "  asChild?: boolean = false;",
+      "}", "```",
+    ].join("\n"),
+  });
+  try {
+    const def = mapComponent(await client.getComponent("ui-radix-button", "Button"));
+    assert.deepEqual(def.variantProperties, [
+      { name: "variant", type: "VARIANT", values: ["default", "link", "outline", "secondary", "ghost", "destructive"], defaultValue: "default" },
+      { name: "size", type: "VARIANT", values: ["default", "xs", "sm", "lg", "icon", "icon-xs", "icon-sm", "icon-lg"], defaultValue: "default" },
+    ]);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+// A props table, which docs without a generated Props block fall back to,
+// escapes each | of a union as \|. Split on every |, the variant row gave
+// the type `"a" \` and moved its default into the type's place.
+test("tableCells: splits a row only on an unescaped |", () => {
+  assert.deepEqual(tableCells('| variant | "a" \\| "b" \\| null | "b" |'), ["variant", '"a" | "b" | null', '"b"']);
+  assert.deepEqual(tableCells("| open | boolean |  |"), ["open", "boolean", ""]);
+  assert.deepEqual(tableCells("Name | Type"), ["Name", "Type"]);
+});
+
+test("StorybookClient: a union in a markdown props table maps whole", async () => {
+  const client = await connectToFakeAddon(ADDON_MCP_10_6, EXAMPLE_LIST, {
+    "forms-button": [
+      "# Button", "", "ID: forms-button", "", "## Props", "",
+      "| Name | Type | Default |", "|------|------|---------|",
+      '| variant | `"primary" \\| "danger" \\| null` | `"danger"` |',
+      "| size | | md |",
+      "| disabled | `boolean` | `false` |",
+    ].join("\n"),
+  });
+  try {
+    const def = mapComponent(await client.getComponent("forms-button", "Button"));
+    assert.deepEqual(def.variantProperties, [
+      { name: "variant", type: "VARIANT", values: ["danger", "primary"], defaultValue: "danger" },
+      { name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" },
+    ]);
+  } finally {
+    await client.disconnect();
+  }
+});
+
 // --- selectComponents ---
 // Shared by snap, map and diff, so a --components list means the same thing
 // to each of them.
@@ -465,6 +664,36 @@ test("selectComponents: no list, or a list of only empty entries, selects everyt
   // so it means what leaving the flag off means.
   assert.equal(selectComponents(ENTRIES, ["", " "]), ENTRIES);
   assert.deepEqual(selectComponents(ENTRIES, ["Card", ""]).map((e) => e.name), ["Card"]);
+});
+
+test("indexDocsOnly: the components none of whose stories has a componentPath, unless the index records none at all", () => {
+  const entry = (id: string, extra: object = {}) => [id, { id, title: "t", type: "story", ...extra }];
+  const index = {
+    entries: Object.fromEntries([
+      entry("ui-base-button--default", { componentPath: "./button.tsx" }),
+      entry("design-base-color--docs", { type: "docs" }),
+      entry("design-base-color--functional"),
+      // One story of two naming a component makes it a component.
+      entry("ui-base-form--default"), entry("ui-base-form--field", { componentPath: "./form.tsx" }),
+    ]),
+  };
+  assert.deepEqual([...indexDocsOnly(index)!], ["design-base-color"]);
+  // An index from before Storybook recorded componentPath tells nothing.
+  assert.equal(indexDocsOnly({ entries: Object.fromEntries([entry("ui-base-button--default"), entry("design-base-color--x")]) }), null);
+  assert.equal(indexDocsOnly(null), null);
+});
+
+test("selectComponents: an entry whose stories name no component is left out unless a name names it, and no component", () => {
+  const entries = [
+    ...ENTRIES,
+    { id: "design-base-color", name: "Color", title: "design/base/Color", docsOnly: true as const },
+    { id: "design-base-button", name: "Button", title: "design/base/Button", docsOnly: true as const },
+  ];
+  assert.deepEqual(selectComponents(entries, undefined).map((e) => e.id), ENTRIES.map((e) => e.id));
+  assert.deepEqual(selectComponents(entries, ["Button", "design/base/Color"]).map((e) => e.id), ["forms-button", "design-base-color"]);
+  // Named by its own title, it is picked even where a component shares its last segment.
+  assert.deepEqual(selectComponents(entries, ["design/base/button"]).map((e) => e.id), ["design-base-button"]);
+  assert.throws(() => selectComponents(entries, ["Colour"]), /matched no component named "Colour"\. Available: Button, Card, IconButton$/);
 });
 
 test("selectComponents: a name that matches nothing throws, quoting it as typed and listing what exists", () => {
@@ -495,6 +724,50 @@ test("selectComponents: an empty Storybook says so rather than listing nothing",
 test("findComponent: finds inspect's one component by name or ID, ignoring case and surrounding space", () => {
   assert.equal(findComponent(ENTRIES, " iconbutton ").id, "forms-icon-button");
   assert.equal(findComponent(ENTRIES, "DATA-DISPLAY-CARD").name, "Card");
+});
+
+const REGISTRY = [
+  { id: "ui-base-button", name: "Button", title: "ui/base/Button", category: "ui/base" },
+  { id: "ui-radix-button", name: "Button", title: "ui/radix/Button", category: "ui/radix" },
+  { id: "ui-base-tooltip", name: "TooltipContent", title: "ui/base/Tooltip", category: "ui/base" },
+  { id: "ui-radix-tooltip", name: "TooltipContent", title: "ui/radix/Tooltip", category: "ui/radix" },
+];
+
+test("selectComponents: also matches a title, as map prints it, and its last segment, as the sidebar shows it", () => {
+  const ids = (names: string[]) => selectComponents(REGISTRY, names).map((e) => e.id);
+  assert.deepEqual(ids(["ui/base/Button"]), ["ui-base-button"]);
+  assert.deepEqual(ids(["UI/RADIX/TOOLTIP"]), ["ui-radix-tooltip"]);
+  assert.deepEqual(ids(["Tooltip"]), ["ui-base-tooltip", "ui-radix-tooltip"]);
+  assert.deepEqual(ids(["TooltipContent"]), ["ui-base-tooltip", "ui-radix-tooltip"]);
+  // A name several components go by is listed with their IDs, which pick one.
+  assert.throws(() => ids(["Tooltp"]), {
+    message: '--components matched no component named "Tooltp". Available: Button (ui-base-button, ui-radix-button), ' +
+      "Tooltip (ui-base-tooltip, ui-radix-tooltip), TooltipContent (ui-base-tooltip, ui-radix-tooltip)",
+  });
+  assert.throws(() => findComponent(REGISTRY, "Tooltp"), /^Error: No component named "Tooltp"\. Available: Button \(ui-base-button, ui-radix-button\), Tooltip/);
+});
+
+test("selectEach: a --remove-extra or --convert name several components share is an error naming each, so one the user didn't say yes to isn't touched", () => {
+  // "Button" took ui/base/Button and ui/radix/Button both.
+  assert.throws(
+    () => selectEach(REGISTRY, ["Button"], "--remove-extra"),
+    { message: '"Button" names 2 components: ui/base/Button (ui-base-button), ui/radix/Button (ui-radix-button). Pass the ID or title of the one to name with --remove-extra.' },
+  );
+  assert.deepEqual(selectEach(REGISTRY, ["ui/radix/Button", "ui-base-tooltip"], "--convert").map((e) => e.id), ["ui-radix-button", "ui-base-tooltip"]);
+  assert.throws(() => selectEach(REGISTRY, ["Tooltp"], "--convert"), /^Error: --convert matched no component named "Tooltp"/);
+});
+
+test("findComponent: a name several components share is an error naming each one's title and ID", () => {
+  // inspect took the first, Base UI's, and showed it as if it were the only Button.
+  assert.throws(
+    () => findComponent(REGISTRY, "Button"),
+    { message: '"Button" names 2 components: ui/base/Button (ui-base-button), ui/radix/Button (ui-radix-button). Pass the ID or title of the one to inspect.' },
+  );
+  assert.throws(() => findComponent(REGISTRY, "tooltip"), /"tooltip" names 2 components: ui\/base\/Tooltip \(ui-base-tooltip\), ui\/radix\/Tooltip/);
+  assert.equal(findComponent(REGISTRY, "ui-radix-button").id, "ui-radix-button");
+  assert.equal(findComponent(REGISTRY, " ui/base/tooltip ").id, "ui-base-tooltip");
+  // An ID is one component's, even where another's name is the same word.
+  assert.equal(findComponent([...ENTRIES, { id: "button", name: "Button", title: "Button" }], "button").id, "button");
 });
 
 test("findComponent: a name that matches nothing throws, listing what exists as selectComponents does", () => {

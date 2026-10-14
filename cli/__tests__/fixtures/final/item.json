@@ -1,0 +1,612 @@
+{
+  "about": "shadcn/ui registry (MIT) ui/base/Item as snap measured it in the final live test of 0.4.0 (session s3, 2026-10-13): its description is exactly as wide as its column, and its Action label 43.13px, which Figma sets 44 wide.",
+  "component": {
+    "id": "ui-base-item",
+    "name": "Item",
+    "title": "ui/base/Item",
+    "category": "ui/base",
+    "storyId": "ui-base-item--default",
+    "variantProperties": [
+      {
+        "name": "size",
+        "type": "VARIANT",
+        "values": [
+          "default",
+          "xs",
+          "sm"
+        ],
+        "defaultValue": "default"
+      }
+    ],
+    "base": {
+      "combination": {
+        "size": "default"
+      },
+      "slug": "size-default",
+      "styles": {
+        "display": "flex",
+        "flexDirection": "row",
+        "alignItems": "center",
+        "justifyContent": "normal",
+        "gap": {
+          "row": 14,
+          "column": 14
+        },
+        "width": 373.64,
+        "height": 74.25,
+        "backgroundColor": null,
+        "color": "#0a0a0a",
+        "border": {
+          "top": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          },
+          "right": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          },
+          "bottom": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          },
+          "left": {
+            "width": 1,
+            "style": "solid",
+            "color": "#e5e5e5"
+          }
+        },
+        "borderUniform": {
+          "width": 1,
+          "style": "solid",
+          "color": "#e5e5e5"
+        },
+        "borderRadius": {
+          "topLeft": 8,
+          "topRight": 8,
+          "bottomRight": 8,
+          "bottomLeft": 8
+        },
+        "borderRadiusUniform": 8,
+        "padding": {
+          "top": 14,
+          "right": 16,
+          "bottom": 14,
+          "left": 16
+        },
+        "fontFamily": "Inter",
+        "fontSize": 14,
+        "fontWeight": 400,
+        "lineHeight": 20,
+        "letterSpacing": 0,
+        "boxShadow": [],
+        "opacity": 1,
+        "boxSizing": "border-box",
+        "fontAvailable": true,
+        "text": {
+          "color": "#0a0a0a",
+          "fontFamily": "Inter",
+          "fontSize": 14,
+          "fontWeight": 500
+        }
+      }
+    },
+    "variants": [
+      {
+        "combination": {
+          "size": "default"
+        },
+        "slug": "size-default",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 373.64,
+          "height": 74.25
+        },
+        "element": "div[data-slot=\"item\"]",
+        "delta": {}
+      },
+      {
+        "combination": {
+          "size": "xs"
+        },
+        "slug": "size-xs",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 318.42,
+          "height": 55.25
+        },
+        "element": "div[data-slot=\"item\"]",
+        "rejectedArgs": [
+          {
+            "name": "size",
+            "value": "xs",
+            "reasons": [
+              "not-in-options"
+            ],
+            "options": [
+              "default",
+              "sm"
+            ]
+          }
+        ],
+        "appliedVia": "preview",
+        "delta": {
+          "gap": {
+            "row": 8,
+            "column": 8
+          },
+          "width": 318.42,
+          "height": 55.25,
+          "padding": {
+            "top": 8,
+            "right": 10,
+            "bottom": 8,
+            "left": 10
+          }
+        },
+        "treeDelta": {
+          "set": {
+            "": {
+              "L": {
+                "ai": "center",
+                "d": "flex",
+                "gap": [
+                  8,
+                  8
+                ],
+                "pad": [
+                  8,
+                  10,
+                  8,
+                  10
+                ],
+                "wrap": 1
+              },
+              "box": [
+                0,
+                0,
+                318.43,
+                55.25
+              ]
+            },
+            "item-content": {
+              "L": {
+                "d": "flex",
+                "dir": "column"
+              },
+              "box": [
+                11,
+                9,
+                223.3,
+                37.25
+              ]
+            },
+            "item-content/item-description": {
+              "box": [
+                0,
+                19.25,
+                223.3,
+                18
+              ]
+            },
+            "item-content/item-description/#text": {
+              "box": [
+                0,
+                -0.5,
+                223.3,
+                18
+              ],
+              "tx": {
+                "c": "A simple item with title and description.",
+                "cl": 2,
+                "col": "#737373",
+                "f": "Inter",
+                "fs": "system-ui",
+                "ink": [
+                  0,
+                  1.5,
+                  223.3,
+                  15
+                ],
+                "lh": 18,
+                "n": 1,
+                "sz": 12,
+                "wt": 400
+              }
+            },
+            "button": {
+              "box": [
+                242.3,
+                11.63,
+                65.13,
+                32
+              ]
+            }
+          }
+        }
+      },
+      {
+        "combination": {
+          "size": "sm"
+        },
+        "slug": "size-sm",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 361.64,
+          "height": 66.25
+        },
+        "element": "div[data-slot=\"item\"]",
+        "delta": {
+          "gap": {
+            "row": 10,
+            "column": 10
+          },
+          "width": 361.64,
+          "height": 66.25,
+          "padding": {
+            "top": 10,
+            "right": 12,
+            "bottom": 10,
+            "left": 12
+          }
+        },
+        "treeDelta": {
+          "set": {
+            "": {
+              "L": {
+                "ai": "center",
+                "d": "flex",
+                "gap": [
+                  10,
+                  10
+                ],
+                "pad": [
+                  10,
+                  12,
+                  10,
+                  12
+                ],
+                "wrap": 1
+              },
+              "box": [
+                0,
+                0,
+                361.65,
+                66.25
+              ]
+            },
+            "item-content": {
+              "box": [
+                13,
+                11,
+                260.52,
+                44.25
+              ]
+            },
+            "button": {
+              "box": [
+                283.52,
+                17.13,
+                65.13,
+                32
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "warnings": [
+      "Storybook wouldn't take some of ui/base/Item's values from the story URL, and would have rendered that variant without them, as its default: `size` xs: the story's argTypes options for it are 'default', 'sm'. snap set them through Storybook's preview instead and measured what the component renders with them, so the measurements are right. To let the story take them as well, add 'xs' to argTypes.size.options in ./registry/ui/item-story/item-base.stories.tsx."
+    ],
+    "error": null,
+    "argTypes": {
+      "render": {
+        "type": "other",
+        "control": "object"
+      },
+      "size": {
+        "type": "enum",
+        "control": "select",
+        "options": [
+          "default",
+          "sm"
+        ],
+        "initial": "default"
+      },
+      "variant": {
+        "type": "enum",
+        "control": "select",
+        "options": [
+          "default",
+          "outline",
+          "muted"
+        ],
+        "initial": "default"
+      }
+    },
+    "storyFile": "./registry/ui/item-story/item-base.stories.tsx",
+    "capture": "tree",
+    "tree": {
+      "version": 1,
+      "base": [
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "gap": [
+              14,
+              14
+            ],
+            "pad": [
+              14,
+              16,
+              14,
+              16
+            ],
+            "wrap": 1
+          },
+          "box": [
+            0,
+            0,
+            373.65,
+            74.25
+          ],
+          "cls": [
+            "bg-muted",
+            "border-border",
+            "border-ring",
+            "outline-none",
+            "ring-ring",
+            "rounded-md"
+          ],
+          "el": "div[data-slot=item]",
+          "k": "",
+          "t": "F"
+        },
+        {
+          "L": {
+            "d": "flex",
+            "dir": "column",
+            "gap": [
+              4,
+              4
+            ]
+          },
+          "S": {
+            "basis": "0%",
+            "grow": 1
+          },
+          "box": [
+            17,
+            15,
+            260.52,
+            44.25
+          ],
+          "el": "div[data-slot=item-content]",
+          "k": "item-content",
+          "t": "F"
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "gap": [
+              8,
+              8
+            ]
+          },
+          "box": [
+            0,
+            0,
+            69.27,
+            19.25
+          ],
+          "clip": 1,
+          "el": "div[data-slot=item-title]",
+          "k": "item-content/item-title",
+          "t": "F"
+        },
+        {
+          "box": [
+            0,
+            -0.12,
+            69.27,
+            19.25
+          ],
+          "el": "#text",
+          "k": "item-content/item-title/#text",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "Basic Item",
+            "cl": 1,
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1.12,
+              69.27,
+              17
+            ],
+            "lh": 19.25,
+            "n": 1,
+            "sz": 14,
+            "wt": 500
+          }
+        },
+        {
+          "L": {
+            "d": "flow-root"
+          },
+          "box": [
+            0,
+            23.25,
+            260.52,
+            21
+          ],
+          "clip": 1,
+          "cls": [
+            "text-muted-foreground",
+            "text-primary",
+            "text-xs"
+          ],
+          "el": "p[data-slot=item-description]",
+          "k": "item-content/item-description",
+          "t": "F"
+        },
+        {
+          "box": [
+            0,
+            0,
+            260.52,
+            21
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "#text",
+          "k": "item-content/item-description/#text",
+          "t": "T",
+          "tx": {
+            "c": "A simple item with title and description.",
+            "cl": 2,
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              2,
+              260.52,
+              17
+            ],
+            "lh": 21,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "gap": [
+              4,
+              4
+            ],
+            "jc": "center",
+            "pad": [
+              0,
+              10,
+              0,
+              10
+            ]
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "bg": "#ffffff",
+          "bgc": "padding-box",
+          "box": [
+            291.52,
+            21.13,
+            65.13,
+            32
+          ],
+          "cls": [
+            "bg-background",
+            "bg-clip-padding",
+            "bg-input",
+            "bg-muted",
+            "border-border",
+            "border-destructive",
+            "border-ring",
+            "dark:bg-input/30",
+            "dark:border-input",
+            "outline-none",
+            "ring-destructive",
+            "ring-ring",
+            "rounded-md",
+            "shadow-xs",
+            "text-foreground"
+          ],
+          "el": "button[data-slot=button]",
+          "k": "button",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "box": [
+            11,
+            5.5,
+            43.13,
+            20
+          ],
+          "cls": [
+            "text-foreground"
+          ],
+          "el": "#text",
+          "k": "button/#text",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "Action",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1.5,
+              43.13,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "ta": "center",
+            "ws": "nowrap",
+            "wt": 500
+          }
+        }
+      ],
+      "assets": {
+        "svg": {},
+        "img": {}
+      },
+      "darkAlpha": 1
+    },
+    "excludedProps": [
+      {
+        "name": "variant",
+        "reason": "no-op",
+        "markup": "same"
+      }
+    ],
+    "fontStandIns": [
+      [
+        "system-ui",
+        "Inter"
+      ]
+    ]
+  }
+}

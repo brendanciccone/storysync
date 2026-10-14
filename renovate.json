@@ -6,5 +6,12 @@
   "vulnerabilityAlerts": {
     "minimumReleaseAge": "0 days",
     "labels": ["security"]
-  }
+  },
+  "packageRules": [
+    {
+      "description": "Inter stays at 5.0.18, Inter 3.19, the Inter Figma sets text in: 5.0.20 and later ship Inter 4, which sets text up to 1% wider or narrower. See cli/fonts.ts.",
+      "matchPackageNames": ["@fontsource-variable/inter"],
+      "enabled": false
+    }
+  ]
 }

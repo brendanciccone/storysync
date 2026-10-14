@@ -6,12 +6,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { VERSION } from "../version.js";
 
 const ACTION = fileURLToPath(new URL("../../../action/action.yml", import.meta.url));
+
+// The action prints its baseline commands with the storysync it builds,
+// package.json's version, which run() passes as the step does.
+// Regex-escape a literal, backslashes included.
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const AT_VERSION = escapeRe(`storysync@${VERSION}`);
 
 // The heredoc of the step with this name. The run: block is indented eight
 // spaces in the file, which YAML strips.
@@ -44,7 +51,7 @@ function run(step: string, report: string, files: Record<string, string>, env: R
       cwd: dir,
       input: script(step),
       encoding: "utf8",
-      env: { ...process.env, GITHUB_OUTPUT: outputFile, WORKING_DIRECTORY: ".", STORYSYNC_VERSION: "0.3.0", ...env },
+      env: { ...process.env, GITHUB_OUTPUT: outputFile, WORKING_DIRECTORY: ".", STORYSYNC_VERSION: VERSION, ...env },
     });
     const outputs: Record<string, string> = {};
     for (const m of readFileSync(outputFile, "utf8").matchAll(/^(\w+)<<STORYSYNC_EOF\n([\s\S]*?)\nSTORYSYNC_EOF$/gm)) outputs[m[1]] = m[2];
@@ -96,11 +103,11 @@ function detectDrift(baseline: string, current: Component[]): Run {
   });
 }
 
-const formsButton = component("Forms/Button", 3);
-const frozen = component("Forms/Frozen", 1);
-const navButton = component("Nav/Button", 1);
+const formsButton = withId(component("Forms/Button", 3));
+const frozen = withId(component("Forms/Frozen", 1));
+const navButton = withId(component("Nav/Button", 1));
 
-test("action Detect drift: two components named Button are told apart by their titles", () => {
+test("action Detect drift: two components named Button are told apart", () => {
   // Keyed on the name, the last Button stood for both: an unchanged library
   // was drift on every run, which no new baseline could fix.
   const both = mapJson([formsButton, frozen, navButton]);
@@ -108,6 +115,7 @@ test("action Detect drift: two components named Button are told apart by their t
   assert.equal(unchanged.status, 0, unchanged.stderr);
   assert.equal(unchanged.outputs.result, "false", unchanged.stdout);
   assert.match(unchanged.stdout, /No drift detected/);
+  assert.doesNotMatch(unchanged.stdout, /::warning::/);
 
   // Storybook can list them in another order.
   const reordered = detectDrift(both, [navButton, frozen, formsButton]);
@@ -125,19 +133,28 @@ test("action Detect drift: two components named Button are told apart by their t
   assert.equal(added.outputs.result, "true", added.stdout);
   assert.match(added.report ?? "", /### Added\n- \*\*Nav\/Button\*\* \(2 combinations\)\n/);
   assert.doesNotMatch(added.report ?? "", /### Changed|### Removed/);
+
+  // A component with no variant properties is one combination, as map says.
+  const single = detectDrift(mapJson([formsButton]), [formsButton, withId(component("Forms/Frozen", 0))]);
+  assert.match(single.report ?? "", /### Added\n- \*\*Forms\/Frozen\*\* \(1 combination\)\n/);
 });
 
-test("action Detect drift: a changed component is reported under its title, and one with no title under its name", () => {
-  const changed = detectDrift(mapJson([formsButton, navButton]), [formsButton, component("Nav/Button", 2)]);
+test("action Detect drift: a changed component is reported under its title, one with no title under its ID, and one from an old baseline under its name", () => {
+  const changed = detectDrift(mapJson([formsButton, navButton]), [formsButton, withId(component("Nav/Button", 2))]);
   assert.equal(changed.outputs.result, "true", changed.stdout);
   assert.match(changed.report ?? "", /### Changed\n- \*\*Nav\/Button\*\*: 1 → 2 props, 2 → 4 combinations\n\n/);
 
   const { title: _title, category: _category, ...untitled } = component("Button", 1);
   const grown = { ...untitled, variantProperties: component("Button", 2).variantProperties, combinations: 4 };
-  const r = detectDrift(mapJson([untitled]), [grown]);
+  const r = detectDrift(mapJson([withId(untitled, "button")]), [withId(grown, "button")]);
   assert.equal(r.outputs.result, "true", r.stdout);
-  assert.match(r.report ?? "", /### Changed\n- \*\*Button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
+  assert.match(r.report ?? "", /### Changed\n- \*\*button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
   assert.doesNotMatch(r.report ?? "", /### Added|### Removed/);
+
+  // A baseline from before IDs: its untitled component matched by name.
+  const old = detectDrift(mapJson([untitled]), [grown]);
+  assert.match(old.report ?? "", /### Changed\n- \*\*Button\*\*: 1 → 2 props, 2 → 4 combinations\n/);
+  assert.doesNotMatch(old.report ?? "", /### Added|### Removed/);
 });
 
 test("action Detect drift: a baseline that is not map --json output fails with the command to recreate it", () => {
@@ -161,7 +178,7 @@ test("action Detect drift: a baseline that is not map --json output fails with t
     assert.equal(errors.length, 1, `${baseline}: ${r.stdout}`);
     assert.match(errors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) is not map --json output/);
     assert.ok(
-      errors[0].includes("Recreate it by running this in the repository root with Storybook running, then commit it: mkdir -p -- .storysync && npx storysync@0.3.0 map --storybook http://localhost:6006 --json > .storysync/baseline.json"),
+      errors[0].includes(`Recreate it by running this in the repository root with Storybook running, then commit it: mkdir -p -- .storysync && npx storysync@${VERSION} map --storybook http://localhost:6006 --json > .storysync/baseline.json`),
       errors[0],
     );
     assert.equal(r.outputs.result, undefined, baseline);
@@ -172,24 +189,217 @@ test("action Detect drift: a baseline that is not map --json output fails with t
   assert.match(r.stdout, /is not map --json output \(it holds an error: Failed to connect to Storybook MCP at http:\/\/localhost:6006: fetch failed\)\. Recreate/);
 });
 
-test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
-  const { title: _t1, category: _c1, ...button } = component("Button", 1);
-  const { title: _t2, category: _c2, ...otherButton } = component("Button", 2);
+/** `c` as map --json writes it now: with its Storybook ID, from the title as Storybook makes one. */
+function withId(c: Component, id = (c.title ?? c.name).toLowerCase().replace(/[^a-z0-9]+/g, "-")): Component & { id: string } {
+  return { id, ...c };
+}
 
-  // A baseline written without titles, holding two Buttons.
-  const old = detectDrift(mapJson([button, otherButton]), [formsButton, navButton]);
+test("action Detect drift: two components of one name and no title are told apart by their IDs", () => {
+  // A shadcn registry's Sonner stories document Toaster, under both
+  // ui/base/Sonner and ui/radix/Sonner. Keyed by title, then name, both were
+  // "Toaster": the check failed on every baseline map --json wrote, and its
+  // advice, to write the baseline again, wrote the same one.
+  const { title: _t1, category: _c1, ...toaster } = component("Toaster", 1);
+  const base = withId(toaster, "ui-base-sonner");
+  const radix = withId(toaster, "ui-radix-sonner");
+  const both = mapJson([base, radix]);
+  const unchanged = detectDrift(both, [base, radix]);
+  assert.equal(unchanged.status, 0, unchanged.stdout + unchanged.stderr);
+  assert.equal(unchanged.outputs.result, "false", unchanged.stdout);
+  assert.doesNotMatch(unchanged.stdout, /::warning::|::error::/);
+
+  const grown = { ...radix, variantProperties: component("x", 2).variantProperties, combinations: 4 };
+  const changed = detectDrift(both, [base, grown]);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed\n- \*\*ui-radix-sonner\*\*: 1 → 2 props, 2 → 4 combinations\n\n/);
+  assert.doesNotMatch(changed.report ?? "", /### Added|### Removed|ui-base-sonner/);
+});
+
+test("action Detect drift: a baseline from before IDs is matched by title, with a warning to recreate it", () => {
+  // storysync 0.3.0 wrote no IDs, and titles rebuilt from them: "UI Base/
+  // Button" for Storybook's ui/base/Button. Matched by title as written,
+  // every component was removed and added again.
+  const old = [component("UI Base/Button", 2), component("UI Radix/Button", 1), component("Forms/Frozen", 1)];
+  const now = [
+    withId(component("ui/base/Button", 2)),
+    withId(component("ui/radix/Button", 1)),
+    withId(component("Forms/Frozen", 1)),
+  ];
+  const r = detectDrift(mapJson(old), now);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(r.outputs.result, "false", r.stdout);
+  const warnings = r.stdout.split("\n").filter((line) => line.startsWith("::warning::"));
+  assert.equal(warnings.length, 1, r.stdout);
+  assert.match(warnings[0], /^::warning::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) was written before map --json recorded each component's Storybook ID, so its components were matched by title\. Recreate it by running this in the repository root/);
+
+  // A real change still shows, under the new title.
+  const changed = detectDrift(mapJson(old), [withId(component("ui/base/Button", 3)), now[1], now[2]]);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed\n- \*\*ui\/base\/Button\*\*: 2 → 3 props, 4 → 8 combinations\n\n/);
+  assert.doesNotMatch(changed.report ?? "", /### Added|### Removed/);
+
+  // The untitled components of one name such a baseline holds can't be
+  // matched: they are reported as removed and added, never paired by guess.
+  // map --json now gives them Storybook's titles, but the name is still
+  // Toaster, the story's component, on both.
+  const { title: _t, category: _c, ...toaster } = component("Toaster", 1);
+  const sonners = ["ui/base/Sonner", "ui/radix/Sonner"].map((title) => ({ ...withId(component(title, 1)), name: "Toaster" }));
+  const untitled = detectDrift(mapJson([toaster, toaster]), sonners);
+  assert.equal(untitled.status, 0, untitled.stdout + untitled.stderr);
+  assert.equal(untitled.outputs.result, "true", untitled.stdout);
+  assert.equal(untitled.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **ui/base/Sonner** (2 combinations)\n- **ui/radix/Sonner** (2 combinations)\n");
+  assert.equal(untitled.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Toaster**\n- **Toaster**\n");
+  assert.doesNotMatch(untitled.report ?? "", /### Changed/);
+  assert.match(untitled.stdout, /::warning::The baseline at .* was written before map --json recorded/);
+
+  // Nor is one untitled Toaster paired with either of two.
+  const one = detectDrift(mapJson([toaster]), sonners);
+  assert.equal(one.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **ui/base/Sonner** (2 combinations)\n- **ui/radix/Sonner** (2 combinations)\n");
+  assert.equal(one.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Toaster**\n");
+  assert.doesNotMatch(one.report ?? "", /### Changed/);
+
+  // Nor either of two with the one left.
+  const left = detectDrift(mapJson([toaster, toaster]), sonners.slice(0, 1));
+  assert.equal(left.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **ui/base/Sonner** (2 combinations)\n");
+  assert.equal(left.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Toaster**\n- **Toaster**\n");
+
+  // But the one untitled Toaster is the one Toaster now.
+  const single = detectDrift(mapJson([toaster]), sonners.slice(0, 1));
+  assert.equal(single.outputs.result, "false", single.stdout);
+
+  // A component 0.3.0 would have titled, its ID ending in its name, is not
+  // the untitled one of its name: that one's gone, and Forms/Button is new.
+  const { title: _t2, category: _c2, ...loose } = component("Button", 1);
+  const misattributed = detectDrift(mapJson([loose, component("Nav/Button", 1)]), [withId(component("Forms/Button", 3)), navButton]);
+  assert.equal(misattributed.report?.match(/^### Added\n((?:- .*\n)*)/m)?.[1], "- **Forms/Button** (8 combinations)\n");
+  assert.equal(misattributed.report?.match(/^### Removed\n((?:- .*\n)*)/m)?.[1], "- **Button**\n");
+  assert.doesNotMatch(misattributed.report ?? "", /### Changed/);
+});
+
+test("action Detect drift: with IDs on both sides, a title is compared as its letters and digits", () => {
+  const button = withId(component("ui/base/Button", 1));
+  // Storybook's index unread, so the title was rebuilt: the same component.
+  const rebuilt = detectDrift(mapJson([button]), [{ ...button, title: "UI Base/Button", category: "UI Base" }]);
+  assert.equal(rebuilt.outputs.result, "false", rebuilt.stdout);
+
+  // Moved to another folder under the same ID: a change, said as one.
+  const moved = detectDrift(mapJson([button]), [{ ...button, title: "ui/legacy/Button", category: "ui/legacy" }]);
+  assert.equal(moved.outputs.result, "true", moved.stdout);
+  assert.match(moved.report ?? "", /### Changed\n- \*\*ui\/legacy\/Button\*\*: 1 → 1 props, 2 → 2 combinations, was ui\/base\/Button\n/);
+
+  // A new ID is another component, whatever its name: not paired by guess.
+  const renamed = detectDrift(mapJson([button]), [withId(component("ui/core/Button", 1))]);
+  assert.match(renamed.report ?? "", /### Added\n- \*\*ui\/core\/Button\*\* \(2 combinations\)\n\n### Removed\n- \*\*ui\/base\/Button\*\*\n/);
+  assert.doesNotMatch(renamed.report ?? "", /### Changed/);
+});
+
+test("action Detect drift: a change the counts don't show says what it was", () => {
+  // A 0.3.0 baseline lists values as the type declares them, where map now
+  // puts the default first: "1 → 1 props, 3 → 3 combinations" said nothing.
+  const size = (values: string[], defaultValue: string, extra: object = {}) =>
+    withId({ ...component("ui/Button", 0), variantProperties: [{ name: "size", type: "VARIANT", values, defaultValue, ...extra }], combinations: values.length });
+  const reordered = detectDrift(mapJson([size(["sm", "md", "lg"], "md")]), [size(["md", "sm", "lg"], "md")]);
+  assert.equal(reordered.outputs.result, "true", reordered.stdout);
+  assert.match(reordered.report ?? "", /### Changed\n- \*\*ui\/Button\*\*: 1 → 1 props, 3 → 3 combinations \(size's values reordered\)\n\n/);
+
+  const defaulted = detectDrift(mapJson([size(["md", "sm", "lg"], "md")]), [size(["sm", "md", "lg"], "sm", { defaultAssumed: true })]);
+  assert.match(defaulted.report ?? "", /3 → 3 combinations \(size's values reordered; size's default md → sm; size's default is now assumed, since the docs give none\)\n/);
+
+  const swapped = detectDrift(mapJson([size(["sm", "md"], "sm")]), [size(["sm", "xl"], "sm")]);
+  assert.match(swapped.report ?? "", /2 → 2 combinations \(size adds xl; size drops md\)\n/);
+
+  // Where the counts differ they say it, as before.
+  const grown = detectDrift(mapJson([size(["sm", "md"], "sm")]), [size(["sm", "md", "lg"], "sm")]);
+  assert.match(grown.report ?? "", /: 1 → 1 props, 2 → 3 combinations\n/);
+});
+
+test("action Detect drift: a prop map leaves out is a change to its properties, said with why, and its record alone is none", () => {
+  // The snap the push was measured into left out p2 (behavior only).
+  const before = withId(component("ui/Drawer", 3));
+  const after = { ...withId(component("ui/Drawer", 2)), excludedProps: [{ name: "p2", reason: "no-op" }] };
+  const r = detectDrift(mapJson([before]), [after]);
+  assert.equal(r.outputs.result, "true", r.stdout);
+  assert.match(r.report ?? "", /### Changed\n- \*\*ui\/Drawer\*\*: 3 → 2 props, 8 → 4 combinations \(p2 left out \(every value measured the same\)\)\n/);
+  // A baseline written with the same exclusions, or before they were recorded, is no drift.
+  assert.equal(detectDrift(mapJson([after]), [after]).outputs.result, "false");
+  assert.equal(detectDrift(mapJson([withId(component("ui/Drawer", 2))]), [after]).outputs.result, "false");
+});
+
+test("action Detect drift: says once when map couldn't see the stories' argTypes, and where to point it", () => {
+  const current = JSON.stringify({ ...JSON.parse(mapJson([formsButton])), props: { snap: null, argTypesUnseen: ["forms-button"] } });
+  const r = run("Detect drift", "storysync-drift.md", { ".storysync/baseline.json": mapJson([formsButton]), "storysync-current.json": current }, {
+    BASELINE_PATH: ".storysync/baseline.json", STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", SNAP_DIR: ".storysync/snaps",
+  });
+  assert.equal(r.outputs.result, "false", r.stdout);
+  assert.match(r.stdout, /::notice::storysync map couldn't see the argTypes of 1 component \(forms-button\): there is no snap at \.storysync\/snaps\/styles\.json\. Commit the snap the push was measured into, or point snap_dir at it\./);
+});
+
+test("action Detect drift: two components with one key, on either side, fail rather than one hiding the other", () => {
+  // A baseline with IDs that repeats one, as only a hand edit could.
+  const button = withId(component("Forms/Button", 1));
+  const old = detectDrift(mapJson([button, { ...button, title: "Nav/Button" }]), [button]);
   assert.equal(old.status, 1, old.stdout + old.stderr);
   const oldErrors = old.stdout.split("\n").filter((line) => line.startsWith("::error::"));
   assert.equal(oldErrors.length, 1, old.stdout);
-  assert.match(oldErrors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) has more than one component keyed "Button", so they can't be told apart\. Recreate it by /);
+  assert.match(oldErrors[0], /^::error::The baseline at \.storysync\/baseline\.json \(relative to the repository root\) has more than one component keyed "forms-button", so they can't be told apart\. Recreate it by /);
   assert.equal(old.outputs.result, undefined);
 
-  // Current map output with two untitled Buttons.
-  const cur = detectDrift(mapJson([button]), [button, otherButton]);
+  // Current map output with two untitled Buttons and no IDs, as no map
+  // --json writes any more.
+  const { title: _t1, category: _c1, ...untitled } = component("Button", 1);
+  const cur = detectDrift(mapJson([untitled]), [untitled, untitled]);
   assert.equal(cur.status, 1, cur.stdout + cur.stderr);
-  assert.match(cur.stdout, /::error::storysync map returned more than one component keyed "Button" with no Storybook title to tell them apart/);
+  assert.match(cur.stdout, /::error::storysync map returned more than one component keyed "Button", so their drift can't be checked\./);
   assert.equal(cur.outputs.result, undefined);
   assert.equal(cur.report, null);
+});
+
+/** The run: block of a step that runs a shell script, as its runner gets it. */
+function shellStep(step: string): string {
+  const yml = readFileSync(ACTION, "utf8");
+  const at = yml.indexOf(`    - name: ${step}\n`);
+  assert.notEqual(at, -1, `action.yml has no step named ${step}`);
+  const open = "      run: |\n";
+  const lines = yml.slice(yml.indexOf(open, at) + open.length).split("\n");
+  const end = lines.findIndex((line) => line.trim() && !line.startsWith("        "));
+  return lines.slice(0, end).map((line) => line.replace(/^ {8}/, "")).join("\n");
+}
+
+test("action Create or update issue: files only the reports this run's drift steps wrote", () => {
+  // With the issue step run after a failed step, Detect drift can have been
+  // skipped, after Map components failed, and a report an earlier run of the
+  // action in this job left would be filed as this run's.
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    mkdirSync(join(dir, "bin"));
+    writeFileSync(join(dir, "bin", "gh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(join(dir, "storysync-token-drift.md"), "## Token drift\n");
+    writeFileSync(join(dir, "storysync-drift.md"), "## Stale component drift\n");
+    const file = (componentDrift: string) => {
+      const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", shellStep("Create or update issue")], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}`, TOKEN_DRIFT: "true", COMPONENT_DRIFT: componentDrift },
+      });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      return readFileSync(join(dir, "storysync-combined-drift.md"), "utf8");
+    };
+    assert.equal(file(""), "## Token drift\n\n");
+    assert.equal(file("true"), "## Token drift\n## Stale component drift\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("action: an issue is still filed for drift found before a step that failed", () => {
+  // Detect drift fails on a baseline that isn't map --json output. Without a
+  // status function, the issue step was skipped with it, and the token drift
+  // found before never reached an issue.
+  const yml = readFileSync(ACTION, "utf8");
+  const step = yml.slice(yml.indexOf("    - name: Create or update issue\n"));
+  const condition = step.match(/^ {6}if: (.+)$/m)?.[1] ?? "";
+  assert.match(condition, /!cancelled\(\)|always\(\)/, condition);
+  assert.match(condition, /steps\.token-drift\.outputs\.result == 'true'/);
 });
 
 // --- Detect token drift ---
@@ -256,7 +466,7 @@ test("action Detect token drift: a token baseline that is not tokens --json outp
     assert.equal(errors.length, 1, `${baseline}: ${r.stdout}`);
     assert.match(errors[0], /^::error::The token baseline at \.storysync\/tokens-baseline\.json \(relative to the repository root\) is not tokens --json output/);
     assert.ok(
-      errors[0].includes("Recreate it by running this in the repository root, then commit it: mkdir -p -- .storysync && npx storysync@0.3.0 tokens --json > .storysync/tokens-baseline.json"),
+      errors[0].includes(`Recreate it by running this in the repository root, then commit it: mkdir -p -- .storysync && npx storysync@${VERSION} tokens --json > .storysync/tokens-baseline.json`),
       errors[0],
     );
     assert.equal(r.outputs.result, undefined, baseline);
@@ -265,6 +475,72 @@ test("action Detect token drift: a token baseline that is not tokens --json outp
 
   const r = detectTokenDrift(notBaselines[0], [colors]);
   assert.match(r.stdout, /is not tokens --json output \(it holds an error: Could not read src\/theme\.ts\)\. Recreate/);
+});
+
+test("action Detect token drift: tokens' warnings are logged, and listed in the report, when tokens were found too", () => {
+  // They reached the report only when no tokens were found, so an
+  // uncategorized radius or an unresolved var() was never seen in CI.
+  const warned = (collections: Collection[]) => JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections, warnings: ["Unresolved: typography font/sans = var(--font-sans) (--font-sans is set only in terms of itself)"] });
+  const baseline = tokensJson([colors]);
+  const files = (current: Collection[]) => ({ ".storysync/tokens-baseline.json": baseline, "storysync-tokens-current.json": warned(current) });
+  const env = { TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json", TOKEN_SOURCE: "auto" };
+
+  const clean = run("Detect token drift", "storysync-token-drift.md", files([colors]), env);
+  assert.equal(clean.outputs.result, "false", clean.stdout);
+  assert.match(clean.stdout, /^storysync tokens: Unresolved: typography font\/sans = var\(--font-sans\)/m);
+
+  const drifted = run("Detect token drift", "storysync-token-drift.md", files([colors, fontSizes]), env);
+  assert.equal(drifted.outputs.result, "true", drifted.stdout);
+  assert.match(drifted.report ?? "", /### Warnings\n- Unresolved: typography font\/sans = var\(--font-sans\) \(--font-sans is set only in terms of itself\)\n/);
+});
+
+test("action Detect token drift: drift that only adds tokens says a newer storysync may read more", () => {
+  // A 0.3.0 baseline of shadcn/ui v4 lists no radius, which this storysync
+  // reads; only the CLI said why, so the Action's fail_on_drift went red
+  // with "If they're intended".
+  const baseline = tokensJson([colors]);
+  const upgraded = detectTokenDrift(baseline, [colors, fontSizes]);
+  assert.equal(upgraded.outputs.result, "true", upgraded.stdout);
+  assert.match(upgraded.outputs.error ?? "", /Detect token drift lists the changes\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in /);
+  assert.match(upgraded.report ?? "", new RegExp(String.raw`\nEvery change is an added token\. If the tokens are new, or this storysync reads tokens the one that wrote the baseline didn't, update the baseline by running this in .*` + AT_VERSION));
+
+  // Added to a collection the baseline has counts too.
+  const grown = detectTokenDrift(tokensJson([colors, { category: "typography", tokens: [fontSizes.tokens[0]] }]), [colors, fontSizes]);
+  assert.match(grown.outputs.error ?? "", /If the tokens are new, or this storysync reads/);
+
+  // A changed or removed token is no upgrade.
+  for (const current of [[colors, { category: "typography", tokens: [{ name: "sm", value: "99px" }, fontSizes.tokens[1]] }], []]) {
+    const r = detectTokenDrift(tokensJson([colors, fontSizes]), current);
+    assert.equal(r.outputs.result, "true", r.stdout);
+    assert.match(r.outputs.error ?? "", /Detect token drift lists the changes\. If they're intended, update the baseline by/);
+    assert.doesNotMatch(r.report ?? "", /Every change is an added token/);
+  }
+});
+
+test("action Detect token drift: a warning is one line in the log, and the report lists twenty", () => {
+  // A multi-line CSS value put raw newlines in the log, where a line
+  // starting :: is a workflow command, and an issue body holds 65,536
+  // characters.
+  const warnings = [
+    "Resolved CSS variable references from app/globals.css",
+    "Uncategorized: --ease-out: cubic-bezier(\n::warning::0.2, 0, 0, 1\n  )",
+    ...Array.from({ length: 24 }, (_, i) => `Uncategorized: --z-${i}: ${i}`),
+  ];
+  const current = JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections: [colors, fontSizes], warnings });
+  const r = run("Detect token drift", "storysync-token-drift.md", { ".storysync/tokens-baseline.json": tokensJson([colors]), "storysync-tokens-current.json": current }, {
+    TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json",
+    TOKEN_SOURCE: "auto",
+  });
+  assert.equal(r.outputs.result, "true", r.stdout);
+  assert.match(r.stdout, /^storysync tokens: Uncategorized: --ease-out: cubic-bezier\( ::warning::0\.2, 0, 0, 1 \)$/m);
+  assert.doesNotMatch(r.stdout, /^::warning::0\.2/m);
+  assert.match(r.stdout, /^storysync tokens: Resolved CSS variable references from app\/globals\.css$/m);
+  assert.match(r.stdout, /^storysync tokens: Uncategorized: --z-23: 23$/m);
+
+  const listed = (r.report ?? "").split("### Warnings\n")[1] ?? "";
+  assert.doesNotMatch(listed, /Resolved CSS variable references/);
+  assert.equal(listed.split("\n").filter((line) => line.startsWith("- Uncategorized: ")).length, 20);
+  assert.match(listed, /^- and 5 more, in the Detect token drift log$/m);
 });
 
 // --- Both ---
@@ -280,16 +556,160 @@ test("action: the command a missing baseline prints makes a directory whose name
     const r = run(step, report, files, env);
     assert.equal(r.outputs.result, "new", r.stdout);
     const command = r.stdout.match(/then commit it: (.+?) \(the action's/)?.[1];
-    assert.match(command ?? "", /^mkdir -p -- -x && npx storysync@0\.3\.0 /, r.stdout);
+    assert.match(command ?? "", new RegExp(`^mkdir -p -- -x && npx ${AT_VERSION} `), r.stdout);
 
     // Run as printed, with an npx that echoes what it was asked to run.
     const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
     try {
       const created = spawnSync("sh", ["-c", `npx() { echo "$*"; }; ${command}`], { cwd: dir, encoding: "utf8" });
       assert.equal(created.status, 0, created.stderr);
-      assert.match(readFileSync(join(dir, path), "utf8"), /^storysync@0\.3\.0 (map|tokens) .*--json\n$/);
+      assert.match(readFileSync(join(dir, path), "utf8"), new RegExp(`^${AT_VERSION} (map|tokens) .*--json\n$`));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+});
+
+// --- Dark values in Detect token drift ---
+
+test("action Detect token drift: a changed dark value is drift against a baseline that has modes, and an earlier one's says it went unchecked", () => {
+  // Compared on value alone, a dark theme that changed passed CI.
+  const dark = (bg: string) => ({ category: "colors", tokens: [{ name: "background", value: "#ffffff", dark: { value: bg } }, { name: "muted", value: "#f5f5f5" }] });
+  const withModes = (collections: unknown[]) => JSON.stringify({ source: "css", sourcePath: "app/globals.css", modes: ["Light", "Dark"], collections, warnings: [] });
+  const files = (baseline: string, current: unknown[]) => ({ ".storysync/tokens-baseline.json": baseline, "storysync-tokens-current.json": withModes(current) });
+  const env = { TOKEN_BASELINE_PATH: ".storysync/tokens-baseline.json", TOKEN_SOURCE: "auto" };
+
+  const same = run("Detect token drift", "storysync-token-drift.md", files(withModes([dark("#0a0a0a")]), [dark("#0a0a0a")]), env);
+  assert.equal(same.outputs.result, "false", same.stdout);
+
+  const changed = run("Detect token drift", "storysync-token-drift.md", files(withModes([dark("#0a0a0a")]), [dark("#000000")]), env);
+  assert.equal(changed.outputs.result, "true", changed.stdout);
+  assert.match(changed.report ?? "", /### Changed collections\n- \*\*colors\*\*: 0 added, 0 changed, 1 changed in the dark theme\n/);
+  assert.match(changed.outputs.error ?? "", /If they're intended/);
+
+  // Written by a storysync that didn't read the dark theme: no modes, no dark values.
+  const old = JSON.stringify({ source: "css", sourcePath: "app/globals.css", collections: [{ category: "colors", tokens: [{ name: "background", value: "#ffffff" }, { name: "muted", value: "#f5f5f5" }] }], warnings: [] });
+  const unchecked = run("Detect token drift", "storysync-token-drift.md", files(old, [dark("#000000")]), env);
+  assert.equal(unchecked.outputs.result, "false", unchecked.stdout);
+  assert.match(unchecked.stdout, /^::notice::The token baseline at \.storysync\/tokens-baseline\.json \(relative to the repository root\) was written by a storysync that didn't read the dark theme, so the tokens' dark values weren't compared\. Recreate it by running this in the repository root/m);
+
+  // A dark value without one is no baseline.
+  const broken = run("Detect token drift", "storysync-token-drift.md", files(withModes([{ category: "colors", tokens: [{ name: "background", value: "#ffffff", dark: {} }] }]), [dark("#000000")]), env);
+  assert.equal(broken.status, 1, broken.stdout);
+  assert.match(broken.stdout, /::error::The token baseline at .* is not tokens --json output/);
+});
+
+// --- Package manager, Setup Bun and Map components ---
+
+/** Runs a shell step's script in `dir`, with GITHUB_OUTPUT set, returning its outputs. */
+function runShell(step: string, dir: string, env: Record<string, string>): Run {
+  const outputFile = join(dir, "github-output");
+  writeFileSync(outputFile, "");
+  // By its path: PATH can be one of binWith's, which has no bash.
+  const bash = spawnSync("sh", ["-c", "command -v bash"], { encoding: "utf8" }).stdout.trim();
+  const r = spawnSync(bash, ["--noprofile", "--norc", "-eo", "pipefail", "-c", shellStep(step)], {
+    cwd: dir,
+    encoding: "utf8",
+    env: { ...process.env, GITHUB_OUTPUT: outputFile, GITHUB_WORKSPACE: dir, ...env },
+  });
+  const outputs: Record<string, string> = {};
+  for (const line of readFileSync(outputFile, "utf8").split("\n")) {
+    const m = /^(\w+)=(.*)$/.exec(line);
+    if (m) outputs[m[1]] = m[2];
+  }
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, outputs, report: null };
+}
+
+/** A PATH of node and, given a script, a `bun` that runs it: no other bun. */
+function binWith(dir: string, bun?: string): string {
+  const bin = join(dir, "bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, "node"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`, { mode: 0o755 });
+  if (bun) writeFileSync(join(bin, "bun"), `#!/bin/sh\n${bun}\n`, { mode: 0o755 });
+  for (const tool of ["dirname", "cat"]) {
+    const found = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim();
+    if (found) writeFileSync(join(bin, tool), `#!/bin/sh\nexec ${found} "$@"\n`, { mode: 0o755 });
+  }
+  return bin;
+}
+
+test("action Find the package manager: a bun project on a runner without bun gets Setup Bun, at the version packageManager names", () => {
+  // It failed the job, telling the user to add setup-bun themselves.
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    writeFileSync(join(dir, "bun.lock"), "{}");
+    const find = (packageManager: string | null, bun?: string) => {
+      writeFileSync(join(dir, "package.json"), JSON.stringify(packageManager ? { packageManager } : {}));
+      rmSync(join(dir, "bin"), { recursive: true, force: true });
+      return runShell("Find the package manager", dir, { PATH: binWith(dir, bun), INSTALL_COMMAND: "" });
+    };
+    const pinned = find("bun@1.2.21+sha512.abc");
+    assert.equal(pinned.status, 0, pinned.stdout + pinned.stderr);
+    assert.deepEqual(pinned.outputs, { manager: "bun", dir: realpathSync(dir), setup_bun: "true", bun_version: "1.2.21" });
+    assert.equal(find(null).outputs.bun_version, "latest");
+    // A bun that runs is used as it is.
+    const installed = find(null, "echo 1.2.0");
+    assert.deepEqual([installed.outputs.manager, installed.outputs.setup_bun], ["bun", undefined]);
+    // A shim that answers but fails is no bun.
+    assert.equal(find(null, "exit 1").outputs.setup_bun, "true");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const yml = readFileSync(ACTION, "utf8");
+  const setup = yml.slice(yml.indexOf("    - name: Setup Bun\n"), yml.indexOf("    - name: Install project dependencies\n"));
+  assert.ok(yml.indexOf("    - name: Find the package manager\n") < yml.indexOf("    - name: Setup Bun\n"));
+  assert.match(setup, /^ {6}if: steps\.package-manager\.outputs\.setup_bun == 'true'$/m);
+  assert.match(setup, /^ {6}uses: oven-sh\/setup-bun@[0-9a-f]{40} # v\d+\.\d+\.\d+$/m);
+  assert.match(setup, /bun-version: \$\{\{ steps\.package-manager\.outputs\.bun_version \}\}/);
+});
+
+test("action Install project dependencies: installs with the package manager found, where its lockfile is", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    const project = join(dir, "packages", "ui");
+    mkdirSync(project, { recursive: true });
+    const r = runShell("Install project dependencies", project, {
+      PATH: binWith(dir, `echo "bun $* in $(pwd)" > ${JSON.stringify(join(dir, "ran"))}`),
+      INSTALL_COMMAND: "",
+      MANAGER: "bun",
+      MANAGER_DIR: dir,
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(readFileSync(join(dir, "ran"), "utf8"), `bun install --frozen-lockfile in ${dir}\n`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("action Map components: passes exclude_props and request_timeout to map, with a progress line per component, and the baseline command leaves the same props out", () => {
+  const dir = mkdtempSync(join(tmpdir(), "storysync-action-"));
+  try {
+    const cli = join(dir, "dist", "cli");
+    mkdirSync(cli, { recursive: true });
+    mkdirSync(join(dir, "action"));
+    writeFileSync(join(cli, "index.js"), `require("fs").writeFileSync(${JSON.stringify(join(dir, "args.json"))}, JSON.stringify({ args: process.argv.slice(2), progress: process.env.STORYSYNC_PROGRESS })); console.log("{}");\n`);
+    const map = (env: Record<string, string>) => {
+      const r = runShell("Map components", dir, { GITHUB_ACTION_PATH: join(dir, "action"), STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", EXCLUDE_PROPS: "", REQUEST_TIMEOUT: "", SNAP_DIR: "", ...env });
+      assert.equal(r.status, 0, r.stdout + r.stderr);
+      return JSON.parse(readFileSync(join(dir, "args.json"), "utf8")) as { args: string[] };
+    };
+    assert.deepEqual(map({}).args, ["map", "--storybook", "http://localhost:6006", "--json", "--no-snap"]);
+    assert.deepEqual(map({ EXCLUDE_PROPS: "asChild,className", REQUEST_TIMEOUT: "900000", SNAP_DIR: ".storysync/snaps" }).args,
+      ["map", "--storybook", "http://localhost:6006", "--json", "--exclude-props", "asChild,className", "--request-timeout", "900000", "--snap", ".storysync/snaps"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const yml = readFileSync(ACTION, "utf8");
+  const step = yml.slice(yml.indexOf("    - name: Map components\n"), yml.indexOf("    - name: Stop Storybook\n"));
+  assert.match(step, /^ {8}STORYSYNC_PROGRESS: "1"$/m);
+  assert.match(step, /^ {8}EXCLUDE_PROPS: \$\{\{ inputs\.exclude_props \}\}$/m);
+  assert.match(step, /^ {8}REQUEST_TIMEOUT: \$\{\{ inputs\.request_timeout \}\}$/m);
+
+  // Mapped without the props, the baseline has to be too.
+  const r = run("Detect drift", "storysync-drift.md", { "storysync-current.json": mapJson([formsButton]) }, {
+    BASELINE_PATH: ".storysync/baseline.json", STORYBOOK_URL: "http://localhost:6006", COMPONENTS: "", EXCLUDE_PROPS: "asChild,className",
+  });
+  assert.match(r.stdout, new RegExp(`then commit it: mkdir -p -- \\.storysync && npx ${AT_VERSION} map --storybook http://localhost:6006 --exclude-props asChild,className --json > \\.storysync/baseline\\.json`));
 });

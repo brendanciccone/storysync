@@ -1,0 +1,202 @@
+{
+  "fixture": {
+    "name": "avatar",
+    "sources": [
+      "design/budget/raw/avatar.raw.json (budget prototype: raw computed values per variant, normalized with storysync's own normalizers)",
+      "agents/push2/styles.json (0.4.0 snap of the same story: slugs; root styles checked equal)"
+    ],
+    "notes": [
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them.",
+      "The thumbnail's bytes are a generated stand-in: the story's photo is a person's GitHub avatar, which the registry's license does not cover. Its size, natural size, crop and the source hash in the id are the real ones."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-avatar",
+      "name": "Avatar",
+      "title": "ui/base/Avatar",
+      "category": "ui/base",
+      "storyId": "ui-base-avatar--default",
+      "variantProperties": [
+        {
+          "name": "size",
+          "type": "VARIANT",
+          "values": [
+            "default",
+            "sm",
+            "lg"
+          ],
+          "defaultValue": "default"
+        }
+      ],
+      "base": {
+        "combination": {
+          "size": "default"
+        },
+        "slug": "size-default",
+        "styles": {
+          "display": "flex",
+          "flexDirection": "row",
+          "alignItems": "normal",
+          "justifyContent": "normal",
+          "gap": null,
+          "width": 32,
+          "height": 32,
+          "backgroundColor": null,
+          "color": "#0a0a0a",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 16,
+            "topRight": 16,
+            "bottomRight": 16,
+            "bottomLeft": 16
+          },
+          "borderRadiusUniform": 16,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "fontFamily": "system-ui",
+          "fontSize": 16,
+          "fontWeight": 400,
+          "lineHeight": 24,
+          "letterSpacing": 0,
+          "boxShadow": [],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": null,
+          "text": null
+        }
+      },
+      "variants": [
+        {
+          "combination": {
+            "size": "default"
+          },
+          "slug": "size-default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 32,
+            "height": 32
+          },
+          "element": "span[data-slot=\"avatar\"]",
+          "delta": {}
+        },
+        {
+          "combination": {
+            "size": "sm"
+          },
+          "slug": "size-sm",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 24,
+            "height": 24
+          },
+          "element": "span[data-slot=\"avatar\"]",
+          "delta": {
+            "width": 24,
+            "height": 24,
+            "borderRadius": {
+              "topLeft": 12,
+              "topRight": 12,
+              "bottomRight": 12,
+              "bottomLeft": 12
+            },
+            "borderRadiusUniform": 12
+          },
+          "treeDelta": {
+            "set": {
+              "": {"box":[0,0,24,24]},
+              "avatar-image": {"box":[0,0,24,24],"r":12},
+              "::after": {"box":[0,0,24,24],"r":12}
+            }
+          }
+        },
+        {
+          "combination": {
+            "size": "lg"
+          },
+          "slug": "size-lg",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 40,
+            "height": 40
+          },
+          "element": "span[data-slot=\"avatar\"]",
+          "delta": {
+            "width": 40,
+            "height": 40,
+            "borderRadius": {
+              "topLeft": 20,
+              "topRight": 20,
+              "bottomRight": 20,
+              "bottomLeft": 20
+            },
+            "borderRadiusUniform": 20
+          },
+          "treeDelta": {
+            "set": {
+              "": {"box":[0,0,40,40]},
+              "avatar-image": {"box":[0,0,40,40],"r":20},
+              "::after": {"box":[0,0,40,40],"r":20}
+            }
+          }
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"d":"flex"},"box":[0,0,32,32],"el":"span[data-slot=avatar]","k":"","t":"F"},
+          {"box":[0,0,32,32],"clip":1,"el":"img[data-slot=avatar-image]","img":"img:513d06f54269-262b","k":"avatar-image","r":16,"t":"I"},
+          {"abs":1,"bd":{"c":"#e5e5e5","s":"solid","w":1},"bm":"darken","box":[0,0,32,32],"el":"::after","k":"::after","r":16,"t":"F"}
+        ],
+        "assets": {
+          "svg": {},
+          "img": {
+            "img:513d06f54269-262b": {
+              "file": "assets/513d06f54269-262b.jpg",
+              "mime": "image/jpeg",
+              "size": [
+                80,
+                80
+              ],
+              "natural": [
+                460,
+                460
+              ],
+              "fnv": "ef9497ae"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 3,
+    "rendered": 3,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

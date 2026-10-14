@@ -1,14 +1,39 @@
 // The only browser-bound module in storysync.
 //
-// Everything that can be tested without Chromium lives in snap-normalize.ts;
-// this file is limited to launching a browser and reading one story's rendered
-// styles out of the page.
+// Everything that can be tested without Chromium lives in snap-normalize.ts
+// and snap-args.ts; this file is limited to launching a browser, reading one
+// story's rendered styles out of the page, and seeing that Storybook gave the
+// story the args snap asked for.
 
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import type { Browser, BrowserContext, Page, ElementHandle } from "playwright-core";
-import { CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, isPassThroughWrapper } from "./snap-normalize.js";
-import type { RawComputedStyles } from "./snap-normalize.js";
+import type { Browser, BrowserContext, ConsoleMessage, Page, ElementHandle, Request, Response } from "playwright-core";
+import {
+  CAPTURED_PROPERTIES, TEXT_PROPERTIES, WRAPPER_PROPERTIES, NON_RENDERED_TAGS, OVERLAY_SELECTOR,
+  chooseMeasuredElement, componentSlots, contentSlots, describeElement, describeOpenFailure, describeOpenWay, resolveFontFamily,
+} from "./snap-normalize.js";
+import type {
+  RawComputedStyles, RawTextLayout, FontProbe, MeasurementNote, OpenAttempt, OpenInteraction, OpenableTrigger, OverlayOpened,
+  PortalNode, StoryNode,
+} from "./snap-normalize.js";
+import {
+  compactArgTypes, findRejectedArgs, openArg, previewArgUpdate, rejectionsFromWarnings, stillRejected,
+} from "./snap-args.js";
+import type { ArgRejection, StoryArgsCheck, StoryArgsSnapshot, StoryArgType } from "./snap-args.js";
+import type { FigmaVariantProperty } from "./mapper.js";
+import type { StoryOwn } from "./snap-stories.js";
+import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS, buildTree, countInnerElements } from "./snap-tree.js";
+import type { PendingImage, RawBox, RawTreeCapture, RawTreeElement, RawTreeItem, RawTreePseudo, RawTreeText } from "./snap-tree.js";
+import {
+  SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING,
+  decodeDataUrl, imageAssetId, imageCrop, pngSize, sniffImageType, thumbnailSize,
+} from "./snap-assets.js";
+import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
+import type { TreeNode } from "./tree-types.js";
+import { STAND_IN_PREFIX, standInFaces, standInStack } from "./fonts.js";
+import type { StandIn } from "./fonts.js";
+import { colorSchemeInPage, schemeOfGlobals, themeGlobalsInPage } from "./snap-scheme.js";
+import type { SchemeReading, ThemeGlobals } from "./snap-scheme.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -143,7 +168,7 @@ export async function resolveAndLaunch(opts: { headless?: boolean } = {}): Promi
       "  - install Google Chrome or Microsoft Edge\n" +
       `  - download a browser: ${browserInstallCommand()}\n` +
       "  - point storysync at an existing binary: STORYSYNC_BROWSER_PATH=/path/to/chrome\n" +
-      "\nNote: use the full `playwright` package to download browsers — storysync\n" +
+      "\nNote: use the full `playwright` package to download browsers. storysync\n" +
       "depends on playwright-core, which cannot download them itself.",
   );
 }
@@ -160,31 +185,164 @@ export async function createContext(browser: Browser): Promise<BrowserContext> {
     // Sharper PNGs for human comparison; does not affect computed styles.
     deviceScaleFactor: 2,
     reducedMotion: "reduce",
+    // A stylesheet that follows the system renders light: the scheme tokens are matched by (snap-scheme.ts).
+    colorScheme: "light",
   });
 }
 
 // --- Capture ----------------------------------------------------------------
 
-export type CaptureStatus = "ok" | "render_error" | "timeout" | "element_not_found";
+/**
+ * `arg_rejected`: Storybook didn't give the story a value its URL asked for,
+ * and snap couldn't apply it through the preview either, so what rendered
+ * is not that variant and was not measured. See snap-args.ts.
+ */
+export type CaptureStatus = "ok" | "render_error" | "timeout" | "element_not_found" | "arg_rejected";
 
 export interface CaptureResult {
   status: CaptureStatus;
   error: string | null;
+  /**
+   * Whether trying again may succeed: a timeout while the story loaded, as a
+   * busy Storybook's are. One later on, as a screenshot's of an element that
+   * never becomes visible, would only time out again.
+   */
+  retryable: boolean;
+  /**
+   * False where the story never rendered: the page didn't load (Storybook
+   * unreachable), or Storybook hadn't finished rendering the story when
+   * the wait ended. A failure of the run, not of the story, which figma
+   * code builds no placeholder for. Absent otherwise.
+   */
+  rendered?: false;
   raw: RawComputedStyles | null;
   textRaw: RawComputedStyles | null;
   boundingBox: { x: number; y: number; width: number; height: number } | null;
   screenshot: Buffer | null;
   /** What the root-element heuristic settled on, for debugging. */
   matchedSelector: string | null;
+  /** The element measured, as describeElement names it: `button[data-slot="switch"]`. */
+  element: string | null;
+  /** Why the measured element may not be the component, for snap to warn about. */
+  notes: MeasurementNote[];
   /**
-   * Whether the browser could render the element's first declared font family,
-   * or null when it could not be determined. A declared font that never loaded
-   * would otherwise be measured as though it had been used.
+   * Whether the browser could render the element's font, as resolveFontFamily
+   * decides it from `fonts.root`, or null when it could not be determined.
+   * A declared font that never loaded would otherwise be measured as though
+   * it had been used.
    */
   fontAvailable: boolean | null;
+  /** What the page probed of the root's and the text's font stacks, for normalizeStyles. */
+  fonts: { root: FontProbe | null; text: FontProbe | null };
+  /** How the text fits its box, as readTextLayout reads it, for normalizeStyles; null without text. */
+  textLayout: RawTextLayout | null;
+  /**
+   * A checksum of the story's markup, as readMarkup reads it, or null when
+   * it changed while the variant was measured, or couldn't be read. snap
+   * compares it across a component's variants and doesn't record it: see
+   * describeIdenticalVariants.
+   */
+  markup: string | null;
+  /**
+   * Which of `story.args` Storybook gave the story, and what snap did about
+   * any it didn't, when `story` was given and the story loaded.
+   */
+  args: StoryArgsCheck | null;
+  /**
+   * Each family the code asked for that snap drew in a stand-in instead,
+   * `[asked, drawn]`: system-ui in Inter, so Chrome lays the text out as
+   * Figma will (fonts.ts). Absent where none was.
+   */
+  standIns?: [asked: string, drawn: string][];
+  /** The element tree under the measured element, when `tree` was "tree". */
+  tree?: CapturedTree;
+  /** How many elements that tree would hold, when `tree` was "count" (`--root-only`). */
+  innerElements?: number;
+  /**
+   * The element snap would have measured, when it drew nothing and held
+   * nothing that does, so the nearest one around it that draws was measured
+   * instead (section 6.1 of the design).
+   */
+  climbedFrom?: string;
+  /** True when the element measured is content the story renders into a portal, outside its root. */
+  portal?: true;
+  /**
+   * How snap opened the overlay it measured, where the story rendered only
+   * its closed trigger: see openOverlay. Absent where snap opened nothing.
+   */
+  opened?: OverlayOpened;
+  /**
+   * A select's or combobox's field snap couldn't open, measured as the
+   * field, and why: no note of its own, as closed it is the component,
+   * but snap.ts notes it as a closed trigger where other variants opened.
+   */
+  unopened?: { element: string; reason: string };
+  /** The color scheme the measured element rendered in (snap-scheme.ts), where the page said. */
+  scheme?: SchemeReading;
+  /** Storybook's globals, read where it rendered dark, from which snap asks for light (lightGlobals). */
+  themeGlobals?: ThemeGlobals;
 }
 
-const ROOT_SELECTORS = ["#storybook-root > *", "#root > *"] as const;
+export interface CaptureOptions {
+  timeoutMs: number;
+  /** Measures the element this matches as it is, rather than choosing one. */
+  selector?: string;
+  screenshot: boolean;
+  /**
+   * The component the story renders, whose `data-slot` marks its root: see
+   * chooseMeasuredElement. `props`, its documented props by name, say
+   * whether it takes an `open` or `defaultOpen` arg (openOverlay).
+   */
+  component?: { name: string; title?: string; props?: readonly string[] };
+  /**
+   * The story `url` loads, with the args its URL asks for: snap's
+   * combination, and the component's variant properties, so a boolean is
+   * applied as one. Given, captureStory checks that Storybook gave the story
+   * each of them, applies any it didn't through Storybook's preview, and
+   * fails the capture as `arg_rejected` if that doesn't take either.
+   */
+  story?: {
+    id: string;
+    args: Record<string, string>;
+    properties?: readonly FigmaVariantProperty[];
+    /** Args left out of the URL, which can't carry their values: each is set through the preview. */
+    notInUrl?: readonly string[];
+  };
+  /**
+   * Whether a value Storybook didn't take from the URL is set through its
+   * preview (the default), or the variant left unmeasured (`--no-channel-args`).
+   */
+  channelArgs?: boolean;
+  /**
+   * What to read under the measured element: its tree ("tree"), only how
+   * many elements a tree would hold ("count", for `--root-only`), or nothing.
+   */
+  tree?: "tree" | "count";
+  /** Whether text Figma sets in a stand-in is drawn in it before it is measured. Default true. */
+  standIns?: boolean;
+  /**
+   * Whether a story that renders only an overlay's closed trigger has the
+   * overlay opened and its content measured (the default), or the trigger
+   * measured as it is (`--no-open-overlays`): see openOverlay.
+   */
+  openOverlays?: boolean;
+  /** How long each way of opening an overlay waits for it, within `timeoutMs`: OPEN_WAIT_MS by default. */
+  openWaitMs?: number;
+  /** What opening the story's overlay came to in the component's earlier variants, which this one adds to: see openOverlay. */
+  openMemory?: OpenMemory;
+}
+
+/** Where Storybook mounts a story: `#storybook-root` from Storybook 7, `#root` before. */
+const ROOT_CONTAINERS = ["#storybook-root", "#root"] as const;
+
+/** Storybook's mark, on <body>, of a story that threw while it rendered. */
+const STORYBOOK_ERROR_SELECTORS = ["body.sb-show-errordisplay", "body.sb-show-preparingstory-error"] as const;
+
+/** The longest settle() waits for images still loading, within --timeout. */
+const IMAGE_WAIT_MS = 5000;
+
+/** How much of a story chooseMeasuredElement is shown: a chart can render thousands of SVG nodes. */
+const TREE_LIMITS = { maxDepth: 12, maxNodes: 600 } as const;
 
 /**
  * Reads one story's rendered styles.
@@ -192,118 +350,1082 @@ const ROOT_SELECTORS = ["#storybook-root > *", "#root > *"] as const;
  * Failures are returned rather than thrown: a single story that won't render
  * should not abandon a whole snap run.
  */
-export async function captureStory(
-  page: Page,
-  url: string,
-  opts: { timeoutMs: number; selector?: string; screenshot: boolean },
-): Promise<CaptureResult> {
+export async function captureStory(page: Page, url: string, opts: CaptureOptions): Promise<CaptureResult> {
   const empty: Omit<CaptureResult, "status" | "error"> = {
-    raw: null, textRaw: null, boundingBox: null, screenshot: null,
-    matchedSelector: null, fontAvailable: null,
+    retryable: false, raw: null, textRaw: null, boundingBox: null, screenshot: null,
+    matchedSelector: null, element: null, notes: [], fontAvailable: null, fonts: { root: null, text: null }, textLayout: null, markup: null, args: null,
   };
+  const slots = opts.component ? componentSlots(opts.component.name, opts.component.title) : [];
+  let images: ImageRequests | null = null;
+  let responses: ImageResponses | null = null;
+  let warnings: ArgWarnings | null = null;
+  let loaded = false;
+  // The overlay snap opened, to close once it is measured.
+  let shut: { opened: OverlayOpened; content: ElementHandle<Element> } | null = null;
+  // A select's field and its content measured as one: see pairOf.
+  let pair: Pair | null = null;
 
   try {
+    // From before the navigation, so a request the story makes as it renders is seen.
+    images = watchImageRequests(page);
+    // And the bytes of each, which a tree's images are made from.
+    if (opts.tree === "tree") responses = watchImageResponses(page);
+    // Likewise Storybook's warning for a value it rejects, read if its preview can't be.
+    if (opts.story) warnings = watchArgWarnings(page);
     await page.goto(url, { waitUntil: "load", timeout: opts.timeoutMs });
+    loaded = true;
 
-    const renderError = await readStorybookError(page);
+    let renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
 
-    const rootSelector = await waitForRoot(page, opts.selector, opts.timeoutMs);
-    if (!rootSelector) {
-      return { status: "element_not_found", error: `no element matched ${opts.selector ?? ROOT_SELECTORS.join(" or ")}`, ...empty };
+    const { appeared, rendered } = await waitForStory(page, opts.selector, slots, opts.timeoutMs, opts.story?.id ?? new URL(url).searchParams.get("id") ?? undefined);
+    // Storybook paints a story's error after the page has loaded. The wait
+    // ends on it, or times out on a story that threw before rendering
+    // anything; either way an error shown now is why nothing is there.
+    renderError = await readStorybookError(page);
+    if (renderError) return { status: "render_error", error: renderError, ...empty };
+    if (!appeared) {
+      // What was waited for: storyReadySelector passes over a <noscript> or
+      // <style> in the root, so `#storybook-root > *` may well match one.
+      const error = opts.selector
+        ? `no element matched ${opts.selector}`
+        : `nothing that draws rendered under ${ROOT_CONTAINERS.join(" or ")}`;
+      return { status: "element_not_found", error, ...empty, ...(rendered === false ? { rendered: false as const } : {}) };
     }
 
-    await settle(page);
+    // Before anything is measured: a value Storybook didn't give the story
+    // leaves its default on screen, under the variant's name. Kept on
+    // `empty`, so a capture that fails after this still says what it found.
+    if (opts.story) {
+      empty.args = await checkStoryArgs(page, opts.story, opts.timeoutMs, warnings?.texts ?? [], opts.channelArgs ?? true);
+      if (empty.args.unapplied.length) {
+        return { status: "arg_rejected", error: describeUnapplied(empty.args), ...empty };
+      }
+      if (empty.args.appliedVia) {
+        renderError = await readStorybookError(page);
+        const values = empty.args.rejected.map((r) => `${r.name}=${r.value}`).join(", ");
+        if (renderError) return { status: "render_error", error: `${renderError} (after snap set ${values} through Storybook's preview)`, ...empty };
+      }
+    }
 
-    const handle = await page.$(rootSelector);
-    if (!handle) return { status: "element_not_found", error: `element vanished after load: ${rootSelector}`, ...empty };
+    await settle(page, images, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
+    // Before anything is measured, or chosen by its box.
+    if (opts.standIns !== false) await drawStandIns(page, Math.min(opts.timeoutMs, IMAGE_WAIT_MS));
 
-    // Descend past layout-only wrappers so measurements describe the component.
-    const target = opts.selector ? handle : await descendToComponent(handle);
+    let located = opts.selector ? await locateSelector(page, opts.selector) : await locateComponent(page, slots);
+    if ("error" in located) return { status: "element_not_found", error: located.error, ...empty };
+    // A closed trigger, or a closed select's field: what it opens is measured, where snap can open it.
+    let opened: OverlayOpened | undefined;
+    let unopened: CaptureResult["unopened"];
+    if (located.trigger) {
+      const closed = located as Located & { trigger: OpenableTrigger };
+      const opening: Opening = opts.openOverlays === false
+        ? { reason: "it was run with --no-open-overlays" }
+        : await openOverlay(page, closed, {
+          slots, story: opts.story, storyId: opts.story?.id ?? new URL(url).searchParams.get("id") ?? "", argTypes: empty.args?.argTypes, props: opts.component?.props,
+          memory: opts.openMemory,
+          timeoutMs: opts.timeoutMs, waitMs: opts.openWaitMs ?? OPEN_WAIT_MS, images, standIns: opts.standIns !== false,
+        });
+      await closed.opener?.dispose().catch(() => { /* gone with a remount */ });
+      if ("located" in opening) {
+        await closed.target.dispose().catch(() => { /* gone with a remount */ });
+        located = opening.located;
+        opened = opening.opened;
+        shut = { opened, content: located.target };
+      } else if (opts.openOverlays !== false) {
+        // Found again: an arg set and reset remounted the story, and the trigger with it.
+        await closed.target.dispose().catch(() => { /* gone with a remount */ });
+        const again = await locateComponent(page, slots);
+        if ("error" in again) return { status: "element_not_found", error: again.error, ...empty };
+        located = again;
+      }
+      if (!opened) {
+        const reason = "reason" in opening ? opening.reason : "";
+        if (closed.trigger.field && opts.openOverlays !== false) unopened = { element: closed.element, reason };
+        located.notes = located.notes.map((note) => (note.kind === "closed-trigger" ? { ...note, reason } : note));
+        const toast = closed.trigger.toast;
+        if (toast) {
+          // Measured as before, the story's wrapper, saying why no toast;
+          // or its button, where that is all the story draws.
+          const why = `snap clicked ${toast.opener} to raise a toast, and ${reason || "didn't"}`;
+          const wrapper = located.notes.some((note) => note.kind === "layout-wrapper");
+          located.notes = wrapper
+            ? located.notes.map((note) => (note.kind === "layout-wrapper" ? { ...note, toast: why } : note))
+            : [...located.notes, { kind: "closed-trigger", element: toast.opener, reason }];
+        } else if (!closed.trigger.field && !located.notes.some((note) => note.kind === "closed-trigger")) {
+          // One an attempt left open, which a remount didn't close, keeps
+          // the note of the trigger as it was found, closed.
+          located.notes = [...located.notes, { kind: "closed-trigger", element: closed.element, reason }];
+        }
+      }
+    }
+    // Under a tree, an element that draws nothing and holds nothing that
+    // does is no root to build: the nearest one around it that draws is.
+    const climbedFrom = opts.tree === "tree" && !opts.selector && !located.field ? await climbToDrawing(located) : null;
+    const { target, notes, matchedSelector, portal } = located;
 
-    const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
-    const textRaw = await readTextStyles(page, target, TEXT_PROPERTIES);
-    const fontAvailable = await readFontAvailability(page, target);
-    const boundingBox = await target.boundingBox();
-    const screenshot = opts.screenshot ? await target.screenshot({ type: "png" }) : null;
+    // Read before the styles and again after the picture: markup that
+    // changes in between, a story that animates, is no evidence either way.
+    const markupBefore = await readMarkup(page);
+    // A select's or combobox's field and the content it opened, as one: a
+    // root that draws nothing around both, its text the field's.
+    pair = located.field && opts.tree !== "count" ? await pairOf(page, located.field.target, target) : null;
+    const element = pair ? `${located.field!.element} + ${located.element}` : located.element;
+    const own = pair ? located.field!.target : target;
+    const raw = await readComputedStyles(page, pair?.probe ?? target, CAPTURED_PROPERTIES);
+    await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    const holder = await findTextHolder(own);
+    const textRaw = holder ? await readTextStyles(page, holder, own, TEXT_PROPERTIES) : null;
+    const textLayout = holder ? await readTextLayout(holder, own) : null;
+    const fonts = { root: await probeFontStack(own), text: holder ? await probeFontStack(holder) : null };
+    const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
+    const boundingBox = pair ? pair.box : await target.boundingBox();
+    // Which scheme its colors are: a Storybook may render its dark theme by
+    // default. As the page marks it, else as Storybook's globals say, which a
+    // theme provider that marks nothing on the page follows.
+    const marked = await own.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
+    const globalsRead = (await page.evaluate(themeGlobalsInPage).catch(() => null)) ?? undefined;
+    const scheme = marked?.by ? marked : schemeOfGlobals(globalsRead) ?? marked;
+    const themeGlobals = scheme?.scheme === "dark" ? globalsRead : undefined;
 
+    // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {
-      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, fontAvailable };
+      return { status: "element_not_found", error: "element has no layout box (display:none?)", ...empty, raw, textRaw, element, fontAvailable, fonts, textLayout };
     }
 
-    return { status: "ok", error: null, raw, textRaw, boundingBox, screenshot, matchedSelector: rootSelector, fontAvailable };
+    // Playwright waits for an element to be visible before taking its
+    // picture, which one with no width or height never is: it waited its own
+    // 30 seconds, whatever --timeout said, and failed a variant whose styles
+    // had been read. So an empty box is measured without a picture, and a
+    // picture otherwise waits no longer than --timeout.
+    const drawable = boundingBox.width > 0 && boundingBox.height > 0;
+    const screenshot = !opts.screenshot || !drawable
+      ? null
+      : pair
+        ? await page.screenshot({ type: "png", clip: pair.box, timeout: opts.timeoutMs })
+        : await target.screenshot({ type: "png", timeout: opts.timeoutMs });
+    const markupAfter = await readMarkup(page);
+    const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
+    // After the markup is read again: Playwright's screenshots, of an
+    // element the tree keeps as a picture, rewrite inline style attributes,
+    // which would read as a story that changed while it was measured.
+    let tree: CapturedTree | undefined;
+    let innerElements: number | undefined;
+    try {
+      // An overlay's content, in a portal or opened inline, is placed by what is around it.
+      if (opts.tree === "tree") {
+        tree = pair
+          ? await captureTree(page, pair.root, responses, opts.timeoutMs, { focus: [located.field!.target, target] })
+          : await captureTree(page, target, responses, opts.timeoutMs, { overlay: !!(portal || opened) });
+      }
+      if (opts.tree === "count") innerElements = await countTree(target);
+    } catch (err) {
+      // Not measured, rather than measured without its tree: a variant
+      // with no tree delta reads as its base's tree.
+      return { status: "render_error", error: `snap couldn't read the element tree: ${firstLine(err)}`, ...empty };
+    }
+    const standIns = standInsMeasured(fonts, tree);
+    return {
+      status: "ok", error: null, retryable: false, raw, textRaw, boundingBox, screenshot, matchedSelector, element, notes, fontAvailable, fonts, textLayout, markup, args: empty.args,
+      ...(standIns.length ? { standIns } : {}),
+      ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
+      ...(portal ? { portal } : {}), ...(opened ? { opened } : {}), ...(unopened ? { unopened } : {}),
+      ...(scheme ? { scheme } : {}), ...(themeGlobals ? { themeGlobals } : {}),
+    };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
     // the message, so a story id or arg value containing "timeout" would turn
     // a refused connection into a timeout. Its TimeoutError names itself, and
     // this file imports only playwright's types, so the class isn't to hand.
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
-    return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty };
+    // One before the page loaded that isn't a timeout is a refused
+    // connection, a reset, a lookup that failed: Storybook wasn't there.
+    return {
+      status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded,
+      ...(!loaded ? { rendered: false as const } : {}),
+    };
+  } finally {
+    await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    // Closed again, whatever came of measuring it.
+    if (shut) await closeOverlay(page, shut.opened, shut.content, opts.story?.id).catch(() => { /* the page went */ });
+    images?.stop();
+    responses?.stop();
+    warnings?.stop();
   }
+}
+
+/** A select's open field and its content, measured as one: the element around both, a probe that draws nothing, and the box around both. */
+interface Pair {
+  root: ElementHandle<Element>;
+  probe: ElementHandle<Element>;
+  box: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * A select's or combobox's open `field` and the `content` it opened, as
+ * one root: the nearest element around both, which the tree is read under
+ * (captureTreeInPage's `focus`), the box around both, which the root is,
+ * and an element added to the page, which draws nothing, whose styles the
+ * root's are. Null where either has no box.
+ */
+async function pairOf(page: Page, field: ElementHandle<Element>, content: ElementHandle<Element>): Promise<Pair | null> {
+  const [a, b] = [await field.boundingBox(), await content.boundingBox()];
+  if (!a || !b) return null;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const box = { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+  const root = (await field.evaluateHandle((f, c) => {
+    let at = f.parentElement;
+    while (at && !at.contains(c)) at = at.parentElement;
+    return at ?? document.body;
+  }, content)).asElement() as ElementHandle<Element> | null;
+  const probe = (await page.evaluateHandle(() => {
+    const el = document.createElement("div");
+    el.style.cssText = "position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none";
+    document.body.appendChild(el);
+    return el;
+  })).asElement() as ElementHandle<Element> | null;
+  if (!root || !probe) {
+    await probe?.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    return null;
+  }
+  return { root, probe, box };
+}
+
+// --- Overlays ---------------------------------------------------------------
+//
+// A story that renders only an overlay's closed trigger, as a Dialog's,
+// Popover's or Tooltip's Default story does, has the overlay opened before
+// anything is measured, so what Figma gets is its content, as a designer
+// draws it: through the story's `open` or `defaultOpen` arg where the
+// component takes one, else through the trigger, as a user opens it. Each
+// way is tried in turn, each bounded, and the overlay is closed again once
+// it has been measured.
+
+/** The longest snap waits for an overlay to open after each way it tries, within --timeout. */
+export const OPEN_WAIT_MS = 3000;
+
+/** The longest snap waits for an open overlay's animations to end and its boxes to stay put. */
+export const OPEN_SETTLE_MS = 2000;
+
+/** How many frames in a row an open overlay's boxes must stay put. */
+const OPEN_STILL_FRAMES = 3;
+
+/** The longest snap waits for an overlay it measured to close again. */
+export const CLOSE_WAIT_MS = 1000;
+
+/** How often snap looks for an overlay opening or closing. */
+const OVERLAY_POLL_MS = 50;
+
+/** A way snap opens an overlay: its open arg, or an interaction with its trigger. */
+type OpenWay = "arg" | OpenInteraction;
+
+/**
+ * What opening each story's overlay came to in earlier variants, by story
+ * id, so a later variant doesn't retry what failed: the way that opened
+ * one, or, where none did, why. One for each component snap measures.
+ */
+export type OpenMemory = Map<string, { worked: OpenWay; failed?: undefined } | { worked?: undefined; failed: string }>;
+
+/** What openOverlay needs from the capture. */
+interface OpenContext {
+  slots: readonly string[];
+  story?: CaptureOptions["story"];
+  /** The story's id, from `story` or else the URL: what a remount names. */
+  storyId: string;
+  memory?: OpenMemory;
+  argTypes?: Record<string, StoryArgType>;
+  props?: readonly string[];
+  timeoutMs: number;
+  /** How long each way waits for the overlay to open. */
+  waitMs: number;
+  images: ImageRequests;
+  standIns: boolean;
+}
+
+/** The open overlay's content, as located, and how snap opened it; or why it couldn't. */
+type Opening = { located: Located; opened: OverlayOpened } | { reason: string };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Opens the overlay whose closed trigger `closed` is, and locates its
+ * content: first by setting the story's `open` arg, or `defaultOpen`, to
+ * true through Storybook's preview, where the story's argTypes or the
+ * component's documented props have one (snap-args.ts openArg), then
+ * through the trigger, each of `closed.trigger.interactions` in turn (snap-
+ * normalize.ts openInteractions). An arg the variant sets itself is left
+ * as it set it. Each way waits OPEN_WAIT_MS, or --timeout where that is
+ * shorter, for its content, in a portal or inline where the trigger's
+ * `aria-controls` names it, the same wait for every variant, so
+ * the note of one that opens nothing is the same for each; a way that
+ * opens nothing is undone (the arg reset, Escape pressed, the mouse moved
+ * off the page, focus dropped) before the next, and the story mounted
+ * again where that left its trigger open. Once it is open, the mouse
+ * is moved off the page, unless hovering opened it: a select's listbox
+ * opens under the pointer a click left on its field, which would measure
+ * its first item hovered and highlighted. Then it waits for fonts, images
+ * and stand-ins as the story's own load did, and for its animations to
+ * end and its boxes to stay put (overlaySettledInPage). Content that
+ * closes as the pointer leaves opened only while hovered over, and the
+ * next way is tried, as after one that opened nothing.
+ */
+async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrigger }, ctx: OpenContext): Promise<Opening> {
+  // The same wait for every way and every variant, so a note that says it is the same for each.
+  const waitMs = Math.min(ctx.waitMs, ctx.timeoutMs);
+  const trigger = closed.trigger.toast?.opener ?? closed.element;
+  const attempts: OpenAttempt[] = [];
+  // Why it is still open, where a way left it so and a remount didn't close it.
+  let stuck = "";
+  // After a way that left it open with nothing snap measures, which
+  // Escape didn't close: the story mounted again, so the next way starts
+  // from the story as it rendered. True where it is open all the same,
+  // and no other way can start from it closed.
+  const reclose = async (): Promise<boolean> => {
+    if (!(await triggerLeftOpen(page, ctx.slots))) return false;
+    const remounted = await applyArgs(page, { storyId: ctx.storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, remount: true });
+    if (!(await triggerLeftOpen(page, ctx.slots))) return false;
+    stuck = `it stayed open, ${"error" in remounted ? `and snap couldn't mount the story again (${remounted.error})` : "though snap mounted the story again"}`;
+    return true;
+  };
+  // Open and settled, or null where it closed as the pointer left.
+  const opened = async (located: Located, how: OverlayOpened): Promise<Opening | null> => {
+    if (how.via !== "hover") await page.mouse.move(-1, -1).catch(() => { /* the page went */ });
+    const settled = await settleOverlay(page, located, ctx);
+    return settled ? { located: settled, opened: how } : null;
+  };
+
+  // A controlled overlay the variant holds closed opens no way: what it asks for is closed.
+  if (ctx.story && String(ctx.story.args.open) === "false") return { reason: "the variant sets its open arg to false, which holds it closed" };
+
+  // Not one the variant sets itself: its value is the variant's.
+  const arg = ctx.story ? openArg(ctx.argTypes, ctx.props) : null;
+  const every: OpenWay[] = [...(arg && ctx.story && !Object.hasOwn(ctx.story.args, arg) ? ["arg" as const] : []), ...closed.trigger.interactions];
+  let ways = every;
+  // What the story's earlier variants found: the way that opened one
+  // alone, as a variant it doesn't open is one its args hold closed (a
+  // disabled trigger); where none opened, only the first way again.
+  const memo = ctx.memory?.get(ctx.storyId);
+  if (memo?.worked && ways.includes(memo.worked)) ways = [memo.worked];
+  else if (memo?.failed) ways = ways.slice(0, 1);
+  const remember = (worked: OpenWay) => ctx.memory?.set(ctx.storyId, { worked });
+
+  for (const how of ways) {
+    if (how === "arg") {
+      const set = await applyArgs(page, { storyId: ctx.storyId, updates: { [arg!]: true }, lift: ctx.argTypes?.[arg!]?.if ? [arg!] : [], waitMs: ctx.timeoutMs });
+      if ("error" in set) {
+        attempts.push({ via: "arg", arg: arg!, outcome: "failed", error: set.error });
+        continue;
+      }
+      const shown = await waitForOverlay(page, ctx.slots, waitMs);
+      const open = "located" in shown ? await opened(shown.located, { via: "arg", arg: arg!, trigger }) : null;
+      if (open) {
+        remember("arg");
+        return open;
+      }
+      attempts.push({ via: "arg", arg: arg!, outcome: "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing", waitMs });
+      // The story's own value again, so the trigger is tried on the story as it rendered.
+      await applyArgs(page, { storyId: ctx.storyId, updates: {}, lift: [], waitMs: ctx.timeoutMs, reset: [arg!] });
+      continue;
+    }
+    // Found again for each way: a remount replaces the trigger's element.
+    const located = await locateComponent(page, ctx.slots);
+    if ("error" in located) {
+      attempts.push({ via: how, outcome: "failed", error: located.error });
+      continue;
+    }
+    try {
+      await interact(located.opener ?? located.target, how, waitMs);
+    } catch (err) {
+      attempts.push({ via: how, outcome: "failed", error: firstLine(err) });
+      await dismiss(page);
+      if (await reclose()) break;
+      continue;
+    } finally {
+      await located.target.dispose().catch(() => { /* gone with a remount */ });
+      await located.opener?.dispose().catch(() => { /* gone with a remount */ });
+    }
+    const shown = await waitForOverlay(page, ctx.slots, waitMs);
+    const open = "located" in shown ? await opened(shown.located, { via: how, trigger }) : null;
+    if (open) {
+      remember(how);
+      return open;
+    }
+    const outcome = "located" in shown ? "closed" : shown.triggerOpen ? "no-content" : "nothing";
+    attempts.push({ via: how, outcome, waitMs });
+    await dismiss(page);
+    if (outcome !== "nothing" && await reclose()) break;
+  }
+  let reason = describeOpenFailure(attempts);
+  const skipped = ways.length < every.length;
+  if (memo?.worked && ways[0] === memo.worked) {
+    if (skipped) reason += `; snap tried no other way, as ${describeOpenWay(attempts[0])} opened an earlier variant`;
+  } else if (memo?.failed) {
+    // Found as an earlier variant found it: that variant's reason, which tried every way.
+    if (attempts.length === 1 && attempts[0].outcome === "nothing" && !stuck) reason = memo.failed;
+    else if (skipped) reason += "; snap tried no other way, as none opened an earlier variant";
+  } else {
+    ctx.memory?.set(ctx.storyId, { failed: [reason, stuck].filter(Boolean).join("; ") });
+  }
+  return { reason: [reason, stuck].filter(Boolean).join("; ") };
+}
+
+/** Whether the component's element is a trigger that says it is open, with nothing open snap measures. */
+async function triggerLeftOpen(page: Page, slots: readonly string[]): Promise<boolean> {
+  const located = await locateComponent(page, slots);
+  if ("error" in located) return false;
+  const open = !located.trigger && !located.portal && !located.content && await located.target.evaluate(triggerOpenInPage).catch(() => false);
+  await located.target.dispose().catch(() => { /* gone */ });
+  return open;
+}
+
+/** applyStoryArgsInPage, its error a result, as a remount Storybook can't do in place reloads the page. */
+async function applyArgs(page: Page, args: Parameters<typeof applyStoryArgsInPage>[0]): Promise<{ ok: true } | { error: string }> {
+  try {
+    return await page.evaluate(applyStoryArgsInPage, args);
+  } catch (err) {
+    return { error: firstLine(err) };
+  }
+}
+
+/** Does to `trigger` what a user does to open it, waiting at most `timeoutMs` for it to take the action. */
+async function interact(trigger: ElementHandle<Element>, how: OpenInteraction, timeoutMs: number): Promise<void> {
+  switch (how) {
+    case "click":
+      return trigger.click({ timeout: timeoutMs });
+    case "hover":
+      return trigger.hover({ timeout: timeoutMs });
+    case "focus":
+      return trigger.focus();
+    case "contextmenu":
+      return trigger.click({ button: "right", timeout: timeoutMs });
+  }
+}
+
+/**
+ * Undoes what an attempt to open an overlay did: Escape pressed, which
+ * closes any overlay open, the mouse moved off the page, so nothing is
+ * hovered over, and focus dropped.
+ */
+async function dismiss(page: Page): Promise<void> {
+  await page.keyboard.press("Escape").catch(() => { /* the page went */ });
+  await page.mouse.move(-1, -1).catch(() => { /* the page went */ });
+  await page.evaluate(blurInPage).catch(() => { /* the page went */ });
+}
+
+/** Runs in the page: drops focus from whatever has it. */
+export function blurInPage(): void {
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active !== document.body && typeof active.blur === "function") active.blur();
+}
+
+/**
+ * Waits, at most `ms`, for chooseMeasuredElement to find open content, in
+ * a portal or what the trigger's `aria-controls` names inline, and
+ * returns it located; or, when none shows, whether the trigger says it is
+ * open.
+ */
+async function waitForOverlay(page: Page, slots: readonly string[], ms: number): Promise<{ located: Located } | { triggerOpen: boolean }> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const located = await locateComponent(page, slots);
+    if (!("error" in located) && (located.portal || located.content)) return { located };
+    if (Date.now() >= deadline) {
+      if ("error" in located) return { triggerOpen: false };
+      const triggerOpen = await located.target.evaluate(triggerOpenInPage).catch(() => false);
+      await located.target.dispose().catch(() => { /* gone */ });
+      return { triggerOpen };
+    }
+    if (!("error" in located)) await located.target.dispose().catch(() => { /* gone */ });
+    await sleep(OVERLAY_POLL_MS);
+  }
+}
+
+/** Runs in the page: whether a trigger says what it controls is open, as ARIA, Radix or Base UI mark it. */
+export function triggerOpenInPage(el: Element): boolean {
+  const state = el.getAttribute("data-state") ?? "";
+  return el.getAttribute("aria-expanded") === "true" || state === "open" || state.endsWith("-open") ||
+    el.hasAttribute("data-popup-open") || el.hasAttribute("data-open");
+}
+
+/**
+ * Brings open content to the state the story's own load was measured in:
+ * fonts, images and stand-ins (settle, drawStandIns), then its animations
+ * ended and its boxes put (overlaySettledInPage), each within --timeout;
+ * then locates it again, as a stand-in may have moved it. Null where it
+ * has gone meanwhile.
+ */
+async function settleOverlay(page: Page, located: Located, ctx: OpenContext): Promise<Located | null> {
+  await settle(page, ctx.images, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
+  if (ctx.standIns) await drawStandIns(page, Math.min(ctx.timeoutMs, IMAGE_WAIT_MS));
+  await located.target.evaluate(overlaySettledInPage, { ms: Math.min(ctx.timeoutMs, OPEN_SETTLE_MS), frames: OPEN_STILL_FRAMES }).catch(() => false);
+  const again = await locateComponent(page, ctx.slots);
+  if ("error" in again || !(again.portal || again.content)) {
+    if (!("error" in again)) await again.target.dispose().catch(() => { /* gone */ });
+    if (!(await located.target.evaluate(goneInPage).catch(() => true))) return located;
+    await located.target.dispose().catch(() => { /* gone */ });
+    return null;
+  }
+  await located.target.dispose().catch(() => { /* gone */ });
+  return again;
+}
+
+/** Runs in the page: whether an element has gone, or has no box left. */
+export function goneInPage(el: Element): boolean {
+  return !el.isConnected || el.getClientRects().length === 0;
+}
+
+/**
+ * Runs in the page: waits, at most `ms`, for the animations on `el` and in
+ * it to finish, those that ever do (one that repeats forever, a spinner's,
+ * never does), then for its box and those in it to stay put `frames`
+ * frames in a row, so content a script places or animates as it opens is
+ * measured where it comes to rest. snap's stylesheet (settle) already
+ * stops CSS animations and transitions; this waits out what scripts run.
+ * True once settled, false when the time ran out first.
+ */
+export async function overlaySettledInPage(el: Element, args: { ms: number; frames: number }): Promise<boolean> {
+  const deadline = Date.now() + args.ms;
+  const remaining = () => Math.max(0, deadline - Date.now());
+  const running = () => (typeof el.getAnimations === "function" ? el.getAnimations({ subtree: true }) : [])
+    .filter((a) => a.playState === "running" && Number.isFinite(a.effect?.getComputedTiming().endTime ?? Infinity));
+  while (running().length && remaining() > 0) {
+    await Promise.race([
+      Promise.all(running().map((a) => a.finished.catch(() => null))),
+      new Promise((r) => setTimeout(r, remaining())),
+    ]);
+  }
+  const frame = () => new Promise((r) => {
+    // A page that draws no frames, hidden, still moves on.
+    const timer = setTimeout(() => r(null), 100);
+    requestAnimationFrame(() => {
+      clearTimeout(timer);
+      r(null);
+    });
+  });
+  const boxes = () => [el, ...Array.from(el.querySelectorAll("*"))].map((e) => {
+    const r = e.getBoundingClientRect();
+    return `${r.x},${r.y},${r.width},${r.height}`;
+  }).join(";");
+  let last = boxes();
+  let still = 0;
+  while (remaining() > 0) {
+    await frame();
+    const now = boxes();
+    still = now === last ? still + 1 : 0;
+    last = now;
+    if (still >= args.frames) return running().length === 0;
+  }
+  return false;
+}
+
+/**
+ * Closes the overlay snap opened and measured, so the story is as it
+ * rendered for whatever comes next: the arg reset to the story's own
+ * through Storybook's preview, or Escape pressed, the mouse moved off the
+ * page and focus dropped. Waits CLOSE_WAIT_MS at most for `content` to go,
+ * and says whether it did.
+ */
+async function closeOverlay(page: Page, opened: OverlayOpened, content: ElementHandle<Element>, storyId: string | undefined): Promise<boolean> {
+  if (opened.via === "arg" && opened.arg && storyId) {
+    await applyArgs(page, { storyId, updates: {}, lift: [], waitMs: CLOSE_WAIT_MS, reset: [opened.arg] });
+  }
+  await dismiss(page);
+  const deadline = Date.now() + CLOSE_WAIT_MS;
+  for (;;) {
+    const gone = await content.evaluate(goneInPage).catch(() => true);
+    if (gone || Date.now() >= deadline) return gone;
+    await sleep(OVERLAY_POLL_MS);
+  }
+}
+
+/**
+ * Moves `located` to the nearest element around it that draws, when neither
+ * it nor anything in it does (section 6.1 of the design), returning the
+ * element it was on, or null when it stays.
+ */
+async function climbToDrawing(located: Located): Promise<string | null> {
+  const handle = await located.target.evaluateHandle(drawingElementInPage, [...ROOT_CONTAINERS]);
+  const climbed = handle.asElement() as ElementHandle<Element> | null;
+  if (!climbed || await climbed.evaluate((el, from) => el === from, located.target)) {
+    await handle.dispose();
+    return null;
+  }
+  const from = located.element;
+  located.target = climbed;
+  located.element = describeElement(await climbed.evaluate((el) => ({
+    tag: el.tagName.toLowerCase(), slot: el.getAttribute("data-slot"), role: el.getAttribute("role"),
+  })));
+  return from;
 }
 
 /** Storybook renders thrown errors into the preview rather than failing the load. */
-async function readStorybookError(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
-    const shown =
-      document.body.classList.contains("sb-show-errordisplay") ||
-      document.body.classList.contains("sb-show-preparingstory-error");
-    if (!shown) return null;
-    const node = document.querySelector("#error-message, .sb-errordisplay_code, #error-stack");
-    const text = (node?.textContent ?? document.body.innerText ?? "").trim();
-    return text.slice(0, 300) || "Storybook reported a render error";
-  });
+export function storybookErrorInPage(): string | null {
+  const shown =
+    document.body.classList.contains("sb-show-errordisplay") ||
+    document.body.classList.contains("sb-show-preparingstory-error");
+  if (!shown) return null;
+  const node = document.querySelector("#error-message, .sb-errordisplay_code, #error-stack");
+  const text = (node?.textContent ?? document.body.innerText ?? "").trim().slice(0, 300);
+  // Storybook 9 and later refuse an implicit action called while the story
+  // renders, and name the arg it wants a spy for only in the stack: kept, as
+  // describeStoryErrors gives the story's fix with it.
+  if (/implicit action arg/i.test(text)) {
+    const stack = document.querySelector("#error-stack")?.textContent ?? "";
+    const args = [...new Set(Array.from(stack.matchAll(/^\s*([A-Za-z_$][\w$]*): fn\(\)/gm), (m) => m[1]))];
+    if (args.length) return `${text.replace(/\s+$/, "")} (implicit action: ${args.join(", ")})`;
+  }
+  return text || "Storybook reported a render error";
 }
 
-async function waitForRoot(page: Page, selector: string | undefined, timeoutMs: number): Promise<string | null> {
-  const candidates = selector ? [selector] : ROOT_SELECTORS;
-  for (const candidate of candidates) {
-    try {
-      await page.waitForSelector(candidate, { state: "attached", timeout: timeoutMs });
-      return candidate;
-    } catch {
-      // Try the next candidate; older Storybook mounts at #root.
+async function readStorybookError(page: Page): Promise<string | null> {
+  return page.evaluate(storybookErrorInPage);
+}
+
+// --- Stand-in fonts ---------------------------------------------------------
+//
+// Text Figma sets in a stand-in, Inter for system-ui, is drawn in it before
+// anything is measured, from the same font files (fonts.ts), so Chrome and
+// Figma lay it out alike. An element whose font stack opens with a CSS
+// keyword or a platform face Figma lacks gets the stand-in ahead of its
+// stack, inline; a child that inherits the stack inherits that too.
+
+/**
+ * The distinct computed font stacks of the text the page draws, in document
+ * order: an element's whose text node lays out on screen, a form control's
+ * and a ::before or ::after's with text of its own. A stack no drawn text is
+ * on, html's default Times or that of Storybook's own UI, hidden while a
+ * story shows, needs no stand-in.
+ */
+export function textFontStacksInPage(root: Element = document.documentElement): string[] {
+  const visit = (el: Element, out: Element[]) => {
+    out.push(el);
+    for (const child of Array.from(el.children)) visit(child, out);
+    const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (shadow) for (const child of Array.from(shadow.children)) visit(child, out);
+    return out;
+  };
+  const drawn = (node: Node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return range.getClientRects().length > 0;
+  };
+  const stacks: string[] = [];
+  const add = (stack: string) => {
+    if (stack && !stacks.includes(stack)) stacks.push(stack);
+  };
+  for (const el of visit(root, [])) {
+    const control = /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.getClientRects().length > 0;
+    if (control || Array.from(el.childNodes).some((node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()) && drawn(node))) {
+      add(getComputedStyle(el).fontFamily);
+    }
+    for (const pseudo of ["::before", "::after"]) {
+      const style = getComputedStyle(el, pseudo);
+      // A quoted string with something in it: `""` draws no text.
+      if (/^["'][^"']/.test(style.content) && el.getClientRects().length > 0) add(style.fontFamily);
     }
   }
-  return null;
+  return stacks;
 }
 
-/** Kill animations and wait for fonts and two frames, so styles are stable. */
-async function settle(page: Page): Promise<void> {
+/**
+ * Adds the stand-ins' faces to the page and puts each element whose
+ * computed stack `stacks` names on the stand-in's stack instead, inline and
+ * important, so no rule of the story's outranks it. An element is read after
+ * those before it are changed, so one that inherits a changed stack is left
+ * as it is. Returns how many elements it changed.
+ */
+export function standInFontsInPage(
+  args: { stacks: Record<string, string>; faces: { family: string; style: string; weight: string; unicodeRange: string; data: string }[] },
+  root: Element = document.documentElement,
+): number {
+  for (const face of args.faces) {
+    const bytes = Uint8Array.from(atob(face.data), (c) => c.charCodeAt(0));
+    document.fonts.add(new FontFace(face.family, bytes, { style: face.style, weight: face.weight, unicodeRange: face.unicodeRange }));
+  }
+  const visit = (el: Element, out: Element[]) => {
+    out.push(el);
+    for (const child of Array.from(el.children)) visit(child, out);
+    const shadow = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+    if (shadow) for (const child of Array.from(shadow.children)) visit(child, out);
+    return out;
+  };
+  let changed = 0;
+  for (const el of visit(root, [])) {
+    const next = args.stacks[getComputedStyle(el).fontFamily];
+    if (next === undefined) continue;
+    (el as HTMLElement).style.setProperty("font-family", next, "important");
+    changed++;
+  }
+  return changed;
+}
+
+/**
+ * Waits, at most `ms`, for the faces snap added (their family starts with
+ * `prefix`) to load, then for two frames, so text is laid out in them. Only
+ * those: a face the project declares and nothing draws in would be fetched
+ * by load(), and one whose request hangs would hold the capture.
+ */
+export async function standInsLoadedInPage(args: { prefix: string; ms: number }): Promise<void> {
+  try {
+    const ours = Array.from(document.fonts).filter((face) => face.family.replace(/^["']|["']$/g, "").startsWith(args.prefix));
+    await Promise.race([
+      Promise.all(ours.map((face) => face.load().catch(() => null))),
+      new Promise((r) => setTimeout(r, args.ms)),
+    ]);
+  } catch {
+    // The fonts API missing is no reason to fail a capture.
+  }
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+}
+
+/** The families a capture measured in a stand-in, `[asked, drawn]`, from its root's and text's fonts and its tree's texts, sorted. */
+export function standInsMeasured(fonts: CaptureResult["fonts"], tree?: { nodes: TreeNode[] }): [string, string][] {
+  const pairs = new Set<string>();
+  for (const probe of [fonts.root, fonts.text]) {
+    const font = probe ? resolveFontFamily(probe) : null;
+    if (font?.asked) pairs.add(JSON.stringify([font.asked, font.family]));
+  }
+  for (const node of tree?.nodes ?? []) if (node.tx?.fs) pairs.add(JSON.stringify([node.tx.fs, node.tx.f]));
+  return [...pairs].sort().map((pair) => JSON.parse(pair) as [string, string]);
+}
+
+/**
+ * Draws the page's text in the stand-ins Figma will set it in (fonts.ts),
+ * waiting at most `ms` for their faces, and returns how many elements it
+ * put on one. Only the stand-ins the page's text needs are sent: none for
+ * a story set in the project's own font.
+ */
+async function drawStandIns(page: Page, ms: number): Promise<number> {
+  const stacks: Record<string, string> = {};
+  const used = new Set<StandIn>();
+  // Called with no argument, each takes the document as its root.
+  const listed: unknown = await page.evaluate(textFontStacksInPage as () => string[]);
+  // Only a stand-in for a page lists none.
+  if (!Array.isArray(listed)) return 0;
+  for (const stack of listed as string[]) {
+    const standIn = standInStack(stack);
+    if (!standIn) continue;
+    stacks[stack] = standIn.stack;
+    used.add(standIn.standIn);
+  }
+  if (!used.size) return 0;
+  const faces = [...used].sort().flatMap((standIn) => standInFaces(standIn));
+  const changed = await page.evaluate(standInFontsInPage, { stacks, faces });
+  await page.evaluate(standInsLoadedInPage, { prefix: STAND_IN_PREFIX, ms });
+  return changed;
+}
+
+/**
+ * What waitForStory waits for, unless --selector names something else: a
+ * child of the story's root that can draw, the component's own `data-slot`
+ * or its `-content` slot anywhere, or an open overlay's content
+ * (OVERLAY_SELECTOR), so content rendered only into a portal counts, or
+ * Storybook's error display.
+ *
+ * One selector, so one wait: a story that never renders costs one --timeout,
+ * where waiting on each root in turn cost one per root, and `#root` never
+ * exists from Storybook 7 on.
+ */
+export function storyReadySelector(slots: readonly string[]): string {
+  return [
+    ...ROOT_CONTAINERS.map((container) => `${container} > :not(${NON_RENDERED_TAGS.join(", ")})`),
+    ...[...new Set([...slots, ...contentSlots(slots)])].map((slot) => `[data-slot="${slot}"]`),
+    OVERLAY_SELECTOR,
+    ...STORYBOOK_ERROR_SELECTORS,
+  ].join(", ");
+}
+
+/**
+ * How long snap still waits for a story to draw once Storybook says it has
+ * rendered it: for an effect, or a portal, that draws a moment after.
+ */
+export const RENDERED_GRACE_MS = 1000;
+
+/**
+ * Waits, at most `timeoutMs`, for what storyReadySelector (or `selector`)
+ * matches. A story Storybook has finished rendering that draws nothing, as
+ * a dialog held closed with no trigger does, is given RENDERED_GRACE_MS
+ * more rather than the whole of --timeout: coder's ConfirmDialog spent 10
+ * seconds on each of 23 such variants.
+ */
+async function waitForStory(
+  page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number, storyId?: string,
+): Promise<{ appeared: boolean; rendered: boolean | null }> {
+  const wanted = selector ?? storyReadySelector(slots);
+  const appeared = page.waitForSelector(wanted, { state: "attached", timeout: timeoutMs }).then(() => true, () => false);
+  if (!storyId) return { appeared: await appeared, rendered: null };
+  let done = false;
+  const rendered = (async (): Promise<"rendered" | "waited"> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!done && Date.now() < deadline) {
+      if (await page.evaluate(storyRenderedInPage, storyId).catch(() => false) === true) {
+        await sleep(Math.min(RENDERED_GRACE_MS, Math.max(0, deadline - Date.now())));
+        return "rendered";
+      }
+      await sleep(100);
+    }
+    return "waited";
+  })();
+  const first = await Promise.race([appeared, rendered]);
+  done = true;
+  if (first === true) return { appeared: true, rendered: true };
+  // The wait for the element ended first: whether Storybook rendered the
+  // story says whether the story drew nothing or never got to draw.
+  if (first === false) return { appeared: false, rendered: await page.evaluate(storyRenderedInPage, storyId).catch(() => null) };
+  // Rendered and given its grace: whatever draws has drawn by now.
+  if (first === "rendered") {
+    const found = await page.$(wanted).then((handle) => {
+      void handle?.dispose();
+      return handle != null;
+    }, () => false);
+    return { appeared: found, rendered: true };
+  }
+  return { appeared: await appeared, rendered: false };
+}
+
+/** Runs in the page: whether Storybook has finished rendering `storyId`, as its preview's render says. */
+export function storyRenderedInPage(storyId: string): boolean {
+  const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+  const phase = preview?.storyRenders?.find((r) => r?.id === storyId)?.phase;
+  // Storybook 8 and later end a render at "finished"; 7 at "completed", or "played" after a play function.
+  return phase === "finished" || phase === "completed" || phase === "played";
+}
+
+/** Image requests in flight on a page, from now until stop(). */
+interface ImageRequests {
+  pending(): number;
+  stop(): void;
+}
+
+function watchImageRequests(page: Page): ImageRequests {
+  const inFlight = new Set<Request>();
+  const started = (request: Request) => {
+    if (request.resourceType() === "image") inFlight.add(request);
+  };
+  const ended = (request: Request) => {
+    inFlight.delete(request);
+  };
+  page.on("request", started);
+  page.on("requestfinished", ended);
+  page.on("requestfailed", ended);
+  return {
+    pending: () => inFlight.size,
+    stop: () => {
+      page.off("request", started);
+      page.off("requestfinished", ended);
+      page.off("requestfailed", ended);
+    },
+  };
+}
+
+/** Whether an `<img>` on the page is still loading. A lazy one off screen never starts, so it isn't waited for. */
+function imagesLoadingInPage(): boolean {
+  return Array.from(document.images).some((img) => !img.complete && img.loading !== "lazy");
+}
+
+/**
+ * Kills animations, then waits for fonts, two frames, and any image still
+ * loading, so styles are stable and an image is measured as it ends up.
+ *
+ * An image is waited for while an `<img>` is incomplete or a request for one
+ * is in flight. Radix's and Base UI's Avatar load theirs with `new Image()`
+ * and show the fallback until it has loaded, so without the request there is
+ * nothing in the page to say one is coming, and the same story measured its
+ * initials in one run and its photo in the next. Bounded by `budgetMs`: an
+ * image slower than that is measured as the page shows it then.
+ */
+async function settle(page: Page, images: ImageRequests, budgetMs: number): Promise<void> {
   await page.addStyleTag({
     content: "*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }",
   }).catch(() => { /* a missing head is not worth failing over */ });
 
-  await page.evaluate(async () => {
-    try { await document.fonts.ready; } catch { /* fonts API unavailable */ }
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
-  });
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    await page.evaluate(async () => {
+      try { await document.fonts.ready; } catch { /* fonts API unavailable */ }
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
+    });
+    const loading = images.pending() > 0 || await page.evaluate(imagesLoadingInPage);
+    if (!loading || Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+/** What `--selector` matched, measured as it is. */
+async function locateSelector(page: Page, selector: string): Promise<Located | { error: string }> {
+  const target = await page.$(selector);
+  if (!target) return { error: `element vanished after load: ${selector}` };
+  const element = describeElement(await target.evaluate((el) => ({
+    tag: el.tagName.toLowerCase(), slot: el.getAttribute("data-slot"), role: el.getAttribute("role"),
+  })));
+  return { target, element, notes: [], matchedSelector: selector };
+}
+
+interface Located {
+  target: ElementHandle<Element>;
+  element: string;
+  notes: MeasurementNote[];
+  matchedSelector: string | null;
+  /** Content in a portal outside the story's root. */
+  portal?: true;
+  /** How the element may be opened, where it is a closed trigger or a closed select's field: see chooseMeasuredElement. */
+  trigger?: OpenableTrigger;
+  /** What an open trigger controls, rendered inline in the story's root. */
+  content?: true;
+  /** For a toast's story, the button that raises the toast (OpenableTrigger's `toast`). */
+  opener?: ElementHandle<Element>;
+  /** A select's or combobox's open field, whose content `target` is: the two are measured as one. */
+  field?: { target: ElementHandle<Element>; element: string };
 }
 
 /**
- * Storybook decorators commonly wrap a story in padding-free, background-free
- * containers. Measuring those would describe the wrapper, not the component, so
- * descend while the current node is a single-child pass-through element. The
- * decision is isPassThroughWrapper's, made here rather than in the page so it
- * reads a background colour with the same converter as every other colour.
+ * The element chooseMeasuredElement picks, from what the page shows of the
+ * story's root and of any portal outside it.
  */
-async function descendToComponent(handle: ElementHandle<Element>): Promise<ElementHandle<Element>> {
-  const MAX_DEPTH = 4;
-  let node = handle;
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    const raw = await node.evaluate((el, props) => {
-      if (el.children.length !== 1) return null;
-      const cs = getComputedStyle(el);
-      const out: Record<string, string> = {};
-      for (const p of props) out[p] = cs.getPropertyValue(p);
-      return out;
-    }, WRAPPER_PROPERTIES);
-    if (!raw || !isPassThroughWrapper(raw)) break;
-    const child = (await node.evaluateHandle((el) => el.children[0])).asElement();
-    if (!child) break;
-    node = child;
+async function locateComponent(page: Page, slots: readonly string[]): Promise<Located | { error: string }> {
+  // The root holding the story, or failing that the first that exists.
+  let container: ElementHandle<Element> | null = null;
+  let containerSelector: string | null = null;
+  for (const candidate of ROOT_CONTAINERS) {
+    const found = await page.$(candidate);
+    if (!found) continue;
+    const holdsStory = await found.evaluate(
+      (el, tags) => Array.from(el.children).some((child) => !tags.includes(child.tagName.toLowerCase())),
+      [...NON_RENDERED_TAGS],
+    );
+    if (!container || holdsStory) {
+      container = found;
+      containerSelector = candidate;
+    }
+    if (holdsStory) break;
   }
-  return node;
+
+  const tree = container
+    ? await container.evaluate(readStoryTreeInPage, { props: WRAPPER_PROPERTIES, ...TREE_LIMITS })
+    : null;
+  const portalsHandle = await page.evaluateHandle(findPortalsInPage, { container, slots: [...new Set([...slots, ...contentSlots(slots)])], overlay: OVERLAY_SELECTOR });
+  try {
+    const portals: PortalNode[] = await portalsHandle.evaluate((elements, overlay) => elements.map((el) => ({
+      tag: el.tagName.toLowerCase(),
+      slot: el.getAttribute("data-slot"),
+      role: el.getAttribute("role"),
+      id: el.id || null,
+      rendered: el.getClientRects().length > 0,
+      // The content, not something in it matching too: Radix's tooltip holds a hidden copy of its text as role=tooltip.
+      overlay: el.matches(overlay) && !el.parentElement?.closest(overlay),
+      ...(el.matches('[role="combobox"], [role="listbox"]') || el.querySelector('[role="combobox"], [role="listbox"]') ? { picks: true } : {}),
+    })), OVERLAY_SELECTOR);
+    const choice = chooseMeasuredElement(tree, portals, slots);
+    if (choice.kind === "none") return { error: choice.error };
+
+    const handle = choice.kind === "tree" && container
+      ? await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), choice.path)
+      : await portalsHandle.evaluateHandle((elements, index) => elements[index], choice.kind === "portal" ? choice.index : -1);
+    const target = handle.asElement();
+    if (!target) {
+      await handle.dispose();
+      return { error: `element vanished after load: ${choice.element}` };
+    }
+    const at = choice.kind === "tree" ? choice.trigger?.toast?.at : undefined;
+    const opener = at && container
+      ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), at)).asElement() ?? undefined
+      : undefined;
+    const fieldAt = choice.field && container
+      ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), choice.field.path)).asElement() ?? undefined
+      : undefined;
+    return {
+      target,
+      element: choice.element,
+      notes: choice.notes,
+      matchedSelector: choice.kind === "portal" ? `portal ${choice.element}` : containerSelector,
+      ...(choice.kind === "portal" ? { portal: true as const } : {}),
+      ...(choice.kind === "tree" && choice.trigger ? { trigger: choice.trigger } : {}),
+      ...(choice.kind === "tree" && choice.content ? { content: true as const } : {}),
+      ...(opener ? { opener: opener as ElementHandle<Element> } : {}),
+      ...(fieldAt && choice.field ? { field: { target: fieldAt as ElementHandle<Element>, element: choice.field.element } } : {}),
+    };
+  } finally {
+    await portalsHandle.dispose();
+  }
+}
+
+/**
+ * Runs in the page: the story's container and everything under it, as
+ * StoryNodes, cut short past `maxDepth` levels or `maxNodes` elements.
+ */
+export function readStoryTreeInPage(
+  container: Element,
+  args: { props: readonly string[]; maxDepth: number; maxNodes: number },
+): StoryNode {
+  let budget = args.maxNodes;
+  const read = (el: Element, depth: number): StoryNode => {
+    budget--;
+    const cs = getComputedStyle(el);
+    const styles: Record<string, string> = {};
+    for (const p of args.props) styles[p] = cs.getPropertyValue(p);
+    const node: StoryNode = {
+      tag: el.tagName.toLowerCase(),
+      slot: el.getAttribute("data-slot"),
+      role: el.getAttribute("role"),
+      hasPopup: el.getAttribute("aria-haspopup"),
+      expanded: el.getAttribute("aria-expanded"),
+      controls: el.getAttribute("aria-controls"),
+      id: el.id || null,
+      state: el.getAttribute("data-state"),
+      open: el.hasAttribute("data-popup-open") || el.hasAttribute("data-open"),
+      dir: el.getAttribute("dir"),
+      orientation: el.getAttribute("data-orientation") ?? el.getAttribute("aria-orientation"),
+      label: el.getAttribute("aria-label") ?? el.getAttribute("aria-labelledby"),
+      position: cs.position,
+      ...(el.hasAttribute("data-sonner-toast") ? { toast: true } : {}),
+      ...(el.hasAttribute("data-sonner-toaster") ? { toaster: true } : {}),
+      rendered: el.getClientRects().length > 0,
+      text: Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim() !== ""),
+      styles,
+      children: [],
+    };
+    // An icon font's glyph, or a dot, drawn by a pseudo-element alone.
+    const pseudos: NonNullable<StoryNode["pseudos"]> = [];
+    for (const which of ["::before", "::after"]) {
+      const ps = getComputedStyle(el, which);
+      const content = ps.getPropertyValue("content");
+      if (content === "none" || content === "normal" || content === "") continue;
+      const own: Record<string, string> = {};
+      for (const p of args.props) own[p] = ps.getPropertyValue(p);
+      pseudos.push({ content, styles: own });
+    }
+    if (pseudos.length) node.pseudos = pseudos;
+    if (depth < args.maxDepth) {
+      for (const child of Array.from(el.children)) {
+        if (budget <= 0) break;
+        node.children.push(read(child, depth + 1));
+      }
+    }
+    return node;
+  };
+  return read(container, 0);
+}
+
+/**
+ * Runs in the page: elements outside the story's container that may be its
+ * content in a portal, in document order. One carrying one of `slots`, the
+ * component's own and its content's, one an element in the container names
+ * in `aria-controls`, or an open overlay's content, as `overlay`
+ * (OVERLAY_SELECTOR) finds it. Storybook's own error and loading screens
+ * are left out.
+ */
+function findPortalsInPage(args: { container: Element | null; slots: string[]; overlay: string }): Element[] {
+  const wanted = new Set(args.slots);
+  const controlled = new Set<string>();
+  for (const el of Array.from(args.container?.querySelectorAll("[aria-controls]") ?? [])) {
+    for (const id of (el.getAttribute("aria-controls") ?? "").split(/\s+/)) if (id) controlled.add(id);
+  }
+  const storybook = "#storybook-docs, .sb-errordisplay, .sb-nopreview, .sb-preparing-story, .sb-preparing-docs";
+  return Array.from(document.body.querySelectorAll(`[data-slot], [id], ${args.overlay}`)).filter((el) =>
+    !(args.container?.contains(el) ?? false) &&
+    !el.closest(storybook) &&
+    (wanted.has(el.getAttribute("data-slot") ?? "") || controlled.has(el.id) || el.matches(args.overlay)));
 }
 
 /**
@@ -374,103 +1496,1954 @@ async function readComputedStyles(
   );
 }
 
+
 /**
- * Styles of the nearest descendant that actually owns text, with `opacity`
- * the product of every opacity from it up to the measured root, the root's
- * excluded: `<button><span style="opacity: 0.6">` draws its label at 60%.
+ * A checksum of the story's markup: its root container's, and that of what
+ * it renders into the body beside it, as a portal does, leaving out
+ * Storybook's own nodes, scripts and styles. Null when it can't be read.
+ *
+ * Every variant of a component can measure the same for two reasons a
+ * score can't tell apart: the story drops its args, so nothing they set
+ * reaches the page, or they reach the component and change only what snap
+ * doesn't measure, as input-otp's `textAlign` sets the alignment of an
+ * input that draws no text. The markup tells them apart: a dropped arg
+ * changes none of it.
+ */
+async function readMarkup(page: Page): Promise<string | null> {
+  return page.evaluate((containers) => {
+    const root = containers.map((selector) => document.querySelector(selector)).find((el) => el != null) ?? null;
+    const parts = [root ? root.outerHTML : ""];
+    for (const el of Array.from(document.body.children)) {
+      if (el === root || el.tagName === "SCRIPT" || el.tagName === "STYLE" || el.tagName === "NOSCRIPT") continue;
+      if (/^storybook-/.test(el.id) || /(?:^|\s)sb-/.test(el.getAttribute("class") ?? "")) continue;
+      parts.push(el.outerHTML);
+    }
+    const text = parts.join("\n");
+    // 32-bit FNV-1a, with the length: a checksum to compare, not to keep.
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 0x01000193) >>> 0;
+    return `${hash.toString(16).padStart(8, "0")}:${text.length}`;
+  }, [...ROOT_CONTAINERS]).catch(() => null);
+}
+
+/**
+ * The nearest element at or under `root` holding text the browser shows, or
+ * null when there is none.
+ *
+ * Text that is in the page but not drawn is passed over, with everything
+ * under it: an element not displayed, text whose `visibility` hides it, and
+ * an element cut down to a pixel or less that clips what it holds, as
+ * Tailwind's `sr-only` does (1px, `overflow: hidden`) and as Base UI's
+ * Progress hides a span. Measured, an icon button's `sr-only` label gave
+ * the button a text it doesn't show, and the hidden span gave Progress a
+ * text cut off at 1px, which the push would build as a 1px label.
+ */
+async function findTextHolder(root: ElementHandle<Element>): Promise<ElementHandle<Element> | null> {
+  const handle = await root.evaluateHandle((node) => {
+    const hidden = (el: Element): boolean => {
+      const cs = getComputedStyle(el);
+      if (cs.display === "none") return true;
+      // display: contents draws no box of its own, its children do.
+      if (cs.display === "contents") return false;
+      const box = el.getBoundingClientRect();
+      const clips = cs.overflowX !== "visible" || cs.overflowY !== "visible"
+        || (cs.clip !== "" && cs.clip !== "auto") || (cs.clipPath !== "" && cs.clipPath !== "none");
+      return box.width <= 1 && box.height <= 1 && clips;
+    };
+    const find = (el: Element): Element | null => {
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() && getComputedStyle(el).visibility === "visible") return el;
+        if (child.nodeType === Node.ELEMENT_NODE && !hidden(child as Element)) {
+          const found = find(child as Element);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return find(node);
+  });
+  const holder = handle.asElement();
+  if (!holder) await handle.dispose();
+  return holder;
+}
+
+/**
+ * How the text fits the block that lays it out, for normalizeTextLayout:
+ * that block is the holder, or its nearest ancestor up to the measured root
+ * that isn't `display: inline`, since an inline element wraps at its
+ * container's width and has none of its own to clip at. The lines are
+ * counted from the holder's own text, its rects grouped by height, so a
+ * line cut off with an ellipsis is one, as is a nested label's line.
+ */
+async function readTextLayout(holder: ElementHandle<Element>, root: ElementHandle<Element>): Promise<RawTextLayout | null> {
+  return holder.evaluate((text, node) => {
+    let block = text as HTMLElement;
+    while (block !== node && block.parentElement && getComputedStyle(block).display === "inline") block = block.parentElement;
+    const cs = getComputedStyle(block);
+    const px = (value: string) => parseFloat(value) || 0;
+    const width = block.clientWidth - px(cs.paddingLeft) - px(cs.paddingRight);
+    const rects: DOMRect[] = [];
+    for (const child of Array.from(text.childNodes)) {
+      if (child.nodeType !== Node.TEXT_NODE || !(child.textContent ?? "").trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(child);
+      rects.push(...Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0));
+    }
+    rects.sort((a, b) => a.top - b.top);
+    let lines = 0;
+    let bottom = -Infinity;
+    for (const rect of rects) {
+      if ((rect.top + rect.bottom) / 2 > bottom) {
+        lines++;
+        bottom = rect.bottom;
+      } else {
+        bottom = Math.max(bottom, rect.bottom);
+      }
+    }
+    const clamp = parseInt(cs.getPropertyValue("-webkit-line-clamp") || cs.getPropertyValue("line-clamp"), 10);
+    return {
+      width,
+      lines,
+      overflowsX: cs.overflowX !== "visible" && block.scrollWidth > block.clientWidth + 0.5,
+      overflowsY: cs.overflowY !== "visible" && block.scrollHeight > block.clientHeight + 0.5,
+      textOverflow: cs.textOverflow,
+      lineClamp: Number.isFinite(clamp) && clamp > 0 ? clamp : null,
+    };
+  }, root).catch(() => null);
+}
+
+/**
+ * Styles of the element holding the text, with `opacity` the product of
+ * every opacity from it up to the measured root, the root's excluded:
+ * `<button><span style="opacity: 0.6">` draws its label at 60%.
  */
 async function readTextStyles(
   page: Page,
-  handle: ElementHandle<Element>,
+  holder: ElementHandle<Element>,
+  root: ElementHandle<Element>,
   properties: readonly string[],
-): Promise<RawComputedStyles | null> {
+): Promise<RawComputedStyles> {
   return page.evaluate(
-    ([node, props]) => {
-      const findTextHolder = (el: Element): Element | null => {
-        for (const child of Array.from(el.childNodes)) {
-          if (child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim()) return el;
-          if (child.nodeType === Node.ELEMENT_NODE) {
-            const found = findTextHolder(child as Element);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      const holder = findTextHolder(node as Element);
-      if (!holder) return null;
-      const cs = getComputedStyle(holder);
+    ([text, node, props]) => {
+      const cs = getComputedStyle(text as Element);
       const out: Record<string, string> = {};
       for (const p of props as string[]) out[p] = cs.getPropertyValue(p);
       let opacity = 1;
-      for (let el: Element | null = holder; el && el !== node; el = el.parentElement) {
+      for (let el: Element | null = text as Element; el && el !== node; el = el.parentElement) {
         const own = parseFloat(getComputedStyle(el).opacity);
         if (Number.isFinite(own)) opacity *= own;
       }
       out["opacity"] = String(opacity);
       return out;
     },
-    [handle, properties] as const,
+    [holder, root, properties] as const,
   );
 }
 
 /**
- * Whether the first declared font family can actually be rendered.
+ * Which families of an element's font stack the browser draws with.
  *
- * `getComputedStyle` reports the font stack as authored, not what the browser
- * resolved to, so a project naming a font it never loaded measures identically
- * to one that loaded it — and would score full marks against Figma while the
- * screenshots showed a different typeface.
+ * `getComputedStyle` reports the stack as authored, not what the browser
+ * resolved it to, so a project naming a font it never loaded measures
+ * identically to one that loaded it, and would score full marks against
+ * Figma while the screenshots showed a different typeface. resolveFontFamily
+ * reads the result.
  *
  * Two signals, because neither is sufficient alone:
  *
  *   - `document.fonts.check` returns *true* for any family not declared via
  *     `@font-face`, including names that categorically do not exist. It is
- *     therefore useless for missing system fonts, and only meaningful when it
- *     returns false — which happens for a declared webfont whose file failed
- *     to load, the one case the canvas probe cannot see.
- *   - A canvas width probe renders a string as `"X", monospace` and again as
- *     `monospace`. Identical advance widths mean X never applied. This is what
- *     actually catches a missing system font.
+ *     only meaningful when it returns false, which happens for a declared
+ *     webfont whose file failed to load, the one case the canvas probe
+ *     cannot see.
+ *   - A canvas width probe renders a string as `X, monospace` and again as
+ *     `monospace`. Identical advance widths mean X never applied. This is
+ *     what catches a missing system font, and a keyword the browser doesn't
+ *     implement: Chrome draws `-apple-system, monospace` exactly as
+ *     `monospace`.
  *
- * Two fallbacks are probed because a family whose metrics happen to coincide
- * with one base would be misread as absent.
+ * Each family is probed as it is written: quoted, `"system-ui"`, it is a
+ * family name, which Chrome gives to `BlinkMacSystemFont`, and unquoted a
+ * keyword. Two fallbacks are probed because a family whose metrics happen
+ * to coincide with one base would be misread as absent. A generic family is
+ * not probed: it always resolves to some face.
  */
-async function readFontAvailability(
-  page: Page,
-  handle: ElementHandle<Element>,
-): Promise<boolean | null> {
-  return page.evaluate((node) => {
+async function probeFontStack(handle: ElementHandle<Element>): Promise<FontProbe | null> {
+  return handle.evaluate((node) => {
     try {
-      const cs = getComputedStyle(node as Element);
-      const first = (cs.fontFamily || "").split(",")[0]?.trim().replace(/^['"]|['"]$/g, "");
-      if (!first) return null;
+      const cs = getComputedStyle(node);
+      // Split on the commas between families, not those inside quotes.
+      const written: string[] = [];
+      let current = "";
+      let quote: string | null = null;
+      for (const ch of cs.fontFamily || "") {
+        if (quote) {
+          if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+          quote = ch;
+        } else if (ch === ",") {
+          if (current.trim()) written.push(current.trim());
+          current = "";
+          continue;
+        }
+        current += ch;
+      }
+      if (current.trim()) written.push(current.trim());
+      if (!written.length) return null;
 
-      const GENERIC = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace"];
-      if (GENERIC.includes(first.toLowerCase())) return null;
-
+      const families = written.map((family) => family.replace(/^(['"])(.*)\1$/, "$2"));
+      const GENERIC = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "math", "emoji", "fangsong"];
       const size = cs.fontSize || "16px";
       const weight = cs.fontWeight || "400";
 
-      // A declared webfont that failed to load is definitively unavailable.
-      if (document.fonts.check(`${weight} ${size} "${first}"`) === false) return false;
-
-      const canvas = document.createElement("canvas");
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return null;
-
+      const ctx = document.createElement("canvas").getContext("2d");
       const PROBE = "mmmmmmmmmmlliWWQQ@#%&08";
-      const widthWith = (family: string) => {
-        ctx.font = `${weight} 72px ${family}`;
-        return ctx.measureText(PROBE).width;
+      const widthWith = (stack: string) => {
+        ctx!.font = `${weight} 72px ${stack}`;
+        return ctx!.measureText(PROBE).width;
       };
+      const bases = ["monospace", "serif"];
+      const baseWidths = ctx ? bases.map(widthWith) : [];
 
-      // Applied if it changes the advance width against *either* base.
-      for (const base of ["monospace", "serif"]) {
-        if (widthWith(`"${first}", ${base}`) !== widthWith(base)) return true;
-      }
-      return false;
+      const applied = written.map((family, index) => {
+        if (family === families[index] && GENERIC.includes(family.toLowerCase())) return null;
+        // A declared webfont that failed to load is definitively unavailable.
+        try {
+          if (document.fonts.check(`${weight} ${size} ${family}`) === false) return false;
+        } catch {
+          // Not a font the shorthand can parse; the canvas can still tell.
+        }
+        if (!ctx) return null;
+        // Applied if it changes the advance width against *either* base.
+        return bases.some((base, b) => widthWith(`${family}, ${base}`) !== baseWidths[b]);
+      });
+      return { families, applied };
     } catch {
       return null;
     }
-  }, handle);
+  });
+}
+
+// --- Args -----------------------------------------------------------------
+//
+// Whether Storybook gave the story the args its URL asked for, and applying
+// through its preview any it didn't: see snap-args.ts for why. Storybook's
+// preview is read as `window.__STORYBOOK_PREVIEW__`, there from Storybook 7,
+// and written to through its channel's `updateStoryArgs` and `forceRemount`
+// events, which its Controls panel and toolbar send.
+
+/** The longest the check waits for Storybook's preview to hold the story's render. */
+const ARGS_WAIT_MS = 5000;
+
+/** Storybook's preview, as much of it as snap reads. */
+interface PreviewInPage {
+  storyRenders?: ({ id?: string; phase?: string; story?: StoryInPage } | undefined)[];
+  storyStoreValue?: {
+    args: { get(storyId: string): Record<string, unknown> };
+    getStoryContext(story: StoryInPage): {
+      args?: Record<string, unknown>;
+      unmappedArgs?: Record<string, unknown>;
+      argsByTarget?: Record<string, Record<string, unknown> | undefined>;
+      globals?: Record<string, unknown>;
+    };
+  };
+  channel?: {
+    on(event: string, listener: (payload: unknown) => void): void;
+    off?(event: string, listener: (payload: unknown) => void): void;
+    removeListener?(event: string, listener: (payload: unknown) => void): void;
+    emit(event: string, payload: unknown): void;
+  };
+}
+
+interface StoryInPage {
+  argTypes?: Record<string, ArgTypeInPage | undefined>;
+  parameters?: { fileName?: unknown };
+  /** The story's own args, before the URL's. */
+  initialArgs?: Record<string, unknown>;
+}
+
+interface ArgTypeInPage {
+  type?: string | { name?: string };
+  control?: string | false | { type?: string; disable?: boolean };
+  options?: unknown;
+  if?: unknown;
+  mapping?: unknown;
+  table?: { disable?: unknown; category?: unknown };
+  action?: unknown;
+}
+
+/**
+ * Runs in the page: what Storybook's preview holds for the story, as
+ * snap-args.ts reads it, once it holds a render of it, waiting up to
+ * `waitMs` for one. `{ error }` when there is no preview to read.
+ */
+export async function storyArgsInPage(args: { storyId: string; waitMs: number }): Promise<StoryArgsSnapshot | { error: string }> {
+  try {
+    const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+    if (!preview) return { error: "the page has no window.__STORYBOOK_PREVIEW__" };
+    const deadline = Date.now() + args.waitMs;
+    let story: StoryInPage | undefined;
+    for (;;) {
+      story = preview.storyRenders?.find((r) => r?.id === args.storyId && r.story)?.story;
+      if (story || Date.now() >= deadline) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const store = preview.storyStoreValue;
+    if (!story || !store) return { error: `Storybook's preview holds no render of ${args.storyId}` };
+
+    // What crosses back to Node: a value that isn't a string, number,
+    // boolean or null is recorded by its type.
+    const plain = (value: unknown): unknown =>
+      value === null || ["string", "number", "boolean"].includes(typeof value) ? value : { $type: typeof value };
+    const record = (from: Record<string, unknown> | undefined): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(from ?? {})) if (value !== undefined) out[name] = plain(value);
+      return out;
+    };
+
+    const argTypes: Record<string, StoryArgType> = {};
+    const mappings: Record<string, Record<string, unknown>> = {};
+    for (const [name, t] of Object.entries(story.argTypes ?? {})) {
+      if (!t) continue;
+      if (t.mapping && typeof t.mapping === "object") {
+        mappings[name] = {};
+        for (const [key, value] of Object.entries(t.mapping)) mappings[name][key] = plain(value);
+      }
+      const control = t.control === false || (typeof t.control === "object" && t.control?.disable)
+        ? false
+        : typeof t.control === "string" ? t.control : t.control?.type;
+      let condition: Record<string, unknown> | undefined;
+      try {
+        condition = t.if && typeof t.if === "object" ? JSON.parse(JSON.stringify(t.if)) : undefined;
+      } catch {
+        condition = undefined;
+      }
+      argTypes[name] = {
+        type: typeof t.type === "string" ? t.type : t.type?.name,
+        control,
+        options: Array.isArray(t.options) ? t.options.map(plain) : undefined,
+        if: condition,
+        mapping: t.mapping ? true : undefined,
+        hidden: t.table?.disable === true ? true : undefined,
+        category: typeof t.table?.category === "string" ? t.table.category : undefined,
+        action: t.action ? true : undefined,
+        initial: story.initialArgs && Object.hasOwn(story.initialArgs, name) && (story.initialArgs[name] === null || ["string", "number", "boolean"].includes(typeof story.initialArgs[name]))
+          ? story.initialArgs[name] as string | number | boolean | null
+          : undefined,
+      };
+    }
+
+    // The args the story is given: those left after argTypes `if`
+    // conditions, and any aimed at another target, which skip them, each by
+    // its value before a `mapping`.
+    const context = store.getStoryContext(story);
+    const values = context.unmappedArgs ?? context.args ?? {};
+    const given = new Set(Object.keys(context.args ?? {}));
+    for (const [target, group] of Object.entries(context.argsByTarget ?? {})) {
+      if (target !== "UNTARGETED") for (const name of Object.keys(group ?? {})) given.add(name);
+    }
+    const rendered: Record<string, unknown> = {};
+    for (const name of given) if (values[name] !== undefined) rendered[name] = plain(values[name]);
+
+    let stored: Record<string, unknown> = {};
+    try {
+      stored = record(store.args.get(args.storyId));
+    } catch {
+      // No args recorded for it: everything the store would hold is in `rendered`.
+    }
+    const fileName = story.parameters?.fileName;
+    return {
+      fileName: typeof fileName === "string" ? fileName : null, argTypes, stored, rendered, globals: record(context.globals),
+      ...(Object.keys(mappings).length ? { mappings } : {}),
+    };
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+}
+
+/**
+ * Runs in the page: gives the story `updates` through Storybook's channel,
+ * as its Controls panel does, after lifting the argTypes `if` of each arg in
+ * `lift`, then remounts it, so it renders from scratch with them as from
+ * its URL. With `reset`, it resets those args to the story's own instead,
+ * as the Controls panel's reset does, and `updates` is unused; with
+ * `remount`, it only remounts the story, with the args it has. Waits for
+ * the render in progress to finish first: Storybook queues a rerender
+ * asked for during one, and reloads the page for a remount. `{ error }`
+ * when it can't, or Storybook doesn't confirm it.
+ */
+export async function applyStoryArgsInPage(args: {
+  storyId: string;
+  updates: Record<string, unknown>;
+  lift: string[];
+  waitMs: number;
+  reset?: string[];
+  remount?: boolean;
+}): Promise<{ ok: true } | { error: string }> {
+  try {
+    const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+    const channel = preview?.channel;
+    const render = preview?.storyRenders?.find((r) => r?.id === args.storyId && r.story);
+    if (!channel || !render?.story) return { error: `Storybook's preview has no channel or no render of ${args.storyId}` };
+    const deadline = Date.now() + args.waitMs;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    // Storybook 8 and later end a render at "finished"; 7 at "completed",
+    // or "played" after a play function.
+    const settled = async (): Promise<boolean> => {
+      let last = render.phase;
+      let since = Date.now();
+      while (Date.now() < deadline) {
+        const phase = render.phase;
+        if (phase !== last) {
+          last = phase;
+          since = Date.now();
+        }
+        if (phase === "finished" || phase === "errored" || phase === "aborted") return true;
+        if ((phase === "completed" || phase === "played") && Date.now() - since >= 300) return true;
+        await sleep(20);
+      }
+      return false;
+    };
+    // The first of `wanted`'s events whose payload matches, or false at the deadline.
+    const once = (wanted: Record<string, (payload: unknown) => boolean>) => new Promise<boolean>((resolve) => {
+      const listeners = Object.entries(wanted).map(([event, matches]) => [event, (payload: unknown) => {
+        if (matches(payload)) done(true);
+      }] as const);
+      const done = (value: boolean) => {
+        clearTimeout(timer);
+        for (const [event, listener] of listeners) (channel.off ?? channel.removeListener)?.call(channel, event, listener);
+        resolve(value);
+      };
+      const timer = setTimeout(() => done(false), Math.max(0, deadline - Date.now()));
+      for (const [event, listener] of listeners) channel.on(event, listener);
+    });
+    const forStory = (payload: unknown) =>
+      payload === args.storyId || (typeof payload === "object" && payload !== null && (payload as { storyId?: unknown }).storyId === args.storyId);
+    const any = () => true;
+
+    if (!(await settled())) return { error: "the story was still rendering" };
+    const argTypes = render.story.argTypes ?? {};
+    for (const name of args.lift) {
+      const argType = argTypes[name];
+      if (argType?.if) argTypes[name] = { ...argType, if: undefined };
+      if (argTypes[name]?.if) return { error: `argTypes.${name}.if couldn't be lifted` };
+    }
+    if (!args.remount) {
+      const updated = once({ storyArgsUpdated: forStory });
+      if (args.reset) channel.emit("resetStoryArgs", { storyId: args.storyId, argNames: args.reset });
+      else channel.emit("updateStoryArgs", { storyId: args.storyId, updatedArgs: args.updates });
+      if (!(await updated)) return { error: "Storybook didn't confirm the args" };
+    }
+    // Rendered, or threw: a story that can't render the values never says
+    // storyRendered, but shows Storybook's error display, which the capture
+    // reads next, so it is a render error rather than a refusal.
+    const rendered = once({ storyRendered: forStory, storyThrewException: any, storyErrored: any });
+    channel.emit("forceRemount", { storyId: args.storyId });
+    if (!(await rendered)) return { error: "the story didn't render again with them" };
+    if (!(await settled())) return { error: "the story was still rendering with them" };
+    return { ok: true };
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+}
+
+/** A page's console warnings that Storybook rejected an arg value, from now until stop(). */
+interface ArgWarnings {
+  texts: string[];
+  stop(): void;
+}
+
+function watchArgWarnings(page: Page): ArgWarnings {
+  const texts: string[] = [];
+  const listener = (message: ConsoleMessage) => {
+    const text = message.text();
+    if (text.includes("Received illegal value for")) texts.push(text);
+  };
+  page.on("console", listener);
+  return { texts, stop: () => page.off("console", listener) };
+}
+
+/**
+ * Runs in the page: each story's own annotations, from the CSF file
+ * Storybook's preview loaded it from (`loadCSFFileByStoryId`, there from
+ * Storybook 7): its own args, not its component's, and whether it has a
+ * render (or, a CSF2 story, is a function itself), decorators or a play
+ * function of its own, for snap to choose
+ * which story measures each variant (snap-stories.ts). `{ error }` when the
+ * preview can't give them.
+ */
+export async function storiesOwnInPage(args: { storyIds: string[] }): Promise<StoryOwn[] | { error: string }> {
+  type Csf = { stories?: Record<string, { args?: Record<string, unknown>; render?: unknown; userStoryFn?: unknown; decorators?: unknown; play?: unknown } | undefined> };
+  try {
+    const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: { storyStoreValue?: { loadCSFFileByStoryId?: (id: string) => Promise<Csf> } } }).__STORYBOOK_PREVIEW__;
+    const store = preview?.storyStoreValue;
+    if (typeof store?.loadCSFFileByStoryId !== "function") return { error: "Storybook's preview can't load a story's file (loadCSFFileByStoryId)" };
+    const plain = (value: unknown): unknown =>
+      value === null || ["string", "number", "boolean"].includes(typeof value) ? value : { $type: typeof value };
+    const out: StoryOwn[] = [];
+    for (const id of args.storyIds) {
+      const story = (await store.loadCSFFileByStoryId(id)).stories?.[id];
+      if (!story) return { error: `Storybook's preview has no story ${id} in its file` };
+      const own: Record<string, unknown> = {};
+      for (const [name, value] of Object.entries(story.args ?? {})) if (value !== undefined) own[name] = plain(value);
+      out.push({
+        id, args: own,
+        // A CSF2 story, a function, is kept as its userStoryFn, which Storybook renders in place of any render.
+        ...(typeof story.render === "function" || typeof story.userStoryFn === "function" ? { render: true as const } : {}),
+        ...(Array.isArray(story.decorators) && story.decorators.length ? { decorators: true as const } : {}),
+        ...(typeof story.play === "function" ? { play: true as const } : {}),
+      });
+    }
+    return out;
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+}
+
+/**
+ * The component's stories' own annotations, read in `page`, which must
+ * hold Storybook's preview, as it does once a story has loaded; null, with
+ * why, when they can't be read, and snap measures every variant from the
+ * component's story as before.
+ */
+export async function readStoriesOwn(page: Page, storyIds: readonly string[]): Promise<{ stories: StoryOwn[] } | { error: string }> {
+  let read: unknown;
+  try {
+    read = await page.evaluate(storiesOwnInPage, { storyIds: [...storyIds] });
+  } catch (err) {
+    return { error: String(err instanceof Error ? err.message : err).split("\n")[0] };
+  }
+  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (isRecord(read) && typeof read.error === "string") return { error: read.error };
+  if (!Array.isArray(read) || read.length !== storyIds.length || !read.every((s, i) => isRecord(s) && s.id === storyIds[i] && isRecord(s.args))) {
+    return { error: "Storybook's preview returned nothing snap can read" };
+  }
+  return { stories: read as StoryOwn[] };
+}
+
+/** A value read from the page, as a snapshot, or why it isn't one. */
+function asSnapshot(value: unknown): StoryArgsSnapshot | { error: string } {
+  const read = value as Partial<StoryArgsSnapshot & { error: unknown }> | null;
+  if (typeof read?.error === "string") return { error: read.error };
+  const isRecord = (v: unknown) => typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isRecord(read?.argTypes) || !isRecord(read?.stored) || !isRecord(read?.rendered)) {
+    return { error: "Storybook's preview returned nothing snap can read" };
+  }
+  return {
+    fileName: typeof read!.fileName === "string" ? read!.fileName : null,
+    argTypes: read!.argTypes!,
+    stored: read!.stored!,
+    rendered: read!.rendered!,
+    globals: isRecord(read!.globals) ? read!.globals! : {},
+    ...(isRecord(read!.mappings) ? { mappings: read!.mappings! } : {}),
+  };
+}
+
+/**
+ * Which of the story's requested args Storybook gave it, and, for any it
+ * didn't, the result of applying them through its preview.
+ */
+export async function checkStoryArgs(
+  page: Page,
+  story: NonNullable<CaptureOptions["story"]>,
+  timeoutMs: number,
+  warnings: readonly string[],
+  apply = true,
+): Promise<StoryArgsCheck> {
+  const read = async () => asSnapshot(await page.evaluate(storyArgsInPage, { storyId: story.id, waitMs: Math.min(timeoutMs, ARGS_WAIT_MS) }));
+  const notInUrl = story.notInUrl ?? [];
+  const first = await read();
+  if ("error" in first) {
+    // A value left out of the URL wasn't given. Storybook's console warning
+    // still names one outside the options.
+    const rejected: ArgRejection[] = [
+      ...notInUrl.map((name): ArgRejection => ({ name, value: story.args[name], reasons: ["url-unsafe"] })),
+      ...rejectionsFromWarnings(story.args, warnings).filter((r) => !notInUrl.includes(r.name)),
+    ];
+    return { checked: false, rejected, unapplied: rejected, error: first.error };
+  }
+
+  const known = { argTypes: compactArgTypes(first.argTypes), ...(first.fileName ? { storyFile: first.fileName } : {}) };
+  const rejected = findRejectedArgs(story.args, first, story.properties, notInUrl);
+  if (!rejected.length) return { checked: true, rejected, unapplied: [], ...known };
+  if (!apply) return { checked: true, rejected, unapplied: rejected, error: "snap was told not to set values through it (--no-channel-args)", ...known };
+
+  const { updates, lift } = previewArgUpdate(rejected, first, story.properties);
+  let applied: { ok: true } | { error: string };
+  try {
+    applied = await page.evaluate(applyStoryArgsInPage, { storyId: story.id, updates, lift, waitMs: timeoutMs });
+  } catch (err) {
+    // The page went, as a remount Storybook can't do in place reloads it.
+    applied = { error: firstLine(err) };
+  }
+  if ("error" in applied) return { checked: true, rejected, unapplied: rejected, error: applied.error, ...known };
+
+  const after = await read();
+  if ("error" in after) return { checked: true, rejected, unapplied: rejected, error: after.error, ...known };
+  const unapplied = stillRejected(story.args, rejected, after, story.properties);
+  if (unapplied.length) {
+    return { checked: true, rejected, unapplied, error: "the story still wasn't given them after Storybook's preview took them", ...known };
+  }
+  return { checked: true, rejected, unapplied: [], appliedVia: "preview", ...known };
+}
+
+/** The capture's error for values the story wasn't given. */
+function describeUnapplied(check: StoryArgsCheck): string {
+  const values = check.unapplied.map((r) => `${r.name}=${r.value} (${r.reasons.join(", ")})`).join(", ");
+  const why = check.error ? `; through Storybook's preview, ${check.error}` : "";
+  return `Storybook didn't give the story ${values}${why}, so this variant was not measured`;
+}
+
+// --- Element tree -------------------------------------------------------------
+//
+// Everything under the measured root that draws, read in one page.evaluate
+// as raw computed values; snap-tree.ts decides what the tree keeps. Images
+// are fetched and screenshots taken here, after it has.
+
+/** What captureTreeInPage is told, from snap-tree.ts and snap-assets.ts, as a page function can import nothing. */
+interface TreeInPageArgs {
+  mode: "tree" | "count";
+  defaults: Record<string, string>;
+  textProperties: readonly string[];
+  maxElements: number;
+  maxDepth: number;
+  maxSvgElements: number;
+  svgShapes: readonly string[];
+  svgGeometry: readonly string[];
+  svgPaint: readonly string[];
+  svgGroup: readonly string[];
+  svgDropped: readonly string[];
+  nonRendered: readonly string[];
+  /** Whether to read what is around the root too, for an overlay's content: RawTreeCapture's `around`. */
+  around?: boolean;
+  /**
+   * Elements under the root read as the root's only children, the root a
+   * box around them that draws nothing: a select's open field and the
+   * content it opened (pairOf), which share no element but the body.
+   */
+  focus?: Element[];
+}
+
+/**
+ * Runs in the page: the subtree of `root`, as snap-tree.ts reads it. Boxes
+ * are relative to the root's border box, unrounded. Elements not displayed,
+ * at opacity 0, and the inside of an `<svg>`, `<img>` or form control are not
+ * walked; `display: contents` is, its children taken as its parent's. In
+ * `count` mode, for `--root-only`, nothing is measured that would take more
+ * than reading: no pseudo-element stand-ins, SVG markup or font probes.
+ *
+ * A pseudo-element that may paint and sits in the flow is measured on a
+ * stand-in span carrying its computed style, the real one hidden by a rule
+ * on a temporary attribute meanwhile; both are gone before this returns, so
+ * the markup snap compares across variants is as it was.
+ */
+export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeCapture {
+  const focus = args.focus ?? [];
+  const R = focus.length
+    ? (() => {
+      const rects = focus.map((el) => el.getBoundingClientRect());
+      const x = Math.min(...rects.map((r) => r.left));
+      const y = Math.min(...rects.map((r) => r.top));
+      return new DOMRect(x, y, Math.max(...rects.map((r) => r.right)) - x, Math.max(...rects.map((r) => r.bottom)) - y);
+    })()
+    : root.getBoundingClientRect();
+  const rel = (r: DOMRect): RawBox => [r.left - R.left, r.top - R.top, r.width, r.height];
+  const properties = Object.keys(args.defaults);
+  const nonRendered = new Set(args.nonRendered);
+  const fonts: Record<string, FontProbe | null> = {};
+  const tree = args.mode === "tree";
+  let read = 0;
+  let hider: HTMLStyleElement | null = null;
+  const HIDE = "data-storysync-pseudo";
+
+  // A color drawn at alpha 0, in any space Chromium writes one in.
+  // rgba() with alpha 0, or the slash syntax's `/ 0`: not rgb(r, g, 0), which is opaque.
+  const clear = (c: string) => !c || c === "transparent" || /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(c) || /\/\s*0(?:\.0+)?\s*\)$/.test(c);
+  // As snap-tree.ts's EVIDENCE: `mix-` keeps a blend that changes in Dark,
+  // Avatar's ring's `dark:after:mix-blend-lighten`, for figma code to name.
+  const evidence = /(?:^|[:!])(?:bg|text|border|ring|fill|stroke|outline|rounded|shadow|mix)-/;
+  // Whether an unprefixed `text-*` class sets the text color, tried on a
+  // probe that inherits a color nothing else gives it: a project's own font
+  // size (`text-body`) sets none, and a text inherits its color past it, as
+  // `text-sm` does. Where the probe can't tell, as when a rule colors every
+  // element, it counts as one that does.
+  const SENTINEL = "rgb(1, 2, 3)";
+  const colorClasses = new Map<string, boolean>();
+  const setsTextColor = (token: string): boolean => {
+    let sets = colorClasses.get(token);
+    if (sets !== undefined) return sets;
+    const host = document.createElement("div");
+    const probe = document.createElement("div");
+    for (const [name, v] of Object.entries({ position: "absolute", left: "0", top: "0", visibility: "hidden", color: SENTINEL })) host.style.setProperty(name, v, "important");
+    probe.setAttribute("class", token);
+    host.appendChild(probe);
+    document.body.appendChild(host);
+    sets = getComputedStyle(host).color !== SENTINEL || getComputedStyle(probe).color !== SENTINEL;
+    host.remove();
+    colorClasses.set(token, sets);
+    return sets;
+  };
+  const unprefixed = (token: string): boolean => {
+    let depth = 0;
+    for (const ch of token) {
+      if (ch === "[" || ch === "(") depth++;
+      else if (ch === "]" || ch === ")") depth--;
+      else if (ch === ":" && depth === 0) return false;
+    }
+    return true;
+  };
+  // A class's tokens that may be class evidence (snap-tree.ts's classEvidence), less a text size.
+  const evidenceIn = (classes: string[]): string[] =>
+    classes.filter((t) => t && evidence.test(t) && !(/^!?text-/.test(t) && unprefixed(t) && !setsTextColor(t)));
+
+  // Whether each `dark:` class with a state (`dark:data-active:text-foreground`)
+  // applies to an element as measured, but for the dark theme, where the
+  // page can tell: Tailwind puts it after the plain `dark:` one, so it is
+  // what the dark theme paints wherever its state applies. Read from the
+  // page's own style sheets, which say what a variant means, a project's
+  // own included (shadcn/ui's `data-active` is `[data-state="active"]` too):
+  // the class's selector, less what a plain `dark:` class's adds, matched
+  // against the element, its at-rules tried (`@media (hover: hover)`).
+  // Undefined where the sheets don't say: no rule, nested CSS, a container
+  // query.
+  type Part = { sel: string; at: string[] | null };
+  let sheetParts: Part[] | null = null;
+  const partsOfSheets = (): Part[] => {
+    if (sheetParts) return sheetParts;
+    const parts: Part[] = [];
+    const split = (list: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let i = 0; i < list.length; i++) {
+        const ch = list[i];
+        if (ch === "\\") i++;
+        else if (ch === "(" || ch === "[") depth++;
+        else if (ch === ")" || ch === "]") depth--;
+        else if (ch === "," && depth === 0) {
+          out.push(list.slice(from, i).trim());
+          from = i + 1;
+        }
+      }
+      out.push(list.slice(from).trim());
+      return out;
+    };
+    // `at` is each media query or supports condition around the rule; null under one no browser call answers.
+    type Rule = CSSRule & { selectorText?: string; cssRules?: CSSRuleList; media?: MediaList; conditionText?: string; containerName?: string; name?: string };
+    // A rule nested in it narrows what it styles; an at-rule there only its
+    // value, as Tailwind's `@supports (color: color-mix(...))` for `/30`.
+    const nestsRule = (r: Rule): boolean => Array.from(r.cssRules ?? []).some((c) => (c as Rule).selectorText !== undefined || nestsRule(c as Rule));
+    const visit = (rules: CSSRuleList, at: string[] | null) => {
+      for (const rule of Array.from(rules)) {
+        const r = rule as Rule;
+        if (r.selectorText !== undefined) {
+          for (const sel of split(r.selectorText)) parts.push({ sel, at: nestsRule(r) ? null : at });
+        } else if (r.cssRules) {
+          const inner = !at ? null
+            : r.media ? [...at, `@media ${r.media.mediaText}`]
+            : typeof r.conditionText === "string" && r.containerName === undefined ? [...at, `@supports ${r.conditionText}`]
+            : typeof r.name === "string" && r.conditionText === undefined ? at
+            : null;
+          visit(r.cssRules, inner);
+        }
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets ?? [])) {
+      try {
+        visit(sheet.cssRules, []);
+      } catch {
+        // Another origin's sheet: unread.
+      }
+    }
+    return (sheetParts = parts);
+  };
+  const esc = (token: string) => `.${typeof CSS !== "undefined" && CSS.escape ? CSS.escape(token) : token}`;
+  // A rule's selector part for a class, and what follows the class.
+  const rulesByToken = new Map<string, Part[]>();
+  const ruleFor = (token: string): Part[] => {
+    const e = esc(token);
+    if (!rulesByToken.has(token)) rulesByToken.set(token, partsOfSheets().filter((p) => p.sel.startsWith(e) && !/^[\w\\-]/.test(p.sel.slice(e.length))));
+    return rulesByToken.get(token)!;
+  };
+  // What a plain `dark:` class's rule adds to its class: `:is(.dark *)`, or a media query.
+  let darkPart: Part | null | undefined;
+  const darkOf = (): Part | null => {
+    if (darkPart !== undefined) return darkPart;
+    darkPart = null;
+    for (const p of partsOfSheets()) {
+      const m = /^\.dark\\:((?:\\.|[\w-])+)/.exec(p.sel);
+      if (!m || m[1].includes("\\:") || !p.at) continue;
+      darkPart = { sel: p.sel.slice(m[0].length), at: p.at };
+      break;
+    }
+    return darkPart;
+  };
+  const darkStateOn = (at: Element, token: string): boolean | undefined => {
+    const dark = darkOf();
+    if (!dark) return undefined;
+    const rules = ruleFor(token);
+    for (const p of rules) {
+      if (!p.at) return undefined;
+      // Its selector and at-rules, less the dark variant's.
+      const rest = p.sel.slice(esc(token).length);
+      if (dark.sel && !rest.includes(dark.sel)) return undefined;
+      const sel = `*${rest.replace(dark.sel, "")}`.replace(/::?(?:before|after)\b/g, "");
+      const at2 = [...p.at];
+      for (const a of dark.at!) {
+        const i = at2.indexOf(a);
+        if (i < 0) return undefined;
+        at2.splice(i, 1);
+      }
+      let applies: boolean;
+      try {
+        applies = at.matches(sel) && at2.every((a) => (a.startsWith("@media ") ? matchMedia(a.slice(7)).matches : CSS.supports(a.slice(10))));
+      } catch {
+        return undefined;
+      }
+      if (applies) return true;
+    }
+    return rules.length ? false : undefined;
+  };
+  // Each of an element's `dark:` classes with a state, and whether that state applies to it, where the page can tell.
+  const statesOf = (at: Element, classes: string[]): Record<string, boolean> | undefined => {
+    const out: Record<string, boolean> = {};
+    for (const token of classes) {
+      const variants: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let i = 0; i < token.length; i++) {
+        const ch = token[i];
+        if (ch === "[" || ch === "(") depth++;
+        else if (ch === "]" || ch === ")") depth--;
+        else if (ch === ":" && depth === 0) {
+          variants.push(token.slice(from, i).replace(/^!/, ""));
+          from = i + 1;
+        }
+      }
+      if (!variants.includes("dark") || variants.every((v) => v === "dark" || v === "before" || v === "after")) continue;
+      const on = darkStateOn(at, token);
+      if (on !== undefined) out[token] = on;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+
+  // The custom properties behind a color a style sheet or an inline style
+  // gives by var(), not a class (figma-bind.ts reads them as `var:`
+  // evidence): Sonner's toast is `background: var(--normal-bg)`, and
+  // shadcn/ui's Toaster sets `--normal-bg: var(--popover)` on it inline, so
+  // the toast's fill is `bg-normal-bg` and `bg-popover`, each named as a
+  // class names a token, `--color-popover` as `popover`. Only the
+  // declaration that wins counts, as the cascade picks it: an inline style
+  // over a rule, then `!important`, the cascade layer, specificity and
+  // order, among the rules whose @media and @supports apply now (a nested
+  // rule's `&` is its parent's selector; a container query's are left
+  // out, as no call answers one here). A custom property is followed to
+  // the nearest element up that declares it, and there to the declaration
+  // that wins. A utility class's winning rule is class evidence already,
+  // and the base styles' (`*`, `body`) are `defaults`'s, so neither
+  // records anything; a text's color is that of the nearest element below
+  // the body that a rule or class sets one on.
+  //
+  // A rule's color that is no var() is written as an arbitrary class
+  // writes it, `text-[#3f3f3f]` (snap-tree.ts turns the value into its
+  // hex), and the color the page's dark theme gives the element instead,
+  // where it does, after `dark:`: Sonner's description is `#3f3f3f`, and
+  // `hsl(0, 0%, 91%)` by `[data-sonner-theme='dark'] [data-description]`,
+  // which Figma then holds as a pair of the two. The dark theme's rules are
+  // those under a `.dark` class or a `[data-…theme…="dark"]` attribute,
+  // matched with it taken off, and those under `prefers-color-scheme:
+  // dark`; a `.light` or `[data-…theme…="light"]` rule is the light
+  // theme's alone.
+  type Declared = {
+    sel: string;
+    style: CSSStyleDeclaration;
+    layer: number;
+    layered: boolean;
+    spec: number;
+    order: number;
+    utility: boolean;
+    base: boolean;
+    /** The dark theme's alone: a copy of a rule its marker is taken off, or one under its media query. */
+    dark?: true;
+    /** The light theme's alone. */
+    light?: true;
+  };
+  type VarRule = CSSRule & { selectorText?: string; style?: CSSStyleDeclaration; cssRules?: CSSRuleList; media?: MediaList; conditionText?: string; containerName?: string; name?: string; nameList?: ArrayLike<string>; keyText?: string; findRule?: unknown };
+  const VAR_PAINTS: [string, string[]][] = [
+    ["bg", ["background-color", "background"]],
+    ["border", ["border-color", "border", ...["top", "right", "bottom", "left"].flatMap((side) => [`border-${side}-color`, `border-${side}`])]],
+    ["fill", ["fill"]],
+    ["stroke", ["stroke"]],
+  ];
+  const TRACKED = new Set(VAR_PAINTS.flatMap(([, list]) => list).concat("color"));
+  const DARK_MARK = /\.dark(?![\w\\-])|\[[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?dark["']?\s*(?:[is]\s*)?\]/gi;
+  const LIGHT_MARK = /\.light(?![\w\\-])|\[[\w-]*(?:theme|mode|scheme)[\w-]*\s*=\s*["']?light["']?\s*(?:[is]\s*)?\]|:not\([^)]*\.dark(?![\w\\-])/i;
+  const DARK_SCHEME = /prefers-color-scheme\s*:\s*dark/gi;
+  const splitSelectors = (list: string): string[] => {
+    const out: string[] = [];
+    let depth = 0;
+    let from = 0;
+    for (let i = 0; i < list.length; i++) {
+      const ch = list[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (ch === "," && depth === 0) {
+        out.push(list.slice(from, i).trim());
+        from = i + 1;
+      }
+    }
+    out.push(list.slice(from).trim());
+    return out.filter(Boolean);
+  };
+  const identEnd = (s: string, i: number): number => {
+    while (i < s.length) {
+      if (s[i] === "\\") i += 2;
+      else if (/[\w-]/.test(s[i]) || s.charCodeAt(i) > 127) i++;
+      else break;
+    }
+    return i;
+  };
+  const closing = (s: string, i: number): number => {
+    const open = s[i];
+    const shut = open === "(" ? ")" : "]";
+    let depth = 0;
+    for (let j = i; j < s.length; j++) {
+      if (s[j] === "\\") j++;
+      else if (s[j] === open) depth++;
+      else if (s[j] === shut && --depth === 0) return j;
+    }
+    return s.length;
+  };
+  // A selector's specificity as one number, ids by 1e6, classes by 1e3.
+  const specificity = (sel: string): number => {
+    let n = 0;
+    for (let i = 0; i < sel.length; ) {
+      const ch = sel[i];
+      if (ch === "#" || ch === ".") {
+        n += ch === "#" ? 1e6 : 1e3;
+        i = identEnd(sel, i + 1);
+      } else if (ch === "[") {
+        n += 1e3;
+        i = closing(sel, i) + 1;
+      } else if (ch === ":") {
+        const element = sel[i + 1] === ":";
+        const from = i + (element ? 2 : 1);
+        const to = identEnd(sel, from);
+        const name = sel.slice(from, to).toLowerCase();
+        const end = sel[to] === "(" ? closing(sel, to) : -1;
+        const args = end >= 0 ? sel.slice(to + 1, end) : "";
+        if (element || /^(?:before|after|first-line|first-letter)$/.test(name)) n += 1;
+        else if (/^(?:is|not|has|matches|any|-webkit-any)$/.test(name)) n += Math.max(0, ...splitSelectors(args).map(specificity));
+        else if (name !== "where") n += 1e3 + (/^nth-(?:last-)?child$/.test(name) && /\sof\s/i.test(args) ? Math.max(0, ...splitSelectors(args.slice(args.search(/\sof\s/i) + 4)).map(specificity)) : 0);
+        i = end >= 0 ? end + 1 : to;
+      } else if (/[A-Za-z_]/.test(ch) || sel.charCodeAt(i) > 127) {
+        n += 1;
+        i = identEnd(sel, i);
+      } else i++;
+    }
+    return n;
+  };
+  // The class a selector's last compound needs, to look it up by, or null.
+  const keyClass = (sel: string): string | null => {
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < sel.length; i++) {
+      const ch = sel[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (depth === 0 && /[\s>+~]/.test(ch)) start = i + 1;
+    }
+    const last = sel.slice(start);
+    depth = 0;
+    for (let i = 0; i < last.length; i++) {
+      const ch = last[i];
+      if (ch === "\\") i++;
+      else if (ch === "(" || ch === "[") depth++;
+      else if (ch === ")" || ch === "]") depth--;
+      else if (depth === 0 && ch === ".") {
+        const m = /^\.((?:\\.|[\w-])+)/.exec(last.slice(i));
+        return m && !/\\[0-9a-fA-F]/.test(m[1]) ? m[1].replace(/\\(.)/g, "$1") : null;
+      }
+    }
+    return null;
+  };
+  // A nested rule's selector with its parent's for `&`, or before it where it has none.
+  const nested = (sel: string, parent: string | null): string =>
+    !parent ? sel : /(?:^|[^\\])&/.test(sel) ? sel.replace(/(\\.)|&/g, (m, escaped: string | undefined) => escaped ?? `:is(${parent})`) : `:is(${parent}) ${sel}`;
+  const utilityClass = /(?:^|[:!])-?(?:bg|text|border|fill|stroke|outline|ring|divide|from|via|to|placeholder|caret|accent|decoration|shadow)-/;
+  const baseSelector = /^(?:\*|html|body|:root|:host|::?(?:before|after|backdrop|placeholder|file-selector-button|marker|selection))$/;
+  const mediaOn = (query: string): boolean => {
+    try {
+      return typeof matchMedia !== "function" || matchMedia(query).matches;
+    } catch {
+      return false;
+    }
+  };
+  const supportsOn = (condition: string): boolean => {
+    try {
+      return typeof CSS === "undefined" || typeof CSS.supports !== "function" || CSS.supports(condition);
+    } catch {
+      return false;
+    }
+  };
+  let varIndex: { general: Declared[]; byClass: Map<string, Declared[]> } | null = null;
+  const indexVars = () => {
+    if (varIndex) return varIndex;
+    const general: Declared[] = [];
+    const byClass = new Map<string, Declared[]>();
+    const layers: string[] = [];
+    const layerOf = (name: string): number => {
+      if (!layers.includes(name)) layers.push(name);
+      return layers.indexOf(name);
+    };
+    const put = (d: Declared) => {
+      const key = keyClass(d.sel);
+      if (key) byClass.set(key, [...(byClass.get(key) ?? []), d]);
+      else general.push(d);
+    };
+    let order = 0;
+    const record = (selectors: string[], style: CSSStyleDeclaration, layer: string | null, theme: "any" | "dark" | "light") => {
+      let tracks = false;
+      for (let i = 0; i < style.length && !tracks; i++) tracks = (style[i].startsWith("--") && !style[i].startsWith("--tw-")) || TRACKED.has(style[i]);
+      if (!tracks) return;
+      order++;
+      const at = layer === null ? 0 : layerOf(layer);
+      for (const sel of selectors) {
+        const first = /^\.((?:\\.|[\w-])+)/.exec(sel);
+        const d: Declared = {
+          sel, style, layer: at, layered: layer !== null, spec: specificity(sel), order,
+          utility: !!first && utilityClass.test(first[1].replace(/\\(.)/g, "$1")), base: baseSelector.test(sel),
+          ...(theme === "dark" ? { dark: true as const } : {}), ...(theme === "light" || LIGHT_MARK.test(sel) ? { light: true as const } : {}),
+        };
+        put(d);
+        if (theme !== "dark" && sel.search(DARK_MARK) >= 0) put({ ...d, sel: sel.replace(DARK_MARK, ":is(*)"), dark: true });
+      }
+    };
+    const visit = (rules: CSSRuleList, layer: string | null, parent: string | null, theme: "any" | "dark" | "light") => {
+      for (const rule of Array.from(rules)) {
+        const r = rule as VarRule;
+        if (r.selectorText !== undefined) {
+          const selectors = splitSelectors(r.selectorText).map((sel) => nested(sel, parent));
+          if (r.style && typeof r.style.getPropertyValue === "function") record(selectors, r.style, layer, theme);
+          if (r.cssRules?.length) visit(r.cssRules, layer, selectors.join(", "), theme);
+        } else if (r.style && parent && r.keyText === undefined) {
+          // Declarations after a nested rule: its parent's.
+          record(splitSelectors(parent), r.style, layer, theme);
+        } else if (r.nameList) {
+          for (const name of Array.from(r.nameList)) layerOf(layer ? `${layer}.${name}` : name);
+        } else if (!r.cssRules || r.findRule !== undefined || r.containerName !== undefined) {
+          // A keyframe, @import or @property; a container query.
+        } else if (r.media) {
+          const query = r.media.mediaText;
+          if (mediaOn(query)) visit(r.cssRules, layer, parent, theme === "any" && /prefers-color-scheme\s*:\s*light/i.test(query) ? "light" : theme);
+          else if (theme !== "light" && query.search(DARK_SCHEME) >= 0 && mediaOn(query.replace(DARK_SCHEME, "prefers-color-scheme: light"))) visit(r.cssRules, layer, parent, "dark");
+        } else if (typeof r.conditionText === "string") {
+          if (supportsOn(r.conditionText)) visit(r.cssRules, layer, parent, theme);
+        } else if (typeof r.name === "string") {
+          const name = layer ? `${layer}.${r.name || `#${order}`}` : r.name || `#${order}`;
+          layerOf(name);
+          visit(r.cssRules, name, parent, theme);
+        }
+      }
+    };
+    for (const sheet of Array.from(document.styleSheets ?? [])) {
+      try {
+        visit(sheet.cssRules, null, null, "any");
+      } catch {
+        // Another origin's sheet: unread.
+      }
+    }
+    return (varIndex = { general, byClass });
+  };
+  const matchesSel = (at: Element, sel: string): boolean => {
+    try {
+      return at.matches(sel);
+    } catch {
+      return false;
+    }
+  };
+  const inlineOf = (at: Element, name: string): string => {
+    const style = (at as HTMLElement).style;
+    return style && typeof style.getPropertyValue === "function" ? style.getPropertyValue(name).trim() : "";
+  };
+  const important = (style: CSSStyleDeclaration | undefined, name: string): boolean =>
+    !!style && typeof style.getPropertyPriority === "function" && style.getPropertyPriority(name) === "important";
+  const matchedRules = new Map<Element, Declared[]>();
+  const matchedOf = (at: Element): Declared[] => {
+    const had = matchedRules.get(at);
+    if (had) return had;
+    const { general, byClass } = indexVars();
+    const classes = (at.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+    const found = [...general, ...classes.flatMap((c) => byClass.get(c) ?? [])].filter((d) => matchesSel(at, d.sel));
+    matchedRules.set(at, found);
+    return found;
+  };
+  // The declaration of any of `names` that wins on `at`, in the light theme or the dark; null where none sets them. `decl` is null for an inline style.
+  type Won = { value: string; decl: Declared | null };
+  const winner = (at: Element, names: string[], dark: boolean): Won | null => {
+    let best: Won | null = null;
+    let weight: number[] = [];
+    const consider = (value: string, decl: Declared | null, isImportant: boolean) => {
+      const imp = isImportant ? 1 : 0;
+      // Inline before any rule; a layer later wins, an unlayered rule over all, and the reverse for !important.
+      const w = decl === null ? [imp, 1, 0, 0, 0]
+        : [imp, 0, isImportant ? (decl.layered ? 1e6 - decl.layer : 0) : (decl.layered ? decl.layer : 1e6), decl.spec, decl.order];
+      const first = w.findIndex((n, i) => n !== weight[i]);
+      if (best && (first < 0 || w[first] < weight[first])) return;
+      best = { value, decl };
+      weight = w;
+    };
+    const inline = (at as HTMLElement).style;
+    for (const name of names) {
+      const value = inlineOf(at, name);
+      if (value) consider(value, null, important(inline, name));
+    }
+    for (const d of matchedOf(at)) {
+      if (dark ? d.light : d.dark) continue;
+      for (const name of names) {
+        const value = d.style.getPropertyValue(name).trim();
+        if (value) consider(value, d, important(d.style, name));
+      }
+    }
+    return best;
+  };
+  // Every custom property a value's var()s name, and those the winning declarations set them to, in turn.
+  const chainOf = (start: Element, value: string, seen: Set<string>, dark: boolean): void => {
+    for (const m of value.matchAll(/var\(\s*(--[\w-]+)/g)) {
+      const name = m[1];
+      if (seen.has(name) || seen.size >= 16) continue;
+      seen.add(name);
+      for (let at: Element | null = start; at; at = at.parentElement) {
+        const won = winner(at, [name], dark);
+        if (!won) continue;
+        chainOf(at, won.value, seen, dark);
+        break;
+      }
+    }
+  };
+  // A rule's literal color as an arbitrary class writes it, `[hsl(0,_0%,_91%)]`, or null for a var() or a keyword.
+  const literal = (value: string): string | null =>
+    !value || value.includes("var(") || /^(?:inherit|initial|unset|revert(?:-layer)?|currentcolor|none|transparent)$/i.test(value) ? null : `[${value.replace(/\s+/g, "_")}]`;
+  const varsOf = (el: Element, classes: string[]): string[] => {
+    const out = new Set<string>();
+    const chain = (prefix: string, value: string, at: Element, dark: boolean) => {
+      const seen = new Set<string>();
+      chainOf(at, value, seen, dark);
+      for (const name of seen) out.add(`${dark ? "dark:" : ""}${prefix}-${name.slice(2).replace(/^color-/, "").toLowerCase()}`);
+    };
+    const byClassOrBase = (won: Won) => !!won.decl && (won.decl.utility || won.decl.base);
+    // What a rule or inline style sets `names` to on `at`, as evidence;
+    // false where none sets them, or one hands down the parent's
+    // (Sonner's title, `color: inherit`).
+    const settle = (prefix: string, names: string[], at: Element): boolean => {
+      const light = winner(at, names, false);
+      if (!light || /^(?:inherit|unset)$/i.test(light.value)) return false;
+      if (byClassOrBase(light)) return true;
+      const lit = literal(light.value);
+      if (lit) out.add(`${prefix}-${lit}`);
+      else chain(prefix, light.value, at, false);
+      const dark = winner(at, names, true);
+      if (!dark || dark.decl === light.decl || byClassOrBase(dark)) return true;
+      const darkLit = literal(dark.value);
+      if (darkLit) out.add(`dark:${prefix}-${darkLit}`);
+      else chain(prefix, dark.value, at, true);
+      return true;
+    };
+    for (const [prefix, names] of VAR_PAINTS) settle(prefix, names, el);
+    for (let at: Element | null = el; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
+      const own = at === el ? classes : (at.getAttribute("class") ?? "").split(/\s+/);
+      if (own.some((t) => /^!?text-/.test(t) && unprefixed(t) && setsTextColor(t))) break;
+      if (settle("text", ["color"], at)) break;
+    }
+    return [...out].sort();
+  };
+
+  // Radii only layout can resolve, calc() of a percentage, sized on a probe
+  // the element's size, as readComputedStyles sizes the root's.
+  const plain = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?(?:px|%)$/i;
+  const resolveRadius = (value: string, rect: DOMRect): string => {
+    const parts = value.trim().split(/\s+(?![^(]*\))/);
+    if (!parts.length || parts.every((t) => plain.test(t))) return value;
+    const host = document.createElement("div");
+    const probe = document.createElement("div");
+    const pin = (el: HTMLElement, styles: Record<string, string>) => {
+      for (const [name, v] of Object.entries(styles)) el.style.setProperty(name, v, "important");
+    };
+    const bare = {
+      position: "absolute", left: "0", top: "0", margin: "0", padding: "0", border: "0", "box-sizing": "content-box",
+      "min-width": "0", "min-height": "0", "max-width": "none", "max-height": "none", visibility: "hidden",
+    };
+    pin(host, { ...bare, width: `${rect.width}px`, height: `${rect.height}px` });
+    pin(probe, { ...bare, width: parts[0], height: parts[1] ?? parts[0] });
+    if (!probe.style.getPropertyValue("width") || !probe.style.getPropertyValue("height")) return value;
+    host.appendChild(probe);
+    document.body.appendChild(host);
+    const size = probe.getBoundingClientRect();
+    host.remove();
+    return `${size.width}px ${size.height}px`;
+  };
+
+  // Properties that say nothing about an element unless another says so:
+  // a side's style and color without its width, an outline's width without
+  // its style, a background's layout without a picture, an object's fit
+  // anywhere but an image, a control's appearance anywhere but an input or
+  // a select.
+  const readCss = (cs: CSSStyleDeclaration, rect: DOMRect | null, tag = ""): Record<string, string> => {
+    const out: Record<string, string> = {};
+    const outline = cs.getPropertyValue("outline-style") !== "none";
+    const picture = /url\(/.test(cs.getPropertyValue("background-image"));
+    for (const p of properties) {
+      const side = /^border-(top|right|bottom|left)-(?:style|color)$/.exec(p);
+      if (side && cs.getPropertyValue(`border-${side[1]}-width`) === "0px") continue;
+      if (p.startsWith("outline-") && p !== "outline-style" && !outline) continue;
+      if (/^background-(size|position|repeat)$/.test(p) && !picture) continue;
+      if (p.startsWith("object-") && tag !== "img") continue;
+      if (p === "appearance" && tag !== "input" && tag !== "select") continue;
+      let v = cs.getPropertyValue(p);
+      if (rect && p.endsWith("-radius") && v !== args.defaults[p]) v = resolveRadius(v, rect);
+      if (v !== args.defaults[p]) out[p] = v;
+    }
+    return out;
+  };
+  const readText = (cs: CSSStyleDeclaration): Record<string, string> => {
+    const out: Record<string, string> = {};
+    for (const p of args.textProperties) out[p] = cs.getPropertyValue(p);
+    if (tree && !(out["font-family"] in fonts)) fonts[out["font-family"]] = probeFonts(cs);
+    return out;
+  };
+
+  // Which families of a stack the browser draws with: probeFontStack's
+  // reading, once per stack.
+  const probeFonts = (cs: CSSStyleDeclaration): FontProbe | null => {
+    try {
+      const written: string[] = [];
+      let current = "";
+      let quote: string | null = null;
+      for (const ch of cs.fontFamily || "") {
+        if (quote) {
+          if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'") {
+          quote = ch;
+        } else if (ch === ",") {
+          if (current.trim()) written.push(current.trim());
+          current = "";
+          continue;
+        }
+        current += ch;
+      }
+      if (current.trim()) written.push(current.trim());
+      if (!written.length) return null;
+      const families = written.map((family) => family.replace(/^(['"])(.*)\1$/, "$2"));
+      const GENERIC = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "math", "emoji", "fangsong"];
+      const size = cs.fontSize || "16px";
+      const weight = cs.fontWeight || "400";
+      const ctx = document.createElement("canvas").getContext("2d");
+      const PROBE = "mmmmmmmmmmlliWWQQ@#%&08";
+      const widthWith = (stack: string) => {
+        ctx!.font = `${weight} 72px ${stack}`;
+        return ctx!.measureText(PROBE).width;
+      };
+      const bases = ["monospace", "serif"];
+      const baseWidths = ctx ? bases.map(widthWith) : [];
+      const applied = written.map((family, index) => {
+        if (family === families[index] && GENERIC.includes(family.toLowerCase())) return null;
+        try {
+          if (document.fonts.check(`${weight} ${size} ${family}`) === false) return false;
+        } catch {
+          // Not a font the shorthand can parse; the canvas can still tell.
+        }
+        if (!ctx) return null;
+        return bases.some((base, b) => widthWith(`${family}, ${base}`) !== baseWidths[b]);
+      });
+      return { families, applied };
+    } catch {
+      return null;
+    }
+  };
+
+  const svgOf = (svg: Element): { svg?: RawSvgNode; shapes?: RawBox[]; svgElements?: number } => {
+    const count = svg.getElementsByTagName("*").length;
+    if (count > args.maxSvgElements) return { svgElements: count };
+    if (!tree) return { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [] };
+    const box = svg.getBoundingClientRect();
+    const hidden = "defs, clipPath, mask, symbol, pattern, marker";
+    // The transform the browser draws `el` with, where its CSS gives it one
+    // its attribute doesn't say, as `matrix()`: a spinner may turn each of
+    // its bars with a style's rotate about the icon's center. Its
+    // `translate`, `rotate`, `scale` and `transform`, about its origin, which
+    // is resolved against its transform box, as a percentage in `translate`
+    // is. Null where it is the attribute's, or can't be resolved.
+    type M = [number, number, number, number, number, number];
+    const mul = (m: M, n: M): M => [
+      m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+      m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5],
+    ];
+    const transformOf = (el: Element, cs: CSSStyleDeclaration): string | null => {
+      const px = (v: string | undefined) => parseFloat(v ?? "") || 0;
+      const own = (cs.getPropertyValue("transform") || "none").trim();
+      const turn = (cs.getPropertyValue("rotate") || "none").trim();
+      const scale = (cs.getPropertyValue("scale") || "none").trim();
+      const move = (cs.getPropertyValue("translate") || "none").trim();
+      let m: M = [1, 0, 0, 1, 0, 0];
+      const [ox = 0, oy = 0] = (cs.getPropertyValue("transform-origin") || "").split(/\s+/).map(px);
+      const boxKind = (cs.getPropertyValue("transform-box") || "").trim();
+      const bbox = boxKind === "fill-box" || boxKind === "stroke-box" ? (el as SVGGraphicsElement).getBBox?.() : null;
+      const origin = [ox + (bbox?.x ?? 0), oy + (bbox?.y ?? 0)];
+      m = mul(m, [1, 0, 0, 1, origin[0], origin[1]]);
+      if (move !== "none") {
+        // A percentage is of the transform box: the shape's own for
+        // fill-box, else the nearest viewport's, its viewBox where it has one.
+        const reference = (): { width: number; height: number } | null => {
+          if (bbox) return bbox;
+          const viewport = el.parentElement?.closest("svg");
+          const view = (viewport?.getAttribute("viewBox") ?? "").trim().split(/[\s,]+/).map(Number);
+          if (view.length === 4 && view[2] > 0 && view[3] > 0) return { width: view[2], height: view[3] };
+          const r = viewport?.getBoundingClientRect();
+          return r ? { width: r.width, height: r.height } : null;
+        };
+        const length = (v: string, size: "width" | "height") => {
+          if (!v.endsWith("%")) return px(v);
+          const box = reference();
+          return box ? (parseFloat(v) / 100) * box[size] : NaN;
+        };
+        const [x = "0", y = "0"] = move.split(/\s+/);
+        const [tx, ty] = [length(x, "width"), length(y, "height")];
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
+        m = mul(m, [1, 0, 0, 1, tx, ty]);
+      }
+      if (turn !== "none") {
+        const angle = /^(-?[\d.]+(?:e-?\d+)?)(deg|rad|grad|turn)?$/.exec(turn);
+        if (!angle) return null;
+        const unit = { deg: Math.PI / 180, rad: 1, grad: Math.PI / 200, turn: 2 * Math.PI }[angle[2] ?? "deg"] ?? 0;
+        const r = Number(angle[1]) * unit;
+        m = mul(m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+      }
+      if (scale !== "none") {
+        const [sx, sy] = scale.split(/\s+/).map(Number);
+        m = mul(m, [sx, 0, 0, sy ?? sx, 0, 0]);
+      }
+      if (own !== "none") {
+        const terms = /^matrix\(([^)]*)\)$/.exec(own)?.[1].split(",").map(Number);
+        if (!terms || terms.length !== 6 || terms.some((t) => !Number.isFinite(t))) return null;
+        m = mul(m, terms as M);
+      }
+      m = mul(m, [1, 0, 0, 1, -origin[0], -origin[1]]);
+      // The attribute's own, which an element with no CSS transform computes to.
+      const base = (el as SVGGraphicsElement).transform?.baseVal?.consolidate?.()?.matrix;
+      const attr: M = base ? [base.a, base.b, base.c, base.d, base.e, base.f] : [1, 0, 0, 1, 0, 0];
+      if (m.every((v, i) => Math.abs(v - attr[i]) < 1e-4)) return null;
+      return `matrix(${m.map((v) => String(Math.round(v * 1e4) / 1e4 || 0)).join(" ")})`;
+    };
+    // Paint a `<text>` or `<use>` kept as written draws in, where its CSS
+    // gives it what its attributes don't say, as a `fill-*` class on a
+    // chart's `fill="#666"` tick does where its rule applies. Written on a copy:
+    // fill and stroke as computed (a `url()` paint left as written), where
+    // the element sets one or it differs from the element around it, which
+    // the copy keeps only for the root; opacity and transform where they
+    // aren't the attribute's.
+    const presented = (el: Element): string => {
+      if (typeof el.cloneNode !== "function") return el.outerHTML;
+      const copy = el.cloneNode(true) as Element;
+      const paintOf = (cs: CSSStyleDeclaration, name: string) => {
+        const value = cs.getPropertyValue(name).trim();
+        return /^currentcolor$/i.test(value) ? cs.color : value;
+      };
+      const write = (from: Element, to: Element, around: CSSStyleDeclaration | null) => {
+        const cs = getComputedStyle(from);
+        for (const name of ["fill", "stroke"]) {
+          const value = paintOf(cs, name);
+          if (!value || /^url\(/i.test(value)) continue;
+          if (around && from.getAttribute(name) === null && paintOf(around, name) === value) continue;
+          to.setAttribute(name, value);
+        }
+        const opacity = cs.getPropertyValue("opacity").trim();
+        if (opacity && opacity !== "1" && from.getAttribute("opacity") !== opacity) to.setAttribute("opacity", opacity);
+        const transform = transformOf(from, cs);
+        if (transform) to.setAttribute("transform", transform);
+        Array.from(from.children).forEach((kid, i) => {
+          if (to.children[i]) write(kid, to.children[i], cs);
+        });
+      };
+      write(el, copy, null);
+      return copy.outerHTML;
+    };
+    const visit = (el: Element): RawSvgNode | null => {
+      const tag = el.tagName;
+      if (args.svgDropped.includes(tag)) return null;
+      const attrs: Record<string, string> = {};
+      for (const a of args.svgGeometry) {
+        const v = el.getAttribute(a);
+        if (v !== null) attrs[a] = v;
+      }
+      if (tag === "g" || args.svgShapes.includes(tag)) {
+        const transform = transformOf(el, getComputedStyle(el));
+        if (transform) attrs.transform = transform;
+      }
+      if (tag === "g") {
+        // What a group does to its shapes as one, which their own computed style doesn't show.
+        const cs = getComputedStyle(el);
+        const paint: Record<string, string> = {};
+        for (const p of args.svgGroup) paint[p] = cs.getPropertyValue(p);
+        return { tag, attrs, paint, kids: Array.from(el.children).map(visit).filter((k): k is RawSvgNode => k !== null) };
+      }
+      if (args.svgShapes.includes(tag)) {
+        const cs = getComputedStyle(el);
+        if (cs.display === "none") return null;
+        const paint: Record<string, string> = {};
+        for (const p of args.svgPaint) {
+          const v = cs.getPropertyValue(p);
+          paint[p] = /^currentcolor$/i.test(v) ? cs.color : v;
+        }
+        return { tag, attrs, paint };
+      }
+      const drawn = (tag === "text" || tag === "use") && !el.closest(hidden);
+      return { tag, attrs: {}, raw: (drawn ? presented(el) : el.outerHTML).replace(/>\s+</g, "><") };
+    };
+    const attrs: Record<string, string> = {};
+    for (const a of ["viewBox", "preserveAspectRatio"]) {
+      const v = svg.getAttribute(a);
+      if (v !== null) attrs[a] = v;
+    }
+    const kids = Array.from(svg.children).map(visit).filter((k): k is RawSvgNode => k !== null);
+    const shapes = Array.from(svg.querySelectorAll(args.svgShapes.join(",")))
+      .filter((s) => {
+        if (s.closest(hidden)) return false;
+        const cs = getComputedStyle(s);
+        return cs.display !== "none" && cs.visibility === "visible" && (cs.fill !== "none" || cs.stroke !== "none");
+      })
+      .map((s) => {
+        const r = s.getBoundingClientRect();
+        return [r.left - box.left, r.top - box.top, r.width, r.height] as RawBox;
+      });
+    return { svg: { tag: "svg", attrs, kids }, shapes };
+  };
+
+  const pseudoOf = (el: Element, which: "before" | "after", elCs: CSSStyleDeclaration, rect: DOMRect): RawTreePseudo | null => {
+    const pcs = getComputedStyle(el, `::${which}`);
+    const content = pcs.content;
+    if (!content || content === "none" || content === "normal" || pcs.display === "none") return null;
+    const quoted = /^"((?:[^"\\]|\\.)*)"$/.exec(content);
+    const text = quoted ? quoted[1].replace(/\\(.)/g, "$1") : "";
+    // Whether it may paint, leaning to yes: snap-tree.ts decides exactly.
+    const border = ["top", "right", "bottom", "left"].some((s) =>
+      parseFloat(pcs.getPropertyValue(`border-${s}-width`)) > 0 && !["none", "hidden"].includes(pcs.getPropertyValue(`border-${s}-style`)));
+    const shadow = pcs.boxShadow !== "none" && !pcs.boxShadow.split(/,(?![^(]*\))/).every((layer) => {
+      const color = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^)]*\)/.exec(layer)?.[0] ?? "";
+      return color !== "" && clear(color);
+    });
+    const outline = pcs.outlineStyle !== "none" && parseFloat(pcs.outlineWidth) > 0;
+    if (clear(pcs.backgroundColor) && pcs.backgroundImage === "none" && !border && !shadow && !outline && !text.trim()) return null;
+    const out: RawTreePseudo = { k: "p", which, cs: readCss(pcs, null), content: text, box: [0, 0, 0, 0], how: "flow" };
+    if (text.trim()) out.text = readText(pcs);
+    const px = (v: string) => parseFloat(v) || 0;
+    if (pcs.position === "absolute" || pcs.position === "fixed") {
+      // A pseudo-element has no rect: placed from its insets and size, in
+      // its parent's padding box, which is its containing block when the
+      // parent is positioned.
+      let w = px(pcs.width);
+      let h = px(pcs.height);
+      if (pcs.boxSizing === "content-box") {
+        w += px(pcs.paddingLeft) + px(pcs.paddingRight) + px(pcs.borderLeftWidth) + px(pcs.borderRightWidth);
+        h += px(pcs.paddingTop) + px(pcs.paddingBottom) + px(pcs.borderTopWidth) + px(pcs.borderBottomWidth);
+      }
+      out.box = [rect.left - R.left + px(elCs.borderLeftWidth) + px(pcs.left), rect.top - R.top + px(elCs.borderTopWidth) + px(pcs.top), w, h];
+      // Its transform moves it from where its insets put it, as shadcn's
+      // `after:-translate-x-1/2` centers a handle on its line. A matrix's
+      // last terms are that move, which about the default centered origin
+      // is also where a rotation or scale leaves its middle; snap-tree.ts
+      // flags those.
+      const matrix = /^matrix(3d)?\((.*)\)$/.exec(pcs.transform);
+      if (matrix) {
+        const terms = matrix[2].split(",").map(Number);
+        const [tx, ty] = matrix[1] ? [terms[12], terms[13]] : [terms[4], terms[5]];
+        if (Number.isFinite(tx) && Number.isFinite(ty)) out.box = [out.box[0] + tx, out.box[1] + ty, w, h];
+      }
+      out.how = "abs";
+      if (elCs.position === "static" || pcs.position === "fixed") out.unanchored = true;
+      // Its radii resolve against its own size.
+      for (const p of Object.keys(out.cs)) if (p.endsWith("-radius")) out.cs[p] = resolveRadius(out.cs[p], new DOMRect(0, 0, w, h));
+      return out;
+    }
+    if (!tree) return out;
+    if (!hider) {
+      hider = document.createElement("style");
+      hider.textContent = `[${HIDE}="before"]::before, [${HIDE}="after"]::after { content: none !important; display: none !important; }`;
+      document.head.appendChild(hider);
+    }
+    const span = document.createElement("span");
+    for (let i = 0; i < pcs.length; i++) span.style.setProperty(pcs[i], pcs.getPropertyValue(pcs[i]));
+    span.textContent = text;
+    const watched = [el, ...Array.from(el.children)];
+    const before = watched.map((n) => n.getBoundingClientRect());
+    el.setAttribute(HIDE, which);
+    if (which === "before") el.insertBefore(span, el.firstChild);
+    else el.appendChild(span);
+    const box = span.getBoundingClientRect();
+    const after = watched.map((n) => n.getBoundingClientRect());
+    span.remove();
+    el.removeAttribute(HIDE);
+    out.box = rel(box);
+    if (before.some((b, i) => ["left", "top", "width", "height"].some((k) => Math.abs(b[k as "left"] - after[i][k as "left"]) > 0.5))) out.moved = true;
+    for (const p of Object.keys(out.cs)) if (p.endsWith("-radius")) out.cs[p] = resolveRadius(out.cs[p], box);
+    return out;
+  };
+
+  // The element's children, with `display: contents` flattened into it, in DOM order.
+  const childrenOf = (el: Element, path: number[], depth: number, into: RawTreeItem[], owner: Element) => {
+    const elements = Array.from(el.children);
+    for (const child of Array.from(el.childNodes)) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const raw = child.textContent ?? "";
+        if (!raw.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0).map(rel);
+        const run: RawTreeText = { k: "t", text: raw, rects };
+        // Text in a `display: contents` element is drawn in that element's
+        // style, which may not be the one whose child it becomes.
+        if (el !== owner) run.style = readText(getComputedStyle(el));
+        into.push(run);
+        continue;
+      }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const kid = child as Element;
+      const tag = kid.tagName.toLowerCase();
+      if (nonRendered.has(tag)) continue;
+      const cs = getComputedStyle(kid);
+      if (cs.display === "none" || cs.opacity === "0") continue;
+      const at = [...path, elements.indexOf(kid)];
+      if (cs.display === "contents") {
+        childrenOf(kid, at, depth, into, owner);
+        continue;
+      }
+      if (read >= args.maxElements || depth + 1 > args.maxDepth) {
+        if (!into.some((item) => item.k === "cut")) into.push({ k: "cut" });
+        continue;
+      }
+      into.push(walk(kid, at, depth + 1));
+    }
+  };
+
+  const walk = (el: Element, path: number[], depth: number): RawTreeElement => {
+    read++;
+    const cs = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    const tag = el.tagName.toLowerCase();
+    const node: RawTreeElement = { k: "e", tag, box: rel(rect), cs: readCss(cs, rect, tag), kids: [], path };
+    const slot = el.getAttribute("data-slot");
+    if (slot) node.slot = slot;
+    const role = el.getAttribute("role");
+    if (role) node.role = role;
+    const classes = (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean);
+    const cls = evidenceIn(classes);
+    if (cls.length) node.cls = cls;
+    const states = statesOf(el, cls);
+    if (states) node.states = states;
+    const vars = varsOf(el, classes);
+    if (vars.length) node.vars = vars;
+    // Its own size, where something turns or scales it: snap-tree.ts
+    // centers that where it drew. A `rotate` or `scale` set on its own,
+    // as Tailwind 4 sets them, doesn't show in `transform`.
+    const turned = (cs.transform !== "none" && !/^matrix\(1, 0, 0, 1, [^,]+, [^,]+\)$/.test(cs.transform)) ||
+      (!!cs.rotate && cs.rotate !== "none" && !/^0(?:deg|rad|grad|turn)?$/.test(cs.rotate)) ||
+      (!!cs.scale && cs.scale !== "none" && !/^1(?: 1){0,2}$/.test(cs.scale));
+    if (turned && tag === "svg") {
+      // No offsetWidth: an `<svg>` is no HTMLElement.
+      if (parseFloat(cs.width) >= 0 && parseFloat(cs.height) >= 0) node.size = [parseFloat(cs.width), parseFloat(cs.height)];
+    } else if (turned && el instanceof HTMLElement) {
+      node.size = [el.offsetWidth, el.offsetHeight];
+    }
+    if (tag === "svg") {
+      const lucide = classes.find((c) => c.startsWith("lucide-"));
+      if (lucide) node.lucide = lucide;
+      return Object.assign(node, svgOf(el));
+    }
+    if (tag === "img") {
+      const img = el as HTMLImageElement;
+      node.img = { src: img.currentSrc || img.src, natural: [img.naturalWidth, img.naturalHeight] };
+      return node;
+    }
+    if (tag === "canvas" || tag === "video") return node;
+    if (tag === "input" || tag === "textarea" || tag === "select") {
+      const input = el as HTMLInputElement;
+      node.text = readText(cs);
+      // A select shows its chosen option's label, not its options, which have no box.
+      const value = tag === "select" ? ((el as HTMLSelectElement).selectedOptions[0]?.label ?? "") : (input.value ?? "");
+      const placeholder = tag === "select" ? "" : (input.getAttribute("placeholder") ?? "");
+      const shown = value || placeholder;
+      let advance = 0;
+      const ctx = document.createElement("canvas").getContext("2d");
+      if (ctx && shown) {
+        ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+        advance = ctx.measureText(input.type === "password" ? "•".repeat(shown.length) : shown).width;
+      }
+      node.input = { type: tag === "input" ? (input.type || "text") : tag, value, placeholder, advance };
+      if (!value && placeholder) node.input.placeholderColor = getComputedStyle(el, "::placeholder").color;
+      return node;
+    }
+    if (Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim())) node.text = readText(cs);
+    const before = pseudoOf(el, "before", cs, rect);
+    if (before) node.kids.push(before);
+    childrenOf(el, path, depth, node.kids, el);
+    const after = pseudoOf(el, "after", cs, rect);
+    if (after) node.kids.push(after);
+    return node;
+  };
+
+  // The focus elements as the root's children, each by its path from it.
+  const around = (els: Element[]): RawTreeElement => {
+    read++;
+    const node: RawTreeElement = { k: "e", tag: "div", box: [0, 0, R.width, R.height], cs: {}, kids: [], path: [] };
+    for (const el of els) {
+      const path: number[] = [];
+      for (let at: Element | null = el; at && at !== root && at.parentElement; at = at.parentElement) path.unshift(Array.from(at.parentElement.children).indexOf(at));
+      node.kids.push(walk(el, path, 1));
+    }
+    return node;
+  };
+
+  try {
+    const out: RawTreeCapture = { root: focus.length ? around(focus) : walk(root, [], 0), fonts };
+    // The class evidence around the root, up to <html>: a text it holds
+    // inherits its color from there where nothing inside sets one, as from
+    // a story's wrapper.
+    const outer: string[][] = [];
+    for (let at = root.parentElement; at; at = at.parentElement) {
+      outer.push(evidenceIn((at.getAttribute("class") ?? "").split(/\s+/)));
+    }
+    if (outer.some((cls) => cls.length)) out.outer = outer;
+    // What places an overlay's content, from outside it: up to the page's
+    // own elements, which place nothing a component draws.
+    if (args.around && !focus.length) {
+      const around: Record<string, string>[] = [];
+      for (let at = root.parentElement; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
+        around.push(readCss(getComputedStyle(at), null));
+      }
+      if (around.length) out.around = around;
+    }
+    return out;
+  } finally {
+    (hider as HTMLStyleElement | null)?.remove();
+  }
+}
+
+/**
+ * captureTreeInPage as Playwright takes it: its `focus` elements are
+ * passed as handles, which its types for TreeInPageArgs don't allow.
+ */
+const treeReader = captureTreeInPage as unknown as (root: Element, args: object) => RawTreeCapture | null;
+
+/** A variant's tree as captureStory read it, with what its assets are made from. */
+export interface CapturedTree {
+  nodes: TreeNode[];
+  truncated?: { nodes: number; at: string };
+  /** Each SVG kept as a vector, by asset id. */
+  svg: Record<string, string>;
+  /** Each image by asset id: what its thumbnail is made from. */
+  images: Record<string, CapturedImage>;
+  notes: string[];
+  /** BuiltTree's: elements placed against the window or page, measured moved inside the root's box. */
+  movedInside: string[];
+  /** How long reading the tree took, its images' bytes and screenshots included, in ms. */
+  ms: number;
+}
+
+/** What an image's thumbnail is drawn from: its source, or for a raster the screenshot that is its thumbnail. */
+export interface CapturedImage {
+  bytes: Buffer;
+  /** The source's type, for the data URL the page draws it from. */
+  mime: string;
+  natural: [number, number];
+  crop: ImageCrop;
+  /** The box it was drawn into, in CSS px. */
+  box: [number, number];
+  raster?: true;
+}
+
+/** The arguments captureTreeInPage takes, from the modules it can't import. */
+function treeInPageArgs(mode: "tree" | "count"): TreeInPageArgs {
+  return {
+    mode,
+    defaults: { ...TREE_PROPERTY_DEFAULTS },
+    textProperties: TEXT_TREE_PROPERTIES,
+    ...RAW_TREE_LIMITS,
+    svgShapes: SVG_SHAPE_TAGS,
+    svgGeometry: SVG_GEOMETRY,
+    svgPaint: SVG_PAINT_PROPERTIES,
+    svgGroup: SVG_GROUP_PROPERTIES,
+    svgDropped: SVG_DROPPED_TAGS,
+    nonRendered: NON_RENDERED_TAGS,
+  };
+}
+
+/** Image responses a page received, by URL, from now until stop(): the bytes snap keeps a thumbnail of. */
+interface ImageResponses {
+  body(url: string): Promise<Buffer | null> | undefined;
+  stop(): void;
+}
+
+/**
+ * Keeps each image's bytes as the page receives them, under its URL and
+ * every URL that redirected to it: an `<img>` names the URL it asked for,
+ * and shadcn.png answers from avatars.githubusercontent.com.
+ */
+function watchImageResponses(page: Page): ImageResponses {
+  const bodies = new Map<string, Promise<Buffer | null>>();
+  const listener = (response: Response) => {
+    const request = response.request();
+    if (request.resourceType() !== "image") return;
+    const status = response.status();
+    if (status >= 300 && status < 400) return;
+    const body = response.body().catch(() => null);
+    for (let at: Request | null = request; at; at = at.redirectedFrom()) bodies.set(at.url(), body);
+  };
+  page.on("response", listener);
+  return { body: (url) => bodies.get(url), stop: () => page.off("response", listener) };
+}
+
+/**
+ * An image's bytes: from the response the page had, a `data:` URL, a
+ * request of its own with the page's cookies, or a fetch in the page, which
+ * a `blob:` URL needs. Null when none gives an image a browser draws.
+ */
+async function imageBytes(page: Page, src: string, responses: ImageResponses | null, timeoutMs: number): Promise<{ bytes: Buffer; mime: string } | null> {
+  const typed = (bytes: Buffer | null | undefined) => {
+    const mime = bytes?.length ? sniffImageType(bytes) : null;
+    return mime ? { bytes: bytes!, mime } : null;
+  };
+  if (!src) return null;
+  const data = decodeDataUrl(src);
+  if (data) return typed(Buffer.from(data.bytes));
+  const cached = typed(await responses?.body(src));
+  if (cached) return cached;
+  if (/^https?:/i.test(src)) {
+    try {
+      const response = await page.context().request.get(src, { timeout: timeoutMs });
+      const fetched = response.ok() ? typed(await response.body()) : null;
+      if (fetched) return fetched;
+    } catch {
+      // Unreachable from Node; the page may still reach it.
+    }
+  }
+  try {
+    const base64 = await page.evaluate(async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      let text = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      return btoa(text);
+    }, src);
+    return base64 ? typed(Buffer.from(base64, "base64")) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The element at `path` under `root`, by child index at each level, or null. */
+async function elementAt(root: ElementHandle<Element>, path: number[]): Promise<ElementHandle<Element> | null> {
+  const handle = await root.evaluateHandle((el, at) => at.reduce<Element | null>((node, index) => node?.children[index] ?? null, el), path);
+  const element = handle.asElement();
+  if (!element) await handle.dispose();
+  return element as ElementHandle<Element> | null;
+}
+
+/** A screenshot of the element at `path`, or null when it has no box to take one of. */
+async function rasterOf(root: ElementHandle<Element>, path: number[], timeoutMs: number): Promise<Buffer | null> {
+  const element = await elementAt(root, path);
+  if (!element) return null;
+  try {
+    const box = await element.boundingBox();
+    if (!box || box.width <= 0 || box.height <= 0) return null;
+    return await element.screenshot({ type: "png", timeout: timeoutMs });
+  } catch {
+    return null;
+  } finally {
+    await element.dispose();
+  }
+}
+
+/** Runs in the page: an image's pixel size, decoded from `url`. */
+async function naturalSizeInPage(url: string): Promise<[number, number]> {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return [img.naturalWidth, img.naturalHeight];
+}
+
+const dataUrl = (bytes: Buffer, mime: string) => `data:${mime};base64,${bytes.toString("base64")}`;
+
+/**
+ * The tree under `target`, every image's source bytes fetched and every
+ * node only a screenshot can keep taken (section 6.7 of the design). An
+ * image whose bytes can't be had is kept as a screenshot of its element.
+ * For an `overlay`'s content, what is around it is read too, as what
+ * places it (RawTreeCapture's `around`).
+ */
+export async function captureTree(
+  page: Page,
+  target: ElementHandle<Element>,
+  responses: ImageResponses | null,
+  timeoutMs: number,
+  { overlay = false, focus }: { overlay?: boolean; focus?: ElementHandle<Element>[] } = {},
+): Promise<CapturedTree> {
+  const started = Date.now();
+  const raw = await target.evaluate(treeReader, {
+    ...treeInPageArgs("tree"), ...(overlay ? { around: true } : {}), ...(focus ? { focus } : {}),
+  }) as RawTreeCapture | null;
+  if (!raw?.root) throw new Error("the page returned no tree");
+  const built = buildTree(raw);
+  const byKey = new Map(built.nodes.map((node) => [node.k, node]));
+  const images: Record<string, CapturedImage> = {};
+
+  const raster = async (key: string, path: number[]) => {
+    const node = byKey.get(key)!;
+    const png = await rasterOf(target, path, timeoutMs);
+    const size = png ? pngSize(png) : null;
+    if (!png || !size) {
+      // Nothing to keep a picture of: a frame its size, saying so.
+      node.t = "F";
+      delete node.raster;
+      delete node.img;
+      node.approx = [node.approx, "raster-unavailable"].filter(Boolean).join(",");
+      return;
+    }
+    const crop = imageCrop(size, size, "fill", "0% 0%");
+    const id = imageAssetId(png, `raster:${crop.key}`);
+    node.t = "I";
+    node.raster = 1;
+    node.img = id;
+    images[id] = { bytes: png, mime: "image/png", natural: size, crop, box: [node.box[2], node.box[3]], raster: true };
+  };
+
+  // An image from its source's bytes, or false to keep a screenshot of it.
+  const image = async (pending: PendingImage): Promise<boolean> => {
+    const node = byKey.get(pending.key)!;
+    const source = await imageBytes(page, pending.src, responses, timeoutMs);
+    let natural = pending.natural;
+    if (source && !(natural[0] > 0 && natural[1] > 0)) {
+      natural = await page.evaluate(naturalSizeInPage, dataUrl(source.bytes, source.mime)).catch(() => [0, 0] as [number, number]);
+    }
+    if (!source || !(natural[0] > 0 && natural[1] > 0) || !(pending.content[0] > 0 && pending.content[1] > 0)) return false;
+    const crop = imageCrop(natural, pending.content, pending.fit, pending.position);
+    const id = imageAssetId(source.bytes, crop.key);
+    node.img = id;
+    const known = images[id];
+    // Several variants, or nodes, share a crop: the largest box serves all.
+    if (!known || pending.content[0] * pending.content[1] > known.box[0] * known.box[1]) {
+      images[id] = { bytes: source.bytes, mime: source.mime, natural, crop, box: pending.content };
+    }
+    return true;
+  };
+  for (const pending of built.images) {
+    // One image that can't be read is a screenshot, never the variant failed.
+    const kept = await image(pending).catch(() => false);
+    if (!kept) await raster(pending.key, pending.path);
+  }
+  for (const pending of built.rasters) await raster(pending.key, pending.path);
+  return {
+    nodes: built.nodes,
+    ...(built.truncated ? { truncated: built.truncated } : {}),
+    svg: built.svg,
+    images,
+    notes: built.notes,
+    movedInside: built.movedInside,
+    ms: Date.now() - started,
+  };
+}
+
+/** How many elements a tree under `target` would hold, for `--root-only`. */
+export async function countTree(target: ElementHandle<Element>): Promise<number> {
+  const raw = await target.evaluate(treeReader, treeInPageArgs("count")) as RawTreeCapture | null;
+  if (!raw?.root) throw new Error("the page returned no tree");
+  return countInnerElements(raw);
+}
+
+/**
+ * Runs in the page: an image's thumbnail, drawn from its source as its box
+ * shows it, at `size` pixels, encoded as THUMBNAIL_ENCODING says: one type
+ * where every pixel is opaque, another where any isn't. The source arrives
+ * as a `data:` URL, so a picture from another origin draws without
+ * tainting the canvas.
+ */
+export async function thumbnailInPage(args: {
+  url: string;
+  src: [number, number, number, number];
+  dst: [number, number, number, number];
+  size: [number, number];
+  encoding: typeof THUMBNAIL_ENCODING;
+}): Promise<{ mime: "image/jpeg" | "image/png"; base64: string }> {
+  const img = new Image();
+  img.src = args.url;
+  await img.decode();
+  const [w, h] = args.size;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  const [sx, sy, sw, sh] = args.src;
+  const [dx, dy, dw, dh] = args.dst;
+  ctx.drawImage(img, sx, sy, sw, sh, dx * w, dy * h, dw * w, dh * h);
+  const pixels = ctx.getImageData(0, 0, w, h).data;
+  let alpha = false;
+  for (let i = 3; i < pixels.length; i += 4) {
+    if (pixels[i] < 255) {
+      alpha = true;
+      break;
+    }
+  }
+  const mime = alpha ? args.encoding.alpha : args.encoding.opaque;
+  const url = canvas.toDataURL(mime, args.encoding.quality);
+  return { mime, base64: url.slice(url.indexOf(",") + 1) };
+}
+
+/**
+ * An image asset's thumbnail bytes and type: drawn in `page` at twice the
+ * largest box it was seen in, or, for a raster, the screenshot itself.
+ */
+export async function makeThumbnail(page: Page, image: CapturedImage): Promise<{ bytes: Buffer; mime: "image/jpeg" | "image/png"; size: [number, number] }> {
+  if (image.raster) return { bytes: image.bytes, mime: "image/png", size: image.natural };
+  const size = thumbnailSize(image.box);
+  const drawn = await page.evaluate(thumbnailInPage, { url: dataUrl(image.bytes, image.mime), src: image.crop.src, dst: image.crop.dst, size, encoding: THUMBNAIL_ENCODING });
+  return { bytes: Buffer.from(drawn.base64, "base64"), mime: drawn.mime, size };
+}
+
+/**
+ * Runs in the page: `el`, or when neither it nor anything in it draws, the
+ * nearest element around it inside the story's root that does (section 6.1
+ * of the design). Draws: a fill, picture, border, shadow or outline of its
+ * own, an `<svg>`, `<img>`, `<canvas>` or `<video>`, text, or an input
+ * showing a value or placeholder.
+ */
+export function drawingElementInPage(el: Element, containers: readonly string[]): Element {
+  // rgba() with alpha 0, or the slash syntax's `/ 0`: not rgb(r, g, 0), which is opaque.
+  const clear = (c: string) => !c || c === "transparent" || /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(c) || /\/\s*0(?:\.0+)?\s*\)$/.test(c);
+  const own = (e: Element, cs: CSSStyleDeclaration): boolean => {
+    const tag = e.tagName.toLowerCase();
+    if (["svg", "img", "canvas", "video"].includes(tag)) return true;
+    if ((tag === "input" || tag === "textarea") && ((e as HTMLInputElement).value || e.getAttribute("placeholder"))) return true;
+    if (!clear(cs.backgroundColor) || cs.backgroundImage !== "none") return true;
+    if (["Top", "Right", "Bottom", "Left"].some((s) => parseFloat(cs.getPropertyValue(`border-${s.toLowerCase()}-width`)) > 0)) return true;
+    if (cs.outlineStyle !== "none" && parseFloat(cs.outlineWidth) > 0) return true;
+    if (cs.boxShadow !== "none" && !cs.boxShadow.split(/,(?![^(]*\))/).every((l) => clear(/(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^)]*\)/.exec(l)?.[0] ?? ""))) return true;
+    return Array.from(e.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim());
+  };
+  let budget = 2000;
+  const draws = (e: Element): boolean => {
+    if (budget-- <= 0) return true;
+    const cs = getComputedStyle(e);
+    if (cs.display === "none" || cs.opacity === "0") return false;
+    return own(e, cs) || Array.from(e.children).some(draws);
+  };
+  if (draws(el)) return el;
+  const story = containers.map((s) => document.querySelector(s)).find((c) => c?.contains(el)) ?? null;
+  for (let at = el.parentElement; at && story && at !== story && story.contains(at); at = at.parentElement) {
+    if (draws(at)) return at;
+  }
+  return el;
 }

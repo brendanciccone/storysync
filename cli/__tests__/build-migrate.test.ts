@@ -1,0 +1,839 @@
+// What a build does to what an earlier push left (sets whose properties
+// changed, a plain component that became a set, a set that grew onto
+// another), and how a plan carries what one call can't: its templates,
+// stored in the file by the first call of their kind, and a variant too
+// big for one call, sent in parts.
+
+import assert from "node:assert/strict";
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { missingTemplate, templateKey } from "../checksum.js";
+import { loadTemplate } from "../figma-code.js";
+import type { PlanCall } from "../tree-types.js";
+import { boxDrift, codeFor, mockFor, runPlan, variantsBySlug } from "./figma-build-harness.js";
+import type { Coded } from "./figma-build-harness.js";
+import { MockFigma, figmaFonts, fixtureVariants, loadTreeFixture } from "./mock-figma.js";
+import type { MockRun, NodeView, TreeFixture } from "./mock-figma.js";
+import { absoluteBoxes } from "../tree-types.js";
+
+const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+interface SetResult {
+  id: string; component: string; name: string; variants: number; added: number; updated: number; extra: number; overlaps: number;
+  refused?: string; converted?: 1; renamed?: number; removed?: number; stashed?: number; moved?: string[];
+}
+const sets = (run: MockRun) => (run.value as { sets: SetResult[] }).sets;
+
+/** Example's Button without one of its properties: only its variants at `keep`, named without it. */
+function withoutProp(fixture: TreeFixture, prop: string, keep: string): TreeFixture {
+  const out = copy(fixture);
+  const c = out.components[0];
+  const drop = (combination: Record<string, string>) => Object.fromEntries(Object.entries(combination).filter(([k]) => k !== prop));
+  const slug = (s: string) => s.replace(`--${prop}-${keep}`, "");
+  c.variantProperties = c.variantProperties.filter((p) => p.name !== prop);
+  c.variants = c.variants.filter((v) => v.combination[prop] === keep).map((v) => ({ ...v, combination: drop(v.combination), slug: slug(v.slug) }));
+  c.base = { ...c.base!, combination: drop(c.base!.combination), slug: slug(c.base!.slug) };
+  return out;
+}
+
+/** Runs a plan's calls, and saves each build's response as its result, as an agent does. */
+async function push(mock: MockFigma, coded: Coded, kinds: PlanCall["kind"][] = ["build"]): Promise<MockRun[]> {
+  const runs = await runPlan(mock, coded, kinds);
+  coded.plan.calls.filter((c) => kinds.includes(c.kind)).forEach((call, i) => writeFileSync(join(coded.out, call.result), JSON.stringify(runs[i].value)));
+  return runs;
+}
+
+/** figma code run again over `snap`, into the plan directory `out` an earlier run wrote. */
+async function codeIn(snap: TreeFixture, out: string, options: object = {}): Promise<Coded> {
+  const coded = await codeFor(snap, { ...options, out });
+  return { ...coded, out, code: (call) => readFileSync(join(out, call.file), "utf8") };
+}
+
+const children = (mock: MockFigma, id: string) => (mock.handle(id) as { children: { id: string; name: string }[] }).children.map((c) => [c.id, c.name] as [string, string]);
+
+test("build: variants an earlier push built are renamed onto a property added since, keeping their node ids, so instances follow (probe 9a)", async () => {
+  // ToggleGroup gained `disabled`: the old variants are its disabled=false ones.
+  const before = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const [first] = await push(mock, await codeFor(before));
+  const old = new Map(children(mock, sets(first)[0].id).map(([id, name]) => [name, id]));
+  // One whose name gives its values in another order is found by its values.
+  const swapped = old.get("variant=danger, size=lg")!;
+  (mock.handle(swapped) as { name: string }).name = "size=lg, variant=danger";
+  const [then] = await push(mock, await codeFor(loadTreeFixture("example-button")));
+  const [set] = sets(then);
+  assert.deepEqual([set.renamed, set.added, set.updated, set.extra, set.variants], [6, 6, 6, 0, 12]);
+  const now = new Map(children(mock, set.id).map(([id, name]) => [name, id]));
+  for (const [name, id] of old) assert.equal(now.get(`${name}, disabled=false`), id, name);
+});
+
+test("build: of a property dropped since, the variants at the value snap pins it to are kept and renamed; the rest are extra, unread, until the user has them removed", async () => {
+  // ConfirmDialog lost `open`, which snap now pins open: here `disabled`, pinned false.
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  after.components[0].excludedProps = [{ name: "disabled", reason: "opens", value: "false" }];
+  const mock = mockFor([full]);
+  const [first] = await push(mock, await codeFor(full));
+  const old = new Map(children(mock, sets(first)[0].id).map(([id, name]) => [name, id]));
+  const built = await codeFor(after);
+  const [then] = await push(mock, built);
+  const [set] = sets(then);
+  assert.deepEqual([set.renamed, set.added, set.extra, set.variants, set.removed], [6, 0, 6, 12, undefined]);
+  const now = children(mock, set.id);
+  for (const [id, name] of now) {
+    const was = [...old].find(([, i]) => i === id)![0];
+    const variant = mock.nodes("COMPONENT").find((n) => n.id === id)!;
+    if (was.endsWith("disabled=false")) assert.equal(name, was.replace(", disabled=false", ""));
+    // Left as they were, and no longer read back by an index the plan's variants take.
+    else assert.deepEqual([name, variant.data["storysync.i"] ?? ""], [was, ""]);
+  }
+  // Removed once the user says so, and only those.
+  const [removed] = await push(mock, await codeIn(after, built.out, { removeExtra: true }));
+  assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].extra, sets(removed)[0].variants], [6, 0, 6]);
+  assert.ok(children(mock, set.id).every(([id]) => old.get([...old].find(([, i]) => i === id)![0]) === id));
+});
+
+/** Each instance on the file's pages, by id: the name of the variant it is on, null where that variant is gone, soft-deleted, with no parent (probe 9a, call 3). */
+async function mains(mock: MockFigma): Promise<Record<string, string | null>> {
+  const run = await mock.run(`const out = {}; for (const p of figma.root.children) { await p.loadAsync(); for (const i of p.findAllWithCriteria({ types: ["INSTANCE"] })) { const m = await i.getMainComponentAsync(); out[i.id] = m.parent ? m.name : null; } } return out;`);
+  return run.value as Record<string, string | null>;
+}
+
+/** Places an instance of each of the set's variants, as a designer does: by instance id, the name of the variant. */
+async function placeInstances(mock: MockFigma, set: string): Promise<Map<string, string>> {
+  const run = await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(set)}); return s.children.map((v) => [v.createInstance().id, v.name]);`);
+  return new Map(run.value as [string, string][]);
+}
+
+test("build: a variant an earlier push left beside the one its values now name moves its instances onto that one, counts as extra, and is removed only once they are", async () => {
+  // Pass 8's ToggleGroup: its old variants, without `disabled`, beside the
+  // new ones it built with it, each instance still on an old one.
+  const before = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const [first] = await push(mock, await codeFor(before));
+  const id = sets(first)[0].id;
+  const placed = await placeInstances(mock, id);
+  const cloned = await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(id)}); for (const t of s.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName); for (const v of [...s.children]) { const c = v.clone(); s.appendChild(c); c.name = v.name + ", disabled=false"; }`);
+  assert.ok(cloned.ok, cloned.text);
+  const old = children(mock, id);
+  const full = loadTreeFixture("example-button");
+  const built = await codeFor(full);
+  const [then] = await push(mock, built);
+  const [set] = sets(then);
+  assert.deepEqual([set.renamed, set.extra, set.variants, (set as { swapped?: number }).swapped], [undefined, 6, 18, 6]);
+  const on = await mains(mock);
+  for (const [instance, name] of placed) assert.equal(on[instance], `${name}, disabled=false`, name);
+  // Removed where the user says so: the old ones only, every instance on a variant still there.
+  const [removed] = await push(mock, await codeIn(full, built.out, { removeExtra: true }));
+  assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].extra, sets(removed)[0].variants], [6, 0, 12]);
+  const left = new Set(children(mock, id).map(([i]) => i));
+  for (const [i, name] of old) assert.equal(left.has(i), name.endsWith("disabled=false"), name);
+  assert.deepEqual(await mains(mock), on);
+});
+
+test("build: of a property dropped with no pin, the variants at its old default are kept, with their instances; the rest are extra, their instances moved only when the user has them removed", async () => {
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  const mock = mockFor([full]);
+  const a = await codeFor(full);
+  const [first] = await push(mock, a);
+  const id = sets(first)[0].id;
+  const old = new Map(children(mock, id));
+  const placed = await placeInstances(mock, id);
+  // Run again over the same plan directory: figma code knows from the last plan that `disabled` defaulted to false.
+  const [then] = await push(mock, await codeIn(after, a.out));
+  const [set] = sets(then);
+  assert.deepEqual([set.renamed, set.added, set.extra, set.variants], [6, 0, 6, 12]);
+  for (const [i, name] of children(mock, id)) {
+    if (!old.get(i)!.endsWith("disabled=true")) assert.equal(name, old.get(i)!.replace(", disabled=false", ""), name);
+  }
+  // Each instance is where it was: on its variant, renamed or extra.
+  const on = await mains(mock);
+  for (const [instance, name] of placed) assert.equal(on[instance], name.replace(", disabled=false", ""), name);
+  // Removed where the user says so, each instance moved first to the variant of its other values.
+  const [removed] = await push(mock, await codeIn(after, a.out, { removeExtra: true }));
+  assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].variants], [6, 6]);
+  const moved = await mains(mock);
+  for (const [instance, name] of placed) assert.equal(moved[instance], name.replace(/, disabled=(true|false)/, ""), name);
+});
+
+test("figma code --remove-extra: only a set whose last build counted extra variants removes them, so another set's call stays byte for byte as it was", async () => {
+  // coder's ConfirmDialog had 48 extra; call 01, Button and Select, had
+  // none, yet changed by "rm":1 and its checksum, so it was sent again.
+  const full = loadTreeFixture("example-button");
+  const other = copy(loadTreeFixture("switch").components[0]);
+  other.category = "Toggles";
+  const both = (button: TreeFixture) => ({ ...button, components: [...button.components, other] });
+  const after = withoutProp(full, "disabled", "false");
+  const mock = mockFor([full, loadTreeFixture("switch")]);
+  const a = await codeFor(both(full));
+  await push(mock, a);
+  const b = await codeIn(both(after), a.out);
+  const then = (await push(mock, b)).flatMap(sets);
+  assert.deepEqual(then.map((s) => [s.name, s.extra]), [["Button", 6], ["Switch", 0]]);
+  const files = (coded: Coded) => Object.fromEntries(coded.plan.calls.filter((c) => c.kind === "build").map((c) => [c.page, coded.code(c)]));
+  const was = files(b);
+  const c = await codeIn(both(after), a.out, { removeExtra: true });
+  const now = files(c);
+  assert.equal(now.Toggles, was.Toggles, "Switch's call, with nothing to remove");
+  assert.notEqual(now.Forms, was.Forms);
+  assert.ok(now.Forms.includes('"rm":1') && !now.Toggles.includes('"rm":1'));
+  const removed = (await push(mock, c)).flatMap(sets);
+  assert.deepEqual(removed.map((s) => [s.name, s.removed, s.extra]), [["Button", 6, 0], ["Switch", undefined, 0]]);
+});
+
+test("figma code --remove-extra: a set no saved build response counted extra variants of is left alone, and named", async () => {
+  // A fresh clone, or a teammate's push: nothing says what Figma holds.
+  const coded = await codeFor(withoutProp(loadTreeFixture("example-button"), "disabled", "false"), { removeExtra: true });
+  for (const call of coded.plan.calls) assert.ok(!coded.code(call).includes('"rm":1'), call.file);
+  assert.ok(coded.warnings.some((w) => /^--remove-extra left Forms\/Button as it is: no saved build response says how many extra variants it has\. Send this plan, then run figma code --remove-extra again/.test(w)), coded.warnings.join("\n"));
+});
+
+test("figma code --remove-extra <names>: only the components named remove their extra variants, as the user said yes to theirs alone", async () => {
+  // "Remove ConfirmDialog's, keep Tabs'": here Button's, and Twin's kept.
+  const full = loadTreeFixture("example-button");
+  const twin = Object.assign(copy(full.components[0]), { name: "Twin", title: "Toggles/Twin", category: "Toggles", storyId: "toggles-twin--default" });
+  const both = (button: TreeFixture, other: TreeFixture["components"][number]) => ({ ...button, components: [...button.components, other] });
+  const after = withoutProp(full, "disabled", "false");
+  const twinAfter = withoutProp({ ...full, components: [twin] }, "disabled", "false").components[0];
+  const mock = mockFor([full]);
+  const a = await codeFor(both(full, twin));
+  await push(mock, a);
+  const b = await codeIn(both(after, twinAfter), a.out);
+  assert.deepEqual((await push(mock, b)).flatMap(sets).map((s) => [s.name, s.extra]), [["Button", 6], ["Twin", 6]]);
+  const c = await codeIn(both(after, twinAfter), a.out, { removeExtra: ["Button"] });
+  const removed = (await push(mock, c)).flatMap(sets);
+  assert.deepEqual(removed.map((s) => [s.name, s.removed, s.extra]), [["Button", 6, 0], ["Twin", undefined, 6]]);
+  // A name that matches nothing is an error, as for --convert, and so is one two components share.
+  await assert.rejects(codeIn(both(after, twinAfter), a.out, { removeExtra: ["Tabs"] }), /--remove-extra/);
+  const namesake = Object.assign(copy(twinAfter), { name: "Button", title: "Toggles/Button" });
+  await assert.rejects(codeIn(both(after, namesake), a.out, { removeExtra: ["Button"] }), /"Button" names 2 components: Forms\/Button \(.*\), Toggles\/Button \(.*\)\. Pass the ID or title of the one to name with --remove-extra/);
+  await assert.rejects(codeIn(both(after, namesake), a.out, { convert: ["Button"] }), /Pass the ID or title of the one to name with --convert/);
+});
+
+test("figma code --remove-extra: an answer from another Figma file says nothing of this one's sets", async () => {
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  const a = mockFor([full]);
+  a.fileKey = "fileA";
+  const first = await codeFor(full);
+  await push(a, first);
+  const second = await codeIn(after, first.out);
+  const answered = (await push(a, second)).flatMap(sets);
+  assert.deepEqual(answered.map((s) => s.extra), [6]);
+  // Kept, as a plan Figma answered a read of is.
+  const kept = join(first.out, "earlier", "a0a0a0a0");
+  mkdirSync(kept, { recursive: true });
+  for (const name of ["plan.json", "calls", "results"]) cpSync(join(first.out, name), join(kept, name), { recursive: true });
+  // Then the project pushed to file B, Switch alone: the newest answer is B's.
+  const b = mockFor([loadTreeFixture("switch")]);
+  b.fileKey = "fileB";
+  await push(b, await codeIn(loadTreeFixture("switch"), first.out));
+  const c = await codeIn(after, first.out, { removeExtra: true });
+  for (const call of c.plan.calls) assert.ok(!c.code(call).includes('"rm":1'), call.file);
+  assert.ok(c.warnings.some((w) => w.startsWith("--remove-extra left Forms/Button as it is")), c.warnings.join("\n"));
+});
+
+test("build: extras counted in one Figma file are removed only there; sent to another, the build removes none and names the file that counted them", async () => {
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  const mock = mockFor([full]);
+  mock.fileKey = "fileF";
+  const first = await codeFor(full);
+  await push(mock, first);
+  assert.deepEqual((await push(mock, await codeIn(after, first.out))).flatMap(sets).map((s) => s.extra), [6]);
+  const remove = await codeIn(after, first.out, { removeExtra: true });
+  assert.ok(remove.plan.calls.some((c) => remove.code(c).includes('"rm":"fileF"')));
+  // The plan sent to file T: nothing removed, and said.
+  mock.fileKey = "fileT";
+  const [elsewhere] = (await runPlan(mock, remove, ["build"])).flatMap(sets) as (SetResult & { notRemoved?: string })[];
+  assert.deepEqual([elsewhere.removed, elsewhere.extra, elsewhere.notRemoved], [undefined, 6, "fileF"]);
+  // Sent to F, the file that counted them, they go.
+  mock.fileKey = "fileF";
+  const [there] = (await runPlan(mock, remove, ["build"])).flatMap(sets) as (SetResult & { notRemoved?: string })[];
+  assert.deepEqual([there.removed, there.extra, there.notRemoved], [6, 0, undefined]);
+});
+
+test("build: a plain component an earlier push built, now with variant properties, is refused until the user says to convert it, then made its set's first variant in place", async () => {
+  // Questionnaire gained `shortcuts`: one variant, then two.
+  const full = loadTreeFixture("switch");
+  const plain = copy(full);
+  const c = plain.components[0];
+  c.variantProperties = [];
+  c.variants = [{ ...c.variants[0], combination: {}, slug: "default" }];
+  c.base = { ...c.base!, combination: {}, slug: "default" };
+  // Card on the same page, in the same call: the refusal stops nothing.
+  const card = copy(loadTreeFixture("card").components[0]);
+  plain.components.push(card);
+  const both = copy(full);
+  both.components.push(card);
+  const mock = mockFor([full, loadTreeFixture("card")]);
+  const a = await codeFor(plain);
+  const [first] = await push(mock, a);
+  const component = sets(first).find((s) => s.component === "ui-base-switch")!;
+  const at = mock.handle(component.id) as { x: number; y: number; type: string };
+  assert.equal(at.type, "COMPONENT");
+  const [x, y] = [at.x, at.y];
+
+  const asked = await codeIn(both, a.out);
+  assert.ok(asked.warnings.some((w) => /^ui\/base\/Switch: an earlier push built it as one plain component, and it now has variant properties \(size\): ask the user .*--convert ui\/base\/Switch/.test(w)), asked.warnings.join("\n"));
+  const [refused] = await runPlan(mock, asked, ["build"]);
+  const answer = sets(refused).find((s) => s.component === "ui-base-switch")!;
+  assert.match(answer.refused!, /this part builds a COMPONENT_SET: ask the user whether to convert it in place \(figma code --convert\) or skip it$/);
+  assert.equal((mock.handle(component.id) as { type: string }).type, "COMPONENT", "left as it was");
+  assert.ok(sets(refused).find((s) => s.component === "ui-base-card")!.variants > 0, "Card is built");
+
+  const yes = await codeIn(both, a.out, { convert: ["Switch"] });
+  assert.ok(!yes.warnings.some((w) => /plain component/.test(w)));
+  const [converted] = await runPlan(mock, yes, ["build"]);
+  const set = sets(converted).find((s) => s.component === "ui-base-switch")!;
+  assert.deepEqual([set.converted, set.variants, set.added, set.refused], [1, 2, 1, undefined]);
+  const node = mock.handle(set.id) as { type: string; x: number; y: number; name: string };
+  assert.deepEqual([node.type, node.name, node.x, node.y], ["COMPONENT_SET", "Switch", x, y]);
+  // The plain component is the default variant now, under its own node id.
+  const variant = variantsBySlug(mock, "ui-base-switch").get(full.components[0].variants.find((v) => v.combination.size === "default")!.slug)!;
+  assert.equal(variant.id, component.id);
+});
+
+test("build: a set that grows where it is moves down the set it grew onto, and counts no overlap", async () => {
+  const before = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
+  const other = copy(loadTreeFixture("switch").components[0]);
+  other.category = "Forms";
+  before.components.push(other);
+  const mock = mockFor([loadTreeFixture("example-button"), loadTreeFixture("switch")]);
+  const [first] = await push(mock, await codeFor(before));
+  const [button, toggle] = sets(first);
+  // A designer put Switch beside Button, where Button grows into once it has `disabled`.
+  const b = mock.handle(button.id) as { x: number; y: number; width: number };
+  await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(toggle.id)}); s.x = ${b.x + b.width + 40}; s.y = ${b.y};`);
+  const after = loadTreeFixture("example-button");
+  after.components.push(other);
+  const [then] = await push(mock, await codeFor(after));
+  const [grown] = sets(then);
+  const g = mock.handle(grown.id) as { x: number; y: number; width: number; height: number };
+  const s = mock.handle(toggle.id) as { x: number; y: number };
+  assert.deepEqual([grown.moved, grown.overlaps], [[toggle.id], 0]);
+  assert.equal(s.y, g.y + g.height + 100);
+  // Built again, nothing moves.
+  const [again] = await push(mock, await codeFor(after));
+  assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 0]);
+});
+
+test("build: a set an earlier push left on another is moved off it, below it, or the set built below the one above it", async () => {
+  // The shadcn file's Breadcrumb inside Questionnaire: two sets a push built, one on the other.
+  const both = copy(loadTreeFixture("example-button"));
+  const other = copy(loadTreeFixture("switch").components[0]);
+  other.category = "Forms";
+  both.components.push(other);
+  for (const dy of [10, -10]) {
+    const mock = mockFor([loadTreeFixture("example-button"), loadTreeFixture("switch")]);
+    const coded = await codeFor(both);
+    const [first] = await push(mock, coded);
+    const [button, toggle] = sets(first);
+    const b = mock.handle(button.id) as { x: number; y: number };
+    await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(toggle.id)}); s.x = ${b.x + 10}; s.y = ${b.y + dy};`);
+    const [then] = await push(mock, coded);
+    assert.deepEqual(sets(then).map((s) => s.overlaps), [0, 0], `${dy}`);
+    // Named once, by the set it moved below, not as moving itself.
+    assert.deepEqual(sets(then).map((s) => s.moved), dy > 0 ? [[toggle.id], undefined] : [undefined, [button.id]], `${dy}`);
+    const [top, below] = (dy > 0 ? [button, toggle] : [toggle, button]).map((s) => mock.handle(s.id) as { y: number; height: number });
+    assert.equal(below.y, top.y + top.height + 100, `${dy}`);
+  }
+});
+
+test("build: each set a push built moves once a call, below what it lies on, top first, and is named once in moved; one that lies on nothing stays", async () => {
+  // Questionnaire's call: the set it grew onto lay on a second, and both on
+  // a third, so each move pushed the next and the sets moved again and
+  // again, 26:2 five times, far below where they had to.
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const coded = await codeFor(loadTreeFixture("example-button"));
+  const [first] = await push(mock, coded);
+  const button = sets(first)[0];
+  const b = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+  // Sets an earlier push built, in the order Figma lists them: one further
+  // down first, then one just under Button's top, both on Button, a third
+  // on the second's way down, and one beside Button that lies on nothing.
+  const placed = [["lower", 60, 40], ["upper", 10, 30], ["next", b.height + 110, 30], ["beside", 0, 30]] as const;
+  const ids = (await mock.run(`const out = {};
+    for (const [name, dy, h] of ${JSON.stringify(placed)}) {
+      const c = figma.createComponent();
+      c.name = name; c.resize(${b.width}, h);
+      c.x = name === "beside" ? ${b.x + b.width + 400} : ${b.x}; c.y = ${b.y} + dy;
+      c.setSharedPluginData("storysync", "id", "stand-in-" + name);
+      (await figma.getNodeByIdAsync(${JSON.stringify(button.id)})).parent.appendChild(c);
+      out[name] = c.id;
+    }
+    return out;`)).value as Record<string, string>;
+  const box = (id: string) => mock.handle(id) as { y: number; height: number };
+  const beside = box(ids.beside).y;
+  const [then] = await push(mock, coded);
+  const [built] = sets(then);
+  assert.deepEqual(built.moved, [ids.upper, ids.lower, ids.next]);
+  assert.equal(built.overlaps, 0);
+  // Each just below the one above it, none further.
+  const [upper, lower, next] = [ids.upper, ids.lower, ids.next].map(box);
+  assert.deepEqual([upper.y, lower.y, next.y], [b.y + b.height + 100, upper.y + upper.height + 100, lower.y + lower.height + 100]);
+  assert.equal(box(ids.beside).y, beside);
+  // Sent again, nothing lies on anything: nothing moves.
+  const [again] = await push(mock, coded);
+  assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 0]);
+});
+
+test("build: a set settle moves goes clear of a designer's layers too, which never move, and what any set lies on is counted", async () => {
+  // The review's case: a set an earlier push left on Button moved down onto
+  // a designer's own component below it, and no result counted it.
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const coded = await codeFor(loadTreeFixture("example-button"));
+  const [first] = await push(mock, coded);
+  const button = sets(first)[0];
+  const b = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+  const ids = (await mock.run(`const parent = (await figma.getNodeByIdAsync(${JSON.stringify(button.id)})).parent;
+    const s = figma.createComponent(); s.name = "upper"; s.resize(${b.width}, 30); s.x = ${b.x}; s.y = ${b.y + 10};
+    s.setSharedPluginData("storysync", "id", "stand-in-upper"); parent.appendChild(s);
+    const d = figma.createComponent(); d.name = "Designer's own"; d.resize(${b.width}, 50); d.x = ${b.x}; d.y = ${b.y + b.height + 110};
+    parent.appendChild(d);
+    const f = figma.createFrame(); f.name = "Notes"; f.resize(${b.width}, 40); f.x = ${b.x}; f.y = ${b.y + b.height + 230};
+    parent.appendChild(f);
+    return { s: s.id, d: d.id, f: f.id };`)).value as Record<string, string>;
+  const box = (id: string) => mock.handle(id) as { y: number; height: number };
+  const [d, f] = [box(ids.d).y, box(ids.f).y];
+  const [then] = await push(mock, coded);
+  assert.deepEqual([sets(then)[0].moved, sets(then)[0].overlaps], [[ids.s], 0]);
+  // Below both of the designer's layers, the second in its way once clear of the first, which stay where they were.
+  assert.deepEqual([box(ids.d).y, box(ids.f).y], [d, f]);
+  assert.equal(box(ids.s).y, f + 40 + 100);
+  // A designer's frame a set built here lies on is counted, as a component is.
+  await mock.run(`const f = await figma.getNodeByIdAsync(${JSON.stringify(ids.f)}); f.y = ${b.y + 5};`);
+  const [again] = await push(mock, coded);
+  assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 1]);
+});
+
+test("build: a set moved past its section's bottom grows the section, which then moves what a push built below it and counts what it may not move", async () => {
+  // The review's S and T: Button in section S, a set below it moved past
+  // S's bottom, where Figma grows no section (probe 10), onto T.
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const coded = await codeFor(loadTreeFixture("example-button"));
+  const [first] = await push(mock, coded);
+  const button = sets(first)[0];
+  // Copied: the handle is live, and Button's x and y become S's.
+  const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+  const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+  const ids = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+    const s = figma.createSection(); page.appendChild(s); s.name = "S"; s.x = ${b.x}; s.y = ${b.y}; s.resizeWithoutConstraints(${b.width + 100}, ${b.height + 160});
+    for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+    s.appendChild(set); set.x = 50; set.y = 50;
+    const r = figma.createComponent(); s.appendChild(r); r.name = "R"; r.resize(${b.width}, 30); r.x = 50; r.y = 60;
+    r.setSharedPluginData("storysync", "id", "stand-in-r");
+    const t = figma.createFrame(); page.appendChild(t); t.name = "T"; t.resize(60, 40); t.x = ${b.x}; t.y = ${b.y + b.height + 180};
+    const q = figma.createComponent(); page.appendChild(q); q.name = "Q"; q.resize(60, 30); q.x = ${b.x + 100}; q.y = ${b.y + b.height + 180};
+    q.setSharedPluginData("storysync", "id", "stand-in-q");
+    return { s: s.id, r: r.id, t: t.id, q: q.id };`)).value as Record<string, string>;
+  const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+  const [then] = await push(mock, coded);
+  const [built] = sets(then);
+  const [s, r, t, q] = [at(ids.s), at(ids.r), at(ids.t), at(ids.q)];
+  // R below Button, inside S, which grew to hold it, 100 to spare, and stayed where it was.
+  assert.equal(r.y, 50 + b.height + 100);
+  assert.deepEqual([s.x, s.y, s.width, s.height], [b.x, b.y, b.width + 100, r.y + r.height + 100]);
+  // Q, a set a push built, moved below the grown S; T, a designer's frame, stayed, counted on Button.
+  assert.deepEqual([t.x, t.y], [b.x, b.y + b.height + 180]);
+  assert.equal(q.y, s.y + s.height + 100);
+  assert.deepEqual([built.moved, built.overlaps], [[ids.r, ids.q], 1]);
+});
+
+test("build: of two sets built at one height that lie on each other, the one that grew stays and the other moves", async () => {
+  const button = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
+  const other = copy(loadTreeFixture("switch").components[0]);
+  other.category = "Forms";
+  button.components.push(other);
+  const mock = mockFor([loadTreeFixture("example-button"), loadTreeFixture("switch")]);
+  const [first] = await push(mock, await codeFor(button));
+  const [grows, toggle] = sets(first);
+  // Switch beside Button at its height, in Button's way once it gains `disabled`.
+  const b = mock.handle(grows.id) as { x: number; y: number; width: number };
+  await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(toggle.id)}); s.x = ${b.x + b.width + 40}; s.y = ${b.y};`);
+  const after = loadTreeFixture("example-button");
+  after.components.push(other);
+  // Switch comes first in the call, which decided it before.
+  after.components.reverse();
+  const then = (await push(mock, await codeFor(after))).flatMap(sets);
+  const g = mock.handle(grows.id) as { y: number; height: number };
+  assert.equal(g.y, b.y, "Button, which grew, stays");
+  assert.equal((mock.handle(toggle.id) as { y: number }).y, g.y + g.height + 100);
+  assert.deepEqual(then.find((s) => s.name === "Button")!.moved, [toggle.id]);
+});
+
+test("build: settle over random layouts moves each set at most once, never up, onto nothing, never a designer's layer, and grows a section or frame to hold what it moved, an auto layout's children left to Figma", async () => {
+  let seed = 7;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const kinds = ["page", "section", "frame", "auto layout"] as const;
+  for (let round = 0; round < 24; round++) {
+    const kind = kinds[round % 4];
+    const mock = mockFor([loadTreeFixture("example-button")]);
+    const coded = await codeFor(loadTreeFixture("example-button"));
+    const [first] = await push(mock, coded);
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    // Button in a section, a frame or an auto layout frame, or on the page;
+    // each layer in it or on the page, a set a push built or a designer's
+    // frame or section.
+    const layers = Array.from({ length: 7 }, (_, i) => ({
+      ours: rand(3) > 0, section: rand(2) === 0, inside: kind !== "page" && rand(2) === 0,
+      x: rand(4) * 60 - 60, y: rand(10) * 40 - 40, w: 40 + rand(4) * 60, h: 20 + rand(4) * 30, i,
+    }));
+    // In a box, a set a push built lies on Button, to be moved past the box's bottom.
+    if (kind !== "page") Object.assign(layers[0], { ours: true, inside: true, x: 20, y: 30 - b.height, w: b.width, h: 30 });
+    const made = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      let box = null;
+      if (${JSON.stringify(kind)} !== "page") {
+        box = ${JSON.stringify(kind)} === "section" ? figma.createSection() : figma.createFrame();
+        page.appendChild(box); box.name = "box"; box.x = ${b.x}; box.y = ${b.y}; box.resizeWithoutConstraints(${b.width + 200}, ${b.height + 100});
+        if (${JSON.stringify(kind)} === "auto layout") Object.assign(box, { layoutMode: "VERTICAL", itemSpacing: 10, primaryAxisSizingMode: "FIXED" });
+        for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+        box.appendChild(set); if (${JSON.stringify(kind)} !== "auto layout") { set.x = 20; set.y = 20; }
+      }
+      const out = [];
+      for (const l of ${JSON.stringify(layers)}) {
+        const n = l.ours ? figma.createComponent() : l.section && !l.inside ? figma.createSection() : figma.createFrame();
+        (l.inside ? box : page).appendChild(n);
+        n.resizeWithoutConstraints(l.w, l.h); n.name = "layer " + l.i;
+        if (!l.inside || ${JSON.stringify(kind)} !== "auto layout") { n.x = (l.inside ? 0 : ${b.x}) + l.x; n.y = (l.inside ? ${b.height} : ${b.y + b.height}) + l.y; }
+        if (l.ours) n.setSharedPluginData("storysync", "id", "stand-in-" + l.i);
+        out.push(n.id);
+      }
+      return { box: box && box.id, ids: out };`)).value as { box: string | null; ids: string[] };
+    assert.ok(made, `round ${round}: set up`);
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+    const all = [button.id, ...made.ids, ...(made.box ? [made.box] : [])];
+    const before = new Map(all.map((id) => [id, { x: at(id).x, y: at(id).y }]));
+    const [then] = await push(mock, coded);
+    const moved = sets(then)[0].moved ?? [];
+    const where = (id: string) => (id === button.id ? kind !== "page" : layers[made.ids.indexOf(id)]?.inside ?? false);
+    const ours = (id: string) => id === button.id || (made.ids.includes(id) && layers[made.ids.indexOf(id)].ours);
+    assert.equal(new Set(moved).size, moved.length, `round ${round}: each id once`);
+    for (const id of all) assert.ok(at(id).y >= before.get(id)!.y - 0.01, `round ${round}: nothing moves up`);
+    for (const id of all) {
+      if (!ours(id) || !moved.includes(id)) assert.deepEqual([at(id).x, at(id).y], [before.get(id)!.x, before.get(id)!.y], `round ${round}: ${id} stays`);
+    }
+    if (kind === "auto layout") assert.ok(!moved.some(where), `round ${round}: Figma lays out an auto layout's children`);
+    const hit = (p: string, q: string) => {
+      const [a, c] = [at(p), at(q)];
+      return a.x < c.x + c.width && c.x < a.x + a.width && a.y < c.y + c.height && c.y < a.y + a.height;
+    };
+    for (const id of moved) {
+      for (const other of all) if (other !== id && where(other) === where(id)) assert.ok(!hit(id, other), `round ${round}: a moved set lies on nothing`);
+    }
+    if (made.box && kind !== "auto layout") {
+      const box = at(made.box);
+      for (const id of [button.id, ...moved].filter(where)) {
+        assert.ok(at(id).x + at(id).width <= box.width && at(id).y + at(id).height <= box.height, `round ${round}: the ${kind} holds what the push built or moved in it`);
+      }
+    }
+  }
+});
+
+test("build: a hugging auto layout frame or a group a set grew in is settled among its siblings, never moving, its section grown to hold what moved, what it may not move counted", async () => {
+  // Button grows inside box F, which Figma enlarges with it, onto a push's
+  // set Q and a designer's frame T beside it in section S.
+  for (const box of ["auto layout", "group"]) {
+    const full = loadTreeFixture("example-button");
+    const mock = mockFor([full]);
+    const [first] = await push(mock, await codeFor(withoutProp(full, "disabled", "false")));
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    const ids = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      const s = figma.createSection(); page.appendChild(s); s.x = ${b.x}; s.y = ${b.y}; s.resizeWithoutConstraints(${b.width + 600}, ${b.height + 60});
+      for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+      let f;
+      if (${JSON.stringify(box)} === "group") {
+        s.appendChild(set); set.x = 20; set.y = 20;
+        const r = figma.createRectangle(); s.appendChild(r); r.resize(10, 10); r.x = 20; r.y = ${b.height + 25};
+        f = figma.group([set, r], s);
+      } else {
+        f = figma.createFrame(); s.appendChild(f); f.x = 20; f.y = 20;
+        Object.assign(f, { layoutMode: "VERTICAL", primaryAxisSizingMode: "AUTO", counterAxisSizingMode: "AUTO", itemSpacing: 0 });
+        f.appendChild(set);
+      }
+      const q = figma.createComponent(); s.appendChild(q); q.resize(60, 30); q.x = ${b.width + 40}; q.y = 20;
+      q.setSharedPluginData("storysync", "id", "stand-in-q");
+      const t = figma.createFrame(); s.appendChild(t); t.resize(60, 40); t.x = ${b.width + 40}; t.y = 70;
+      return { s: s.id, f: f.id, q: q.id, t: t.id };`)).value as Record<string, string>;
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+    const [then] = await push(mock, await codeFor(full));
+    const [built] = sets(then);
+    const [s, f, q, t] = [at(ids.s), at(ids.f), at(ids.q), at(ids.t)];
+    assert.ok(f.width > b.width + 20, `${box}: grew onto Q and T`);
+    assert.deepEqual([f.x, f.y, t.x, t.y], [20, 20, b.width + 40, 70], `${box}: F and T stay`);
+    assert.equal(q.y, f.y + f.height + 100, `${box}: Q below F`);
+    assert.equal(s.height, q.y + q.height + 100, `${box}: S grown to hold Q`);
+    assert.deepEqual([built.moved, built.overlaps], [[ids.q], 1], `${box}: T counted`);
+  }
+});
+
+test("build: settle over random nestings of sections, frames, auto layout frames and groups moves no box's child Figma places, grows each section or frame to hold what moved, and counts what a grown box lies on", async () => {
+  let seed = 11;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const nestings = [["section", "auto"], ["section", "group"], ["frame", "auto"], ["frame", "group"], ["auto", "frame"], ["group", "frame"]] as const;
+  for (let round = 0; round < 24; round++) {
+    const [outer, inner] = nestings[round % nestings.length];
+    const full = loadTreeFixture("example-button");
+    const mock = mockFor([full]);
+    const [first] = await push(mock, await codeFor(withoutProp(full, "disabled", "false")));
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    // Layers beside the inner box in the outer one, or on the page: a push's sets and a designer's frames.
+    const layers = Array.from({ length: 6 }, (_, i) => ({
+      ours: rand(2) === 0, inOuter: outer !== "auto" && outer !== "group" && rand(2) === 0,
+      x: b.width + rand(5) * 40 - 60, y: rand(6) * 40 - 20, w: 40 + rand(3) * 40, h: 20 + rand(3) * 20, i,
+    }));
+    const made = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+      const box = (kind, parent, kids) => {
+        if (kind === "group") { for (const k of kids) { parent.appendChild(k); k.x = 20; k.y = 20; } return figma.group(kids, parent); }
+        const n = kind === "section" ? figma.createSection() : figma.createFrame();
+        parent.appendChild(n); n.x = 20; n.y = 20;
+        if (kind === "auto") Object.assign(n, { layoutMode: "VERTICAL", primaryAxisSizingMode: "AUTO", counterAxisSizingMode: "AUTO", itemSpacing: 0 });
+        else n.resizeWithoutConstraints(${b.width + 60}, ${b.height + 60});
+        for (const k of kids) { n.appendChild(k); if (kind !== "auto") { k.x = 20; k.y = 20; } }
+        return n;
+      };
+      // The outer box first, on the page where Button was, then the inner in it.
+      const o = ${JSON.stringify(outer)} === "group" ? null : box(${JSON.stringify(outer)}, page, []);
+      if (o && ${JSON.stringify(outer)} !== "auto") o.resizeWithoutConstraints(${b.width + 400}, ${b.height + 80});
+      const i = box(${JSON.stringify(inner)}, o || page, [set]);
+      const outerBox = o || box("group", page, [i]);
+      outerBox.x = ${b.x}; outerBox.y = ${b.y};
+      const ids = [];
+      for (const l of ${JSON.stringify(layers)}) {
+        const n = l.ours ? figma.createComponent() : figma.createFrame();
+        (l.inOuter ? outerBox : page).appendChild(n);
+        n.resizeWithoutConstraints(l.w, l.h); n.x = (l.inOuter ? 0 : ${b.x}) + l.x; n.y = (l.inOuter ? 0 : ${b.y}) + l.y;
+        if (l.ours) n.setSharedPluginData("storysync", "id", "stand-in-" + l.i);
+        ids.push(n.id);
+      }
+      return { inner: i.id, outer: outerBox.id, ids };`)).value as { inner: string; outer: string; ids: string[] };
+    assert.ok(made, `round ${round} (${outer}/${inner}): set up`);
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number; parent: { id: string } };
+    const parentOf = (id: string) => at(id).parent.id;
+    const all = [made.outer, made.inner, ...made.ids];
+    const before = new Map(all.map((id) => [id, [at(id).x, at(id).y]]));
+    const [then] = await push(mock, await codeFor(full));
+    const [built] = sets(then);
+    const moved = built.moved ?? [];
+    const ours = (id: string) => made.ids.includes(id) && layers[made.ids.indexOf(id)].ours;
+    assert.equal(new Set(moved).size, moved.length, `round ${round}: each id once`);
+    // A box never moves, nor does a designer's frame; a box's child Figma places is moved by no one.
+    for (const id of all) if (!ours(id) && id !== made.outer) assert.deepEqual([at(id).x, at(id).y], before.get(id), `round ${round}: ${id} stays`);
+    if (outer !== "group") assert.deepEqual([at(made.outer).x, at(made.outer).y], before.get(made.outer), `round ${round}: the outer box stays`);
+    assert.ok(!moved.includes(made.inner) && !moved.includes(button.id), `round ${round}: no box is moved`);
+    const hit = (p: string, q: string) => {
+      const [a, c] = [at(p), at(q)];
+      return a.x < c.x + c.width && c.x < a.x + a.width && a.y < c.y + c.height && c.y < a.y + a.height;
+    };
+    const siblings = (id: string) => all.filter((o) => o !== id && parentOf(o) === parentOf(id));
+    for (const id of moved) for (const o of siblings(id)) assert.ok(!hit(id, o), `round ${round}: a moved set lies on nothing`);
+    // Each box holding Button lies on no push's set, and what else it lies on is counted.
+    let lies = 0;
+    for (const id of [made.inner, made.outer]) {
+      for (const o of siblings(id)) {
+        if (!hit(id, o)) continue;
+        assert.ok(!ours(o), `round ${round}: ${id} lies on no push's set`);
+        lies++;
+      }
+    }
+    assert.ok(built.overlaps >= lies, `round ${round} (${outer}/${inner}): ${lies} overlaps, ${built.overlaps} counted`);
+    // A section or plain frame holds the box in it and what moved in it.
+    for (const [box, kind] of [[made.outer, outer], [made.inner, inner]] as const) {
+      if (kind !== "section" && kind !== "frame") continue;
+      const holder = at(box);
+      for (const id of [made.inner, button.id, ...moved].filter((id) => parentOf(id) === box)) {
+        assert.ok(at(id).x + at(id).width <= holder.width + 0.01 && at(id).y + at(id).height <= holder.height + 0.01, `round ${round} (${outer}/${inner}): the ${kind} holds ${id}`);
+      }
+    }
+  }
+});
+
+test("build: a set moved past a designer's frame grows the frame, which clips what runs past it; in an auto layout frame, settle moves nothing", async () => {
+  // A designer's "Components" frame holding Button and Select, Select
+  // moved below the frame's bottom, where it was clipped from the canvas.
+  for (const auto of [false, true]) {
+    const mock = mockFor([loadTreeFixture("example-button")]);
+    const coded = await codeFor(loadTreeFixture("example-button"));
+    const [first] = await push(mock, coded);
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    const ids = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      const f = figma.createFrame(); page.appendChild(f); f.name = "Components"; f.x = ${b.x}; f.y = ${b.y}; f.resize(${b.width + 100}, ${b.height + 120});
+      if (${auto}) Object.assign(f, { layoutMode: "VERTICAL", itemSpacing: 0, primaryAxisSizingMode: "FIXED" });
+      for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+      f.appendChild(set); if (!${auto}) { set.x = 50; set.y = 50; }
+      const select = figma.createComponent(); f.appendChild(select); select.name = "Select"; select.resize(${b.width}, 30);
+      if (!${auto}) { select.x = 50; select.y = 60; }
+      select.setSharedPluginData("storysync", "id", "stand-in-select");
+      return { f: f.id, select: select.id };`)).value as Record<string, string>;
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+    const was = { select: at(ids.select).y, f: [at(ids.f).x, at(ids.f).y, at(ids.f).width, at(ids.f).height] };
+    const [then] = await push(mock, coded);
+    const [built] = sets(then);
+    const [f, select] = [at(ids.f), at(ids.select)];
+    if (auto) {
+      assert.deepEqual([built.moved, select.y, [f.x, f.y, f.width, f.height]], [undefined, was.select, was.f], "auto layout: Figma places them");
+    } else {
+      assert.deepEqual(built.moved, [ids.select]);
+      assert.equal(select.y, 50 + b.height + 100);
+      assert.deepEqual([f.x, f.y, f.width, f.height], [b.x, b.y, b.width + 100, select.y + select.height + 100], "grown to hold Select, where it was");
+    }
+  }
+});
+
+test("build and read: the first call of each kind stores its template in the file, the rest run it from there, refused where the file holds another", async () => {
+  const snap = copy(loadTreeFixture("switch"));
+  snap.components.push(copy(loadTreeFixture("example-button").components[0]));
+  const coded = await codeFor(snap);
+  const builds = coded.plan.calls.filter((c) => c.kind === "build");
+  assert.equal(builds.length, 2);
+  const [first, later] = builds.map((c) => coded.code(c));
+  const template = loadTemplate("build");
+  assert.ok(first.includes(`figma.root.setSharedPluginData("storysync","template build",T);`) && first.length > template.length);
+  assert.ok(!later.includes(template.slice(0, 200)) && later.length < 3_000 + later.indexOf("const SUM"), `${later.length} characters`);
+  // Sent before the first, it changes nothing, and says what to send.
+  const mock = mockFor([loadTreeFixture("switch"), loadTreeFixture("example-button")]);
+  const pages = JSON.stringify(mock.pages());
+  const alone = await mock.run(later);
+  assert.equal(alone.text, `Error: ${missingTemplate("build", "01")}`);
+  assert.equal(JSON.stringify(mock.pages()), pages);
+  // In order, the second runs what the first stored: the very template.
+  await runPlan(mock, coded, ["build"]);
+  assert.equal(mock.node("0:0")!.data[`storysync.${templateKey("build")}`], template);
+  // Another storysync's push stores its own: refused again, until the first is sent again.
+  await mock.run(`figma.root.setSharedPluginData("storysync", ${JSON.stringify(templateKey("build"))}, "return 1;");`);
+  assert.equal((await mock.run(later)).text, `Error: ${missingTemplate("build", "01")}`);
+  assert.ok((await mock.run(first)).ok);
+  assert.ok((await mock.run(later)).ok);
+  // So do the reads: the first carries the readback template, the rest load it.
+  const reads = coded.plan.calls.filter((c) => c.kind === "read").map((c) => coded.code(c));
+  assert.ok(reads.slice(1).every((r) => r.includes('const T = figma.root.getSharedPluginData("storysync","template readback");')));
+  // The last, once it has read all it was for, removes what the plan
+  // stored, and any part a push left unfinished keeps on a page.
+  await mock.run(`figma.root.children.find((p) => p.name === "Forms").setSharedPluginData("storysync", "part forms-button x 1", "{}");`);
+  await runPlan(mock, coded, ["read"]);
+  const left = mock.pages().flatMap((p: NodeView) => Object.keys(p.data)).concat(Object.keys(mock.node("0:0")!.data)).filter((k) => /^storysync\.(template|part) /.test(k));
+  assert.deepEqual(left, []);
+});
+
+test("build: a variant too big for one call is sent in parts, each built by its own call and kept on the page until the last lays the variant out, which says what to send where a part is missing", async () => {
+  const card = loadTreeFixture("card");
+  // About 1,700 characters beside the stored template, the first call holds
+  // a few of Card's nodes, and the next the rest. Where every call carries
+  // the template, each part holds a few, its icons' markup among them.
+  const template = loadTemplate("build").length;
+  for (const inlineTemplates of [false, true]) {
+    const maxChars = template + (inlineTemplates ? 2_700 : 1_700);
+    const coded = await codeFor(card, { maxChars, inlineTemplates });
+    const builds = coded.plan.calls.filter((c) => c.kind === "build");
+    const parts = builds.filter((c) => /variant 1 of 2, part \d+ of/.test(c.description)).length;
+    assert.ok(inlineTemplates ? parts > 3 : parts === 2, `${parts} parts`);
+    assert.match(builds[0].description, new RegExp(`^Create or update Card \\(variant 1 of 2, part 1 of ${parts}\\) on page "ui/base"$`));
+    for (const call of builds) assert.ok(call.chars <= maxChars, `${call.file}: ${call.chars}`);
+    const mock = mockFor([card]);
+    const runs = await runPlan(mock, coded, ["build"]);
+    // The first part's call built its nodes, the set with them, and kept them for the rest.
+    assert.deepEqual([sets(runs[0])[0].stashed, sets(runs[0])[0].added, runs[0].created > 1], [1, 1, true]);
+    assert.deepEqual(runs.flatMap((r) => (r.value as { fallbacks: unknown[] }).fallbacks), [], "every icon imported from its own markup");
+    // Built whole: every layer where snap measured it, and nothing left on the page.
+    for (const variant of fixtureVariants(card)) {
+      const root = variantsBySlug(mock).get(variant.slug)!;
+      assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+    }
+    assert.deepEqual(mock.pages().flatMap((p: NodeView) => Object.keys(p.data).filter((k) => k.startsWith("storysync.part "))), []);
+    // Built again, the same; its last part sent without the ones before says which to send.
+    const again = await runPlan(mock, coded, ["build"]);
+    assert.deepEqual([again.reduce((t, r) => t + r.created, 0), again.reduce((t, r) => t + r.removed, 0)], [0, 0]);
+    const last = parts - 1;
+    const fresh = mockFor([card]);
+    for (const call of builds.slice(0, last)) assert.ok((await fresh.run(coded.code(call))).ok);
+    // Its first part's, as a call sent to another file, or not at all, would leave it.
+    const slug = card.components[0].variants[0].slug;
+    await fresh.run(`figma.root.children.find((p) => p.name === "ui/base").setSharedPluginData("storysync", "part ui-base-card ${slug} 1", "");`);
+    const missing = await fresh.run(coded.code(builds[last]));
+    assert.match(missing.text, new RegExp(`^Error: Variant ${slug} of Card is sent in ${parts} calls: send call ${builds.slice(0, last).map((c) => String(c.seq).padStart(2, "0")).join(", ")} first, then this one again$`));
+    // A set refused at its last part keeps none of its parts on the page.
+    const twice = mockFor([card]);
+    await twice.run(`const p = figma.createPage(); p.name = "ui/base"; for (const x of [0, 400]) { const c = figma.createComponent(); c.name = "size=default"; const s = figma.combineAsVariants([c], p); s.name = "Card"; s.x = x; }`);
+    const refused = await runPlan(twice, coded, ["build"]);
+    assert.match(sets(refused[last])[0].refused!, /ask the user which to update$/);
+    assert.deepEqual(twice.pages().flatMap((p: NodeView) => Object.keys(p.data).filter((k) => k.startsWith("storysync.part "))), []);
+  }
+});
+
+test("build: a variant of more nodes than --max-nodes is sent in parts of at most that many, each built in its own call, under Figma's time limit", async () => {
+  const card = loadTreeFixture("card");
+  const coded = await codeFor(card, { maxNodes: 8 });
+  const builds = coded.plan.calls.filter((c) => c.kind === "build");
+  assert.ok(builds.length > 2 && builds.every((c) => c.nodes! <= 8), builds.map((c) => c.nodes).join());
+  assert.ok(!coded.warnings.some((w) => /max-nodes/.test(w)), coded.warnings.join("\n"));
+  const mock = mockFor([card]);
+  await runPlan(mock, coded, ["build"]);
+  for (const variant of fixtureVariants(card)) {
+    assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+  }
+});
+
+test("build: a part is built only on the parts this plan split its variant into, so one another split kept says which call to send", async () => {
+  // Card's first part from a plan at one --max-chars, the rest from plans at others.
+  const card = loadTreeFixture("card");
+  const template = loadTemplate("build").length;
+  const split = await codeFor(card, { maxChars: template + 1_700 });
+  const slug = card.components[0].variants[0].slug;
+  for (const room of [1_000, 2_200]) {
+    const other = await codeFor(card, { maxChars: template + room });
+    const builds = other.plan.calls.filter((c) => c.kind === "build" && c.description.includes("variant 1 of 2, part"));
+    assert.ok(builds.length > 1, `${room}: ${builds.length} parts`);
+    const mock = mockFor([card]);
+    assert.ok((await mock.run(split.code(split.plan.calls[0]))).ok);
+    const pages = JSON.stringify(mock.pages().map((p: NodeView) => p.data));
+    const next = await mock.run(other.code(builds[1]));
+    assert.equal(next.text, `Error: Variant ${slug} of Card is sent in ${builds.length} calls: send call 01 first, then this one again`, `${room}`);
+    assert.equal(JSON.stringify(mock.pages().map((p: NodeView) => p.data)), pages, "nothing kept");
+  }
+});
+
+test("build: a label Figma's font sets wider than the frame it fills grows the frame into its row's free room, so it is drawn whole, as Select's trigger (probe 9a)", async () => {
+  const inter = figmaFonts();
+  const own = inter.advance("Select a fruit", { family: "Inter", style: "Regular", size: 14, letterSpacing: 0 });
+  // The browser's box half a pixel narrower than Figma sets it, in a row with room to spare.
+  const w = Math.round((own - 0.5) * 100) / 100;
+  const base = copy(loadTreeFixture("example-button"));
+  const c = base.components[0];
+  const tree = [
+    { k: "", t: "F", el: "button", box: [0, 0, 180, 40], L: { d: "flex", jc: "space-between", ai: "center", pad: [8, 12, 8, 12] } },
+    { k: "span", t: "F", el: "span", box: [12, 8, w, 24], L: { d: "flow-root" }, clip: 1 },
+    { k: "span/#text", t: "T", el: "#text", box: [0, 0, w, 24], tx: { c: "Select a fruit", f: "system-ui", fk: 1, sz: 14, wt: 400, col: "#52525b", lh: 24, n: 1, cl: 1, ws: "nowrap", ink: [0, 3, w, 18] } },
+    { k: "box", t: "F", el: "div", box: [150, 11, 18, 18] },
+  ];
+  Object.assign(c, {
+    id: "test-trigger", name: "Trigger", title: "test/Trigger", category: "test", variantProperties: [],
+    base: { combination: {}, slug: "default", styles: { ...c.base!.styles, width: 180, height: 40, display: "flex" } },
+    variants: [{ combination: {}, slug: "default", status: "ok", error: null, delta: {} }],
+    warnings: [], tree: { version: 1, base: tree, assets: { svg: {}, img: {} } },
+  });
+  const coded = await codeFor(base);
+  const mock = mockFor([base], { measure: figmaFonts() });
+  const [run] = await runPlan(mock, coded, ["build"]);
+  const text = mock.nodes("TEXT").find((n) => n.data["storysync.k"] === "span/#text")!;
+  const span = mock.nodes("FRAME").find((n) => n.data["storysync.k"] === "span")!;
+  const h = mock.handle(text.id) as { textTruncation: string; maxLines: number };
+  assert.deepEqual([span.width, text.width, text.height, h.textTruncation, h.maxLines], [Math.ceil(own), Math.ceil(own), 24, "ENDING", 1]);
+  assert.deepEqual((run.value as { fallbacks: unknown[] }).fallbacks, []);
+});

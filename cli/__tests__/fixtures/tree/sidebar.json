@@ -1,0 +1,145 @@
+{
+  "fixture": {
+    "name": "sidebar",
+    "sources": [
+      "design/budget/raw/sidebar.raw.json (budget prototype: raw computed values per variant, normalized with storysync's own normalizers)",
+      "design/fidelity/raw2/ui-base-sidebar--simple.json (fidelity prototype: grid track counts and Chrome's SVG shape boxes for the same nodes)",
+      "design/proof/out/ui-base-sidebar--simple.json (proof prototype: the lucide class of each icon whose shapes match, for el)"
+    ],
+    "notes": [
+      "Derived from the shadcn/ui registry (MIT) stories as the element-tree prototypes captured them in Chrome on macOS. Package A regenerates fixtures live; B and C rerun their tests on them.",
+      "Each icon's `el` names its lucide class, as the proof prototype captured it for the icon with the same shapes; the budget capture the facts come from stripped class names."
+    ]
+  },
+  "version": 1,
+  "storysyncVersion": "0.4.0",
+  "storybookUrl": "http://localhost:6006",
+  "variantSelection": "all",
+  "treeVersion": 1,
+  "treeLimits": {
+    "maxNodes": 400,
+    "maxDepth": 24,
+    "maxSvgChars": 20000
+  },
+  "components": [
+    {
+      "id": "ui-base-sidebar",
+      "name": "Sidebar",
+      "title": "ui/base/Sidebar",
+      "category": "ui/base",
+      "storyId": "ui-base-sidebar--simple",
+      "variantProperties": [],
+      "base": {
+        "combination": {},
+        "slug": "default",
+        "styles": {
+          "display": "block",
+          "flexDirection": null,
+          "alignItems": null,
+          "justifyContent": null,
+          "gap": null,
+          "width": 256,
+          "height": 720,
+          "backgroundColor": null,
+          "color": "#0a0a0a",
+          "border": null,
+          "borderUniform": null,
+          "borderRadius": {
+            "topLeft": 0,
+            "topRight": 0,
+            "bottomRight": 0,
+            "bottomLeft": 0
+          },
+          "borderRadiusUniform": 0,
+          "padding": {
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "fontFamily": "system-ui",
+          "fontSize": 16,
+          "fontWeight": 400,
+          "lineHeight": 24,
+          "letterSpacing": 0,
+          "boxShadow": [],
+          "opacity": 1,
+          "boxSizing": "border-box",
+          "fontAvailable": null,
+          "text": {
+            "color": "#0a0a0ab3",
+            "fontFamily": "system-ui",
+            "fontSize": 12,
+            "fontWeight": 500
+          }
+        }
+      },
+      "variants": [
+        {
+          "combination": {},
+          "slug": "default",
+          "status": "ok",
+          "error": null,
+          "boundingBox": {
+            "width": 256,
+            "height": 720
+          },
+          "element": "div[data-slot=\"sidebar\"]",
+          "delta": {}
+        }
+      ],
+      "warnings": [],
+      "error": null,
+      "capture": "tree",
+      "tree": {
+        "version": 1,
+        "base": [
+          {"L":{"d":"block"},"box":[0,0,256,720],"el":"div[data-slot=sidebar]","k":"","t":"F"},
+          {"L":{"d":"flex"},"S":{"z":10},"abs":1,"bd":{"c":"#e5e5e5","s":"solid","w":[0,1,0,0]},"box":[0,0,256,720],"el":"div[data-slot=sidebar-container]","k":"sidebar-container","t":"F"},
+          {"L":{"d":"flex","dir":"column"},"bg":"#fafafa","box":[0,0,255,720],"el":"div[data-slot=sidebar-inner]","k":"sidebar-container/sidebar-inner","t":"F"},
+          {"box":[0,0,255,16],"el":"div[data-slot=sidebar-header]","k":"sidebar-container/sidebar-inner/sidebar-header","t":"F"},
+          {"L":{"d":"flex","dir":"column","gap":[8,8]},"S":{"grow":1},"box":[0,16,255,688],"clip":1,"el":"div[data-slot=sidebar-content]","k":"sidebar-container/sidebar-inner/sidebar-content","t":"F"},
+          {"L":{"d":"flex","dir":"column","pad":[8,8,8,8]},"box":[0,0,255,224],"el":"div[data-slot=sidebar-group]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group","t":"F"},
+          {"L":{"ai":"center","d":"flex","pad":[0,8,0,8]},"S":{"shrink":0},"box":[8,8,239,32],"el":"div[data-slot=sidebar-group-label]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-group-label","r":8,"t":"F"},
+          {"box":[8,7.5,65.27,16],"el":"#text","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-group-label/#text","t":"T","tx":{"c":"Application","col":"#0a0a0ab3","f":"system-ui","fk":1,"ink":[0,0.5,65.27,15],"lh":16,"n":1,"sz":12,"wt":500}},
+          {"L":{"d":"flex","dir":"column","gap":[4,4]},"box":[8,40,239,176],"el":"ul[data-slot=sidebar-menu]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu","t":"F"},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[8,8,8,8]},"box":[0,0,239,32],"clip":1,"el":"a[data-slot=sidebar-menu-button]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button","r":8,"t":"F"},
+          {"S":{"shrink":0},"box":[8,8,16,16],"clip":1,"el":"svg.lucide-house","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button/svg","shapes":[[6,8,4,6],[2,1.33,12,12.67]],"svg":"svg:8332fe59","t":"V"},
+          {"box":[32,6,38.25,20],"el":"span","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button/span","t":"T","tx":{"c":"Home","col":"#0a0a0a","el":1,"f":"system-ui","fk":1,"ink":[0,1,38.25,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[8,8,8,8]},"box":[0,36,239,32],"clip":1,"el":"a[data-slot=sidebar-menu-button]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:2","r":8,"t":"F"},
+          {"S":{"shrink":0},"box":[8,8,16,16],"clip":1,"el":"svg.lucide-inbox","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:2/svg","shapes":[[1.33,8,13.33,2],[1.33,2.67,13.33,10.67]],"svg":"svg:a28fd8a5","t":"V"},
+          {"box":[32,6,35.05,20],"el":"span","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:2/span","t":"T","tx":{"c":"Inbox","col":"#0a0a0a","el":1,"f":"system-ui","fk":1,"ink":[0,1,35.05,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[8,8,8,8]},"box":[0,72,239,32],"clip":1,"el":"a[data-slot=sidebar-menu-button]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:3","r":8,"t":"F"},
+          {"S":{"shrink":0},"box":[8,8,16,16],"clip":1,"el":"svg.lucide-calendar","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:3/svg","shapes":[[5.33,1.33,0,2],[10.67,1.33,0,2],[2,2,12,12],[2,6,12,0]],"svg":"svg:ed805367","t":"V"},
+          {"box":[32,6,57.92,20],"el":"span","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:3/span","t":"T","tx":{"c":"Calendar","col":"#0a0a0a","el":1,"f":"system-ui","fk":1,"ink":[0,1,57.92,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[8,8,8,8]},"box":[0,108,239,32],"clip":1,"el":"a[data-slot=sidebar-menu-button]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:4","r":8,"t":"F"},
+          {"S":{"shrink":0},"box":[8,8,16,16],"clip":1,"el":"svg.lucide-search","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:4/svg","shapes":[[11.11,11.11,2.89,2.89],[2,2,10.67,10.67]],"svg":"svg:9d7f323e","t":"V"},
+          {"box":[32,6,44.95,20],"el":"span","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:4/span","t":"T","tx":{"c":"Search","col":"#0a0a0a","el":1,"f":"system-ui","fk":1,"ink":[0,1,44.95,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"L":{"ai":"center","d":"flex","gap":[8,8],"pad":[8,8,8,8]},"box":[0,144,239,32],"clip":1,"el":"a[data-slot=sidebar-menu-button]","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:5","r":8,"t":"F"},
+          {"S":{"shrink":0},"box":[8,8,16,16],"clip":1,"el":"svg.lucide-settings","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:5/svg","shapes":[[2.03,1.34,11.94,13.31],[6,6,4,4]],"svg":"svg:c80a7da8","t":"V"},
+          {"box":[32,6,53.38,20],"el":"span","k":"sidebar-container/sidebar-inner/sidebar-content/sidebar-group/sidebar-menu/sidebar-menu-button:5/span","t":"T","tx":{"c":"Settings","col":"#0a0a0a","el":1,"f":"system-ui","fk":1,"ink":[0,1,53.38,17],"lh":20,"n":1,"sz":14,"ws":"nowrap","wt":400}},
+          {"box":[0,704,255,16],"el":"div[data-slot=sidebar-footer]","k":"sidebar-container/sidebar-inner/sidebar-footer","t":"F"}
+        ],
+        "assets": {
+          "svg": {
+            "svg:8332fe59": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8\"/><path d=\"M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg>",
+            "svg:9d7f323e": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m21 21-4.34-4.34\"/><circle r=\"8\" cx=\"11\" cy=\"11\"/></svg>",
+            "svg:a28fd8a5": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg>",
+            "svg:c80a7da8": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915\"/><circle r=\"3\" cx=\"12\" cy=\"12\"/></svg>",
+            "svg:ed805367": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#0a0a0a\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 2v3\"/><path d=\"M16 2v3\"/><rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/><path d=\"M3 9h18\"/></svg>"
+          },
+          "img": {}
+        }
+      }
+    }
+  ],
+  "summary": {
+    "components": 1,
+    "variants": 1,
+    "rendered": 1,
+    "failed": 0,
+    "componentsFailed": 0,
+    "componentsWithWarnings": 0,
+    "componentsCapped": 0
+  }
+}

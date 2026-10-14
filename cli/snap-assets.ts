@@ -1,0 +1,505 @@
+// What snap keeps of the SVG icons and images a component draws: SVG markup
+// rebuilt from what the browser computed, and the crop and file name of each
+// image's thumbnail.
+//
+// The page hands back structure and raw computed values (snap-browser.ts);
+// everything here is pure, so it is tested without a browser, and every color
+// goes through the same normalizeColor as the rest of styles.json: one color
+// path, so an icon and the button it sits in can't differ by a rounding step.
+
+import { createHash } from "node:crypto";
+import { fnv1a32 } from "./checksum.js";
+import { normalizeColor } from "./snap-normalize.js";
+import type { Box } from "./tree-types.js";
+
+const r2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
+
+// --- SVG ----------------------------------------------------------------------
+
+/**
+ * One element of an inline SVG as the page reads it: its geometry attributes
+ * as written, and for a shape its paint as the browser computed it, so paint
+ * set by a class, a `currentColor` or an ancestor is resolved. `raw` keeps
+ * the markup of an element snap doesn't rebuild (a gradient, a mask, `use`,
+ * `text`) as written.
+ */
+export interface RawSvgNode {
+  tag: string;
+  attrs: Record<string, string>;
+  paint?: Record<string, string>;
+  kids?: RawSvgNode[];
+  raw?: string;
+}
+
+/** Shapes rebuilt from their geometry and paint. */
+export const SVG_SHAPE_TAGS: readonly string[] = ["path", "circle", "ellipse", "rect", "line", "polyline", "polygon"];
+
+/** Elements that draw nothing and say nothing Figma keeps. */
+export const SVG_DROPPED_TAGS: readonly string[] = ["title", "desc", "metadata"];
+
+/** Geometry attributes, in the order the markup writes them. */
+export const SVG_GEOMETRY: readonly string[] = [
+  "d", "points", "x", "y", "width", "height", "r", "rx", "ry", "cx", "cy", "x1", "y1", "x2", "y2", "transform",
+];
+
+/** Attributes the root `<svg>` keeps besides its size. */
+const SVG_ROOT_ATTRS = ["viewBox", "preserveAspectRatio"] as const;
+
+/**
+ * What doesn't inherit and applies to a group as much as a shape: its
+ * opacity, and a clip path, mask or filter, by reference. The page reads
+ * these off a `<g>` too, where its shapes' computed style can't show them.
+ */
+export const SVG_GROUP_PROPERTIES: readonly string[] = ["opacity", "clip-path", "mask", "filter"];
+
+/** Paint the page reads off each shape, as computed style property names. */
+export const SVG_PAINT_PROPERTIES: readonly string[] = [
+  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
+  "opacity", "fill-rule", "clip-rule", "vector-effect", "clip-path", "mask", "filter",
+];
+
+/**
+ * Paint attributes in the order they're written, and their SVG defaults,
+ * which are left out. Of these, all but `opacity`, `vector-effect` and the
+ * effects inherit, so one that every shape shares moves to the root
+ * `<svg>`, where each shape inherits it: a lucide icon's stroke, width and
+ * caps are written once. `opacity` on the root would fade the icon as one
+ * layer rather than each shape, so it, like the others that don't
+ * inherit, stays on its shapes.
+ */
+const PAINT_ORDER = [
+  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
+  "opacity", "fill-rule", "clip-rule", "vector-effect", "clip-path", "mask", "filter",
+] as const;
+const PAINT_DEFAULTS: Record<string, string> = {
+  fill: "#000000", "fill-opacity": "1", stroke: "none", "stroke-opacity": "1", "stroke-width": "1",
+  "stroke-linecap": "butt", "stroke-linejoin": "miter", "stroke-dasharray": "none", "stroke-dashoffset": "0", opacity: "1",
+  "fill-rule": "nonzero", "clip-rule": "nonzero", "vector-effect": "none", "clip-path": "none", mask: "none", filter: "none",
+};
+const HOISTED = new Set([
+  "fill", "fill-opacity", "stroke", "stroke-opacity", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset", "fill-rule", "clip-rule",
+]);
+
+/** A lengths list as SVG writes it: `4px, 2px` as `4 2`. */
+function lengths(value: string): string {
+  return value.split(/[\s,]+/).filter(Boolean).map((v) => num(v.replace(/px$/, ""))).join(" ");
+}
+
+/**
+ * A clip path, mask or filter that isn't `none`: kept as written, a
+ * `url()`'s quotes dropped, and named in `flags`, as createNodeFromSvg may
+ * not import what it points at.
+ */
+function effect(name: string, value: string, flags: string[]): string {
+  const v = value.trim();
+  if (v === "none" || v === "") return "none";
+  flags.push(name);
+  return v.replace(/url\(\s*"?([^")]*)"?\s*\)/g, "url($1)");
+}
+
+/** A number as the markup writes it: rounded to 0.01, no trailing zeros. */
+function num(value: string): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? String(r2(n)) : value;
+}
+
+/** An attribute value, escaped for a double-quoted XML attribute. */
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * A shape's paint as the markup writes it: each color as hex through
+ * normalizeColor, its alpha moved into the matching opacity (multiplied with
+ * any opacity already there), a paint server's `url()` kept as written, a
+ * color that draws nothing as `none`, and the stroke's width, caps and joins
+ * dropped when there is no stroke to draw them.
+ */
+function shapePaint(raw: Record<string, string>, flags: string[]): Record<string, string> {
+  const paint: Record<string, string> = {};
+  for (const name of ["fill", "stroke"] as const) {
+    const value = (raw[name] ?? PAINT_DEFAULTS[name]).trim();
+    const opacityName = `${name}-opacity`;
+    const opacity = Number(raw[opacityName] ?? "1");
+    if (value === "none") {
+      paint[name] = "none";
+      continue;
+    } else if (/^url\(/i.test(value)) {
+      // A gradient or pattern: kept by reference, its definition in a raw <defs>.
+      paint[name] = value.replace(/^url\(\s*"?([^")]*)"?\s*\)(.*)$/i, "url($1)$2");
+      flags.push("paint-server");
+    } else {
+      const hex = normalizeColor(value);
+      if (!hex) {
+        paint[name] = "none";
+        continue;
+      }
+      paint[name] = hex.slice(0, 7);
+      const alpha = hex.length === 9 ? parseInt(hex.slice(7), 16) / 255 : 1;
+      const combined = r2(alpha * (Number.isFinite(opacity) ? opacity : 1));
+      if (combined !== 1) paint[opacityName] = String(combined);
+      continue;
+    }
+    if (Number.isFinite(opacity) && opacity !== 1) paint[opacityName] = String(r2(opacity));
+  }
+  for (const name of PAINT_ORDER.filter((n) => !/^(fill|stroke)(-opacity)?$/.test(n))) {
+    const value = raw[name];
+    if (value === undefined || value === "") continue;
+    if (name === "stroke-width" || name === "stroke-dashoffset") paint[name] = num(value.replace(/px$/, ""));
+    else if (name === "stroke-dasharray") paint[name] = value.trim() === "none" ? "none" : lengths(value);
+    else if (name === "opacity") paint[name] = num(value);
+    else if (name === "clip-path" || name === "mask" || name === "filter") paint[name] = effect(name, value, flags);
+    else paint[name] = value.trim();
+  }
+  if (paint.stroke === "none") {
+    for (const name of ["stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-opacity", "stroke-dasharray", "stroke-dashoffset"]) delete paint[name];
+  }
+  for (const [name, value] of Object.entries(paint)) if (PAINT_DEFAULTS[name] === value) delete paint[name];
+  return paint;
+}
+
+interface Shape { tag: string; geometry: [string, string][]; paint: Record<string, string> }
+
+/**
+ * Markup kept as written, its `fill` and `stroke` in a CSS color function,
+ * as the page writes a `<text>`'s computed paint, as hex, which Figma's SVG
+ * import reads where it may not read `oklch()`: an alpha below 1 goes to
+ * the matching opacity, unless the element sets that already.
+ */
+export function rawPaint(markup: string): string {
+  return markup.replace(/<[^>]+>/g, (tag) => {
+    let out = tag;
+    for (const name of ["fill", "stroke"]) {
+      out = out.replace(new RegExp(`\\s${name}="((?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\([^"]*\\))"`), (whole, value: string) => {
+        const hex = normalizeColor(value);
+        if (!hex) return whole;
+        const alpha = hex.length === 9 ? parseInt(hex.slice(7), 16) / 255 : 1;
+        const own = new RegExp(`\\s${name}-opacity="`).test(tag);
+        return ` ${name}="${hex.slice(0, 7)}"${alpha < 1 && !own ? ` ${name}-opacity="${r2(alpha)}"` : ""}`;
+      });
+    }
+    return out;
+  });
+}
+
+/**
+ * The viewBox that draws an SVG across its whole border box as the browser
+ * draws it in its content box, inside its padding and border (`inset`, top
+ * right bottom left): coder's `[&>svg]:p-0.5` draws a 24-unit icon in the
+ * 20px inside a 24px box. The markup is imported at the border box, so its
+ * viewBox reaches as far past the drawing as the inset: `-2.4 -2.4 28.8
+ * 28.8` there. null where there is no inset, or no room inside it. With
+ * the same scale on both axes, the box's own aspect, any alignment then
+ * draws alike; `none` keeps a scale for each.
+ */
+function viewBoxIn(attrs: Record<string, string>, box: Box, inset: [number, number, number, number]): string | null {
+  const [t, r, b, l] = inset;
+  const [cw, ch] = [box[2] - l - r, box[3] - t - b];
+  if (!inset.some((v) => v > 0) || cw <= 0 || ch <= 0) return null;
+  const view = attrs.viewBox?.trim().split(/[\s,]+/).map(Number);
+  const [vx, vy, vw, vh] = view?.length === 4 && view[2] > 0 && view[3] > 0 ? view : [0, 0, cw, ch];
+  const fit = (attrs.preserveAspectRatio ?? "xMidYMid meet").trim().split(/\s+/);
+  let [kx, ky, ox, oy] = [cw / vw, ch / vh, l, t];
+  if (fit[0] !== "none") {
+    kx = ky = fit[1] === "slice" ? Math.max(cw / vw, ch / vh) : Math.min(cw / vw, ch / vh);
+    const at = (part: string, room: number) => (part === "Min" ? 0 : part === "Max" ? room : room / 2);
+    ox += at(fit[0].slice(1, 4), cw - vw * kx);
+    oy += at(fit[0].slice(5, 8), ch - vh * ky);
+  }
+  const n = (v: number) => String(Math.round(v * 1e4) / 1e4);
+  return [vx - ox / kx, vy - oy / ky, box[2] / kx, box[3] / ky].map(n).join(" ");
+}
+
+/**
+ * An inline SVG as markup snap stores, rebuilt from what the browser drew
+ * rather than copied from the page: geometry kept as written, every paint
+ * as computed (section 6.6 of the design), sized to the box the browser drew
+ * it at, without `class`, `style`, `aria-*` or `data-*`. Paint every shape
+ * shares is written once on the root. A `<g>` with a transform is kept
+ * around its shapes, and one without is dropped, its shapes in its place.
+ *
+ * What createNodeFromSvg may not import (a definition, a mask, a clip path,
+ * `use`, `text`, a nested `<svg>`) is kept as the page wrote it and named
+ * in `flags`, so the node can say its vector is approximate.
+ */
+export function serializeSvg(root: RawSvgNode, box: Box, inset: [number, number, number, number] = [0, 0, 0, 0]): { markup: string; flags: string[] } {
+  const flags: string[] = [];
+  const attrs = (pairs: [string, string][]) => pairs.map(([k, v]) => ` ${k}="${escapeAttr(v)}"`).join("");
+  // Markup in order, a shape's left until the paint shared by all is known.
+  const pieces: (string | Shape)[] = [];
+  const shapes: Shape[] = [];
+  const visit = (node: RawSvgNode) => {
+    if (SVG_DROPPED_TAGS.includes(node.tag)) return;
+    if (node.raw !== undefined) {
+      flags.push(node.tag);
+      pieces.push(rawPaint(node.raw));
+      return;
+    }
+    if (node.tag === "g") {
+      // Kept for what it does to its shapes as one: a transform, an
+      // opacity fading them together, an effect. Their inherited paint is
+      // on each shape already, as the page computed it.
+      const own: [string, string][] = SVG_GEOMETRY.filter((a) => node.attrs[a] !== undefined).map((a) => [a, node.attrs[a]]);
+      const paint = node.paint ?? {};
+      const opacity = num(paint.opacity ?? "1");
+      if (opacity !== "1") own.push(["opacity", opacity]);
+      for (const name of ["clip-path", "mask", "filter"]) {
+        const value = effect(name, paint[name] ?? "none", flags);
+        if (value !== "none") own.push([name, value]);
+      }
+      if (own.length) pieces.push(`<g${attrs(own)}>`);
+      for (const kid of node.kids ?? []) visit(kid);
+      if (own.length) pieces.push("</g>");
+      return;
+    }
+    if (SVG_SHAPE_TAGS.includes(node.tag)) {
+      const shape: Shape = {
+        tag: node.tag,
+        geometry: SVG_GEOMETRY.filter((a) => node.attrs[a] !== undefined).map((a) => [a, node.attrs[a]]),
+        paint: shapePaint(node.paint ?? {}, flags),
+      };
+      shapes.push(shape);
+      pieces.push(shape);
+      return;
+    }
+    // Not raw, not a shape or a group: an element the page didn't expect.
+    flags.push(node.tag);
+  };
+  for (const kid of root.kids ?? []) visit(kid);
+
+  // Paint every shape shares goes to the root, and off the shapes.
+  const hoisted: Record<string, string> = {};
+  for (const name of PAINT_ORDER) {
+    if (!HOISTED.has(name) || !shapes.length) continue;
+    const values = shapes.map((s) => s.paint[name] ?? PAINT_DEFAULTS[name]);
+    if (!values.every((v) => v === values[0])) continue;
+    if (values[0] !== PAINT_DEFAULTS[name]) hoisted[name] = values[0];
+    for (const shape of shapes) delete shape.paint[name];
+  }
+
+  const rootAttrs: [string, string][] = [["xmlns", "http://www.w3.org/2000/svg"], ["width", String(r2(box[2]))], ["height", String(r2(box[3]))]];
+  for (const name of SVG_ROOT_ATTRS) if (root.attrs[name] !== undefined) rootAttrs.push([name, root.attrs[name]]);
+  const drawn = viewBoxIn(root.attrs, box, inset);
+  if (drawn) {
+    for (const [i, pair] of rootAttrs.entries()) if (pair[0] === "viewBox") rootAttrs.splice(i, 1);
+    rootAttrs.splice(3, 0, ["viewBox", drawn]);
+  }
+  for (const name of PAINT_ORDER) if (hoisted[name] !== undefined) rootAttrs.push([name, hoisted[name]]);
+  const body = pieces.map((piece) => {
+    if (typeof piece === "string") return piece;
+    const { tag, geometry, paint } = piece;
+    const paintPairs = PAINT_ORDER.filter((name) => paint[name] !== undefined).map((name): [string, string] => [name, paint[name]]);
+    return `<${tag}${attrs(geometry)}${attrs(paintPairs)}/>`;
+  }).join("");
+  return { markup: `<svg${attrs(rootAttrs)}>${body}</svg>`, flags: [...new Set(flags)] };
+}
+
+/** An SVG's asset id: `svg:` and the FNV-1a of its markup, so one icon drawn alike anywhere is stored once. */
+export function svgAssetId(markup: string): string {
+  return `svg:${fnv1a32(markup)}`;
+}
+
+// --- Images -------------------------------------------------------------------
+
+/**
+ * What of an image a box shows, and where: `src` the rectangle of the
+ * source's pixels it draws, and `dst` where in the box they land, as
+ * fractions of its width and height. `key` names the crop for the asset id:
+ * the source rectangle, and the destination when the image doesn't fill the
+ * box, or fills it stretched to a shape other than its own.
+ */
+export interface ImageCrop {
+  src: [x: number, y: number, w: number, h: number];
+  dst: [x: number, y: number, w: number, h: number];
+  key: string;
+}
+
+/**
+ * One axis of `object-position`: a percentage of the room left over, or a
+ * length from the start. Chromium computes keywords to percentages.
+ */
+function positionOffset(token: string | undefined, room: number): number {
+  const value = (token ?? "50%").trim();
+  const percent = /^(-?\d*\.?\d+)%$/.exec(value);
+  if (percent) return (Number(percent[1]) / 100) * room;
+  const px = /^(-?\d*\.?\d+)px$/.exec(value);
+  if (px) return Number(px[1]);
+  return room / 2;
+}
+
+/**
+ * The size a `background-size` of lengths, percentages of the box and
+ * `auto` draws an image at, or null for a value it can't read. `auto` on
+ * one side keeps the image's shape; on both, its own size.
+ */
+function backgroundSize(value: string, natural: [number, number], box: [number, number]): [number, number] | null {
+  const tokens = value.trim().split(/\s+/);
+  if (tokens.length > 2) return null;
+  const side = (token: string, i: 0 | 1): number | null | undefined => {
+    if (token === "auto") return null;
+    const px = /^(\d*\.?\d+)px$/.exec(token);
+    if (px) return Number(px[1]);
+    const percent = /^(\d*\.?\d+)%$/.exec(token);
+    if (percent) return (Number(percent[1]) / 100) * box[i];
+    return undefined;
+  };
+  const w = side(tokens[0], 0);
+  const h = side(tokens[1] ?? "auto", 1);
+  if (w === undefined || h === undefined) return null;
+  const [W, H] = natural;
+  if (w === null && h === null) return [W, H];
+  if (w === null) return [(h! * W) / H, h!];
+  if (h === null) return [w, (w * H) / W];
+  return [w, h];
+}
+
+/**
+ * The part of an image a box of `box` CSS px shows, as `object-fit` and
+ * `object-position` place it (`fill`, CSS's initial value, stretches it to
+ * the box), or a background's `background-size` and `background-position`:
+ * a size given in lengths or `auto` draws it at that size, wherever the
+ * position puts it, `16px 16px` in the middle of a 64px box a quarter of
+ * it. Independent of the box's scale for `fit`'s keywords and
+ * percentages: the 24, 32 and 40px Avatar show the same crop, so share one
+ * asset.
+ */
+export function imageCrop(natural: [number, number], box: [number, number], fit: string, position: string): ImageCrop {
+  const [W, H] = natural;
+  const [bw, bh] = box;
+  const full: ImageCrop["dst"] = [0, 0, 1, 1];
+  if (!(W > 0 && H > 0 && bw > 0 && bh > 0)) return { src: [0, 0, r2(W), r2(H)], dst: full, key: `0,0,${r2(W)},${r2(H)}` };
+  let sx: number;
+  let sy: number;
+  switch (fit.trim()) {
+    case "contain": sx = sy = Math.min(bw / W, bh / H); break;
+    case "cover": sx = sy = Math.max(bw / W, bh / H); break;
+    case "none": sx = sy = 1; break;
+    case "scale-down": sx = sy = Math.min(1, bw / W, bh / H); break;
+    case "fill": sx = bw / W; sy = bh / H; break;
+    default: {
+      const size = backgroundSize(fit, natural, box);
+      [sx, sy] = size ? [size[0] / W, size[1] / H] : [bw / W, bh / H];
+      break;
+    }
+  }
+  const rw = W * sx;
+  const rh = H * sy;
+  const [px, py] = position.trim().split(/\s+/);
+  const ox = positionOffset(px, bw - rw);
+  const oy = positionOffset(py, bh - rh);
+  // The image's rendered rectangle, cut to the box.
+  const vx0 = Math.max(0, ox);
+  const vy0 = Math.max(0, oy);
+  const vx1 = Math.min(bw, ox + rw);
+  const vy1 = Math.min(bh, oy + rh);
+  const src: ImageCrop["src"] = [r2((vx0 - ox) / sx), r2((vy0 - oy) / sy), r2((vx1 - vx0) / sx), r2((vy1 - vy0) / sy)];
+  const r4 = (n: number) => Math.round(n * 1e4) / 1e4 || 0;
+  const dst: ImageCrop["dst"] = [r4(vx0 / bw), r4(vy0 / bh), r4((vx1 - vx0) / bw), r4((vy1 - vy0) / bh)];
+  let key = src.join(",");
+  if (dst.some((v, i) => v !== full[i])) key += `@${dst.join(",")}`;
+  // Stretched to the box: a box of another shape shows another picture.
+  else if (sx !== sy) key += `~${r4(bw / bh)}`;
+  return { src, dst, key };
+}
+
+/**
+ * An image's asset id: the first 12 hex digits of its source bytes' SHA-256,
+ * and 4 of the FNV-1a of its crop. One photo cropped two ways is two assets;
+ * one crop of it at three sizes is one.
+ */
+export function imageAssetId(source: Uint8Array, cropKey: string): string {
+  return `img:${createHash("sha256").update(source).digest("hex").slice(0, 12)}-${fnv1a32(cropKey).slice(0, 4)}`;
+}
+
+/**
+ * Where an asset's thumbnail goes, relative to the directory holding
+ * styles.json: its id without the colon, which Windows can't name a file
+ * with, and the FNV of the thumbnail's own bytes. The id leaves the size
+ * out, so one photo with one crop is one id in every component, but each
+ * component draws its thumbnail at its own largest box: named by id alone,
+ * Empty's 96px thumbnail of shadcn.png replaced the Avatar's 80px one, whose
+ * record then named bytes no longer on disk. A `--merge` run could do the
+ * same to a component it kept.
+ */
+export function imageAssetFile(id: string, mime: "image/jpeg" | "image/png", fnv: string): string {
+  return `assets/${id.replace(/^img:/, "")}-${fnv}.${mime === "image/png" ? "png" : "jpg"}`;
+}
+
+/** The longest side a thumbnail is drawn at, in pixels. */
+export const THUMBNAIL_MAX_SIDE = 1024;
+
+/**
+ * How a thumbnail is encoded: a JPEG at `quality` where every pixel is
+ * opaque, a PNG where any isn't, as a letterboxed `contain` leaves some.
+ * With THUMBNAIL_MAX_SIDE, the one place snap's image encoding is chosen.
+ * The Figma spike (section 14 of the design) uploaded a JPEG thumbnail and
+ * read the same bytes back, so upload_assets favors no format and JPEG
+ * stays. PNG throughout would be `opaque: "image/png"`. thumbnailInPage is
+ * handed it.
+ */
+export const THUMBNAIL_ENCODING: { opaque: "image/jpeg" | "image/png"; alpha: "image/png"; quality: number } = {
+  opaque: "image/jpeg", alpha: "image/png", quality: 0.85,
+};
+
+/**
+ * A thumbnail's pixel size: twice the box, as the screenshots are taken, so
+ * Figma has the pixels a 2x display shows, and at most THUMBNAIL_MAX_SIDE on
+ * its longer side.
+ */
+export function thumbnailSize(box: [number, number]): [number, number] {
+  const [w, h] = [box[0] * 2, box[1] * 2];
+  const scale = Math.min(1, THUMBNAIL_MAX_SIDE / Math.max(w, h, 1));
+  return [Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale))];
+}
+
+/** An image's type from its first bytes, for the data URL the page draws it from; null when it isn't one a browser surely draws. */
+export function sniffImageType(bytes: Uint8Array): string | null {
+  const starts = (...sig: number[]) => sig.every((b, i) => bytes[i] === b);
+  if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
+  if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (starts(0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  if (starts(0x00, 0x00, 0x01, 0x00)) return "image/x-icon";
+  const head = Buffer.from(bytes.subarray(0, 256)).toString("utf8").trimStart();
+  if (/^(?:<\?xml[^>]*>\s*)?(?:<!--[\s\S]*?-->\s*)*<svg[\s>]/i.test(head)) return "image/svg+xml";
+  if (bytes.length > 12 && Buffer.from(bytes.subarray(4, 12)).toString("latin1") === "ftypavif") return "image/avif";
+  return null;
+}
+
+/** A PNG's pixel size from its header, or null for anything else. */
+export function pngSize(bytes: Uint8Array): [number, number] | null {
+  if (bytes.length < 24 || bytes[0] !== 0x89 || bytes[1] !== 0x50) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return [view.getUint32(16), view.getUint32(20)];
+}
+
+/**
+ * Percent-decodes as the URL standard does, and browsers with it: each
+ * valid `%XX` is that byte, and anything else, a `%` not followed by two hex
+ * digits included, is its own UTF-8. decodeURIComponent throws on a lone
+ * `%`, which an inline SVG's `width='100%'` is, and failed the variant.
+ */
+function percentDecode(text: string): Buffer {
+  const bytes = Buffer.from(text, "utf8");
+  const out: number[] = [];
+  const isHex = (b: number | undefined) => b !== undefined && ((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66));
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0x25 && isHex(bytes[i + 1]) && isHex(bytes[i + 2])) {
+      out.push(parseInt(String.fromCharCode(bytes[i + 1], bytes[i + 2]), 16));
+      i += 2;
+    } else {
+      out.push(bytes[i]);
+    }
+  }
+  return Buffer.from(out);
+}
+
+/** A `data:` URL's bytes and type, or null for any other URL. */
+export function decodeDataUrl(url: string): { bytes: Uint8Array; mime: string } | null {
+  const m = /^data:([^;,]*)((?:;[^;,]*)*),(.*)$/s.exec(url);
+  if (!m) return null;
+  const base64 = /;base64/i.test(m[2]);
+  const body = percentDecode(m[3]);
+  const bytes = base64 ? Buffer.from(body.toString("latin1"), "base64") : body;
+  return { bytes: new Uint8Array(bytes), mime: m[1] || "text/plain" };
+}

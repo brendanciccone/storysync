@@ -24,6 +24,9 @@ yarn-error.log*
 .env*.local
 .env
 
+# python, for scripts/figma-stand-ins.py
+__pycache__/
+
 # typescript
 *.tsbuildinfo
 

@@ -1,0 +1,209 @@
+{
+ "source": {
+  "story": "ui-base-button--with-icon",
+  "args": "variant:default;size:default",
+  "root": "[data-slot=button]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "button",
+   "box": [
+    0,
+    0,
+    206.796875,
+    36
+   ],
+   "cs": {
+    "display": "inline-flex",
+    "padding-right": "10px",
+    "padding-left": "10px",
+    "justify-content": "center",
+    "align-items": "center",
+    "flex-shrink": "0",
+    "row-gap": "6px",
+    "column-gap": "6px",
+    "background-color": "oklch(0.205 0 0)",
+    "background-clip": "padding-box",
+    "border-top-width": "1px",
+    "border-right-width": "1px",
+    "border-bottom-width": "1px",
+    "border-left-width": "1px",
+    "border-top-color": "rgba(0, 0, 0, 0)",
+    "border-right-color": "rgba(0, 0, 0, 0)",
+    "border-bottom-color": "rgba(0, 0, 0, 0)",
+    "border-left-color": "rgba(0, 0, 0, 0)",
+    "border-top-left-radius": "8px",
+    "border-top-right-radius": "8px",
+    "border-bottom-right-radius": "8px",
+    "border-bottom-left-radius": "8px"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "svg",
+     "box": [
+      11,
+      10,
+      16,
+      16
+     ],
+     "cs": {
+      "flex-shrink": "0",
+      "overflow-x": "hidden",
+      "overflow-y": "hidden"
+     },
+     "kids": [],
+     "path": [
+      0
+     ],
+     "lucide": "lucide-mail",
+     "svg": {
+      "tag": "svg",
+      "attrs": {
+       "viewBox": "0 0 24 24"
+      },
+      "kids": [
+       {
+        "tag": "path",
+        "attrs": {
+         "d": "m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"
+        },
+        "paint": {
+         "fill": "none",
+         "fill-opacity": "1",
+         "stroke": "oklch(0.985 0 0)",
+         "stroke-opacity": "1",
+         "stroke-width": "2px",
+         "stroke-linecap": "round",
+         "stroke-linejoin": "round",
+         "opacity": "1",
+         "fill-rule": "nonzero",
+         "clip-rule": "nonzero"
+        }
+       },
+       {
+        "tag": "rect",
+        "attrs": {
+         "x": "2",
+         "y": "4",
+         "width": "20",
+         "height": "16",
+         "rx": "2"
+        },
+        "paint": {
+         "fill": "none",
+         "fill-opacity": "1",
+         "stroke": "oklch(0.985 0 0)",
+         "stroke-opacity": "1",
+         "stroke-width": "2px",
+         "stroke-linecap": "round",
+         "stroke-linejoin": "round",
+         "opacity": "1",
+         "fill-rule": "nonzero",
+         "clip-rule": "nonzero"
+        }
+       }
+      ]
+     },
+     "shapes": [
+      [
+       1.33331298828125,
+       4.666656494140625,
+       13.3333740234375,
+       3.998382568359375
+      ],
+      [
+       1.33331298828125,
+       2.666656494140625,
+       13.3333740234375,
+       10.66668701171875
+      ]
+     ]
+    },
+    {
+     "k": "t",
+     "text": " Login with Email Button",
+     "rects": [
+      [
+       41,
+       9,
+       154.796875,
+       17
+      ]
+     ]
+    }
+   ],
+   "path": [],
+   "slot": "button",
+   "cls": [
+    "focus-visible:border-ring",
+    "focus-visible:ring-ring/50",
+    "aria-invalid:ring-destructive/20",
+    "dark:aria-invalid:ring-destructive/40",
+    "aria-invalid:border-destructive",
+    "dark:aria-invalid:border-destructive/50",
+    "rounded-md",
+    "border-transparent",
+    "bg-clip-padding",
+    "text-sm",
+    "outline-none",
+    "focus-visible:ring-[3px]",
+    "aria-invalid:ring-[3px]",
+    "bg-primary",
+    "text-primary-foreground",
+    "hover:bg-primary/80",
+    "in-data-[slot=button-group]:rounded-md"
+   ],
+   "text": {
+    "color": "oklch(0.985 0 0)",
+    "font-family": "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+    "font-size": "14px",
+    "font-weight": "500",
+    "font-style": "normal",
+    "line-height": "20px",
+    "letter-spacing": "normal",
+    "text-transform": "none",
+    "text-decoration-line": "none",
+    "text-align": "center",
+    "white-space": "nowrap",
+    "text-overflow": "clip",
+    "-webkit-line-clamp": "none"
+   }
+  },
+  "fonts": {
+   "-apple-system, \"system-ui\", \"Segoe UI\", Roboto, \"Helvetica Neue\", \"Noto Sans\", Arial, sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"": {
+    "families": [
+     "-apple-system",
+     "system-ui",
+     "Segoe UI",
+     "Roboto",
+     "Helvetica Neue",
+     "Noto Sans",
+     "Arial",
+     "sans-serif",
+     "Apple Color Emoji",
+     "Segoe UI Emoji",
+     "Segoe UI Symbol",
+     "Noto Color Emoji"
+    ],
+    "applied": [
+     false,
+     true,
+     false,
+     true,
+     true,
+     false,
+     true,
+     null,
+     true,
+     false,
+     false,
+     false
+    ]
+   }
+  }
+ }
+}

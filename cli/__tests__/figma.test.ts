@@ -48,12 +48,15 @@ const LIBRARY: FileSpec = {
   ],
 };
 
+// Each with the page it is on, which tells apart the sets of a name two
+// categories share, whether it is a set or a component outside one, and its
+// node id. The stand-in numbers nodes in file order, variants included.
 const LIBRARY_COMPONENTS: FigmaComponentInfo[] = [
-  { name: "Button", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "md", "lg"] }, { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }], variantCount: 6 },
-  { name: "Input", variantProperties: [{ name: "state", type: "VARIANT", values: ["default", "error"] }], variantCount: 2 },
-  { name: "Tabs", variantProperties: [{ name: "variant", type: "VARIANT", values: ["line", "pill"] }], variantCount: 2 },
-  { name: "Link", variantProperties: [], variantCount: 1 },
-  { name: "Badge", variantProperties: [], variantCount: 1 },
+  { name: "Button", page: "Forms", type: "COMPONENT_SET", nodeId: "1:1", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "md", "lg"] }, { name: "disabled", type: "BOOLEAN", values: ["true", "false"] }], variantCount: 6 },
+  { name: "Input", page: "Forms", type: "COMPONENT_SET", nodeId: "1:9", variantProperties: [{ name: "state", type: "VARIANT", values: ["default", "error"] }], variantCount: 2 },
+  { name: "Tabs", page: "Navigation", type: "COMPONENT_SET", nodeId: "1:12", variantProperties: [{ name: "variant", type: "VARIANT", values: ["line", "pill"] }], variantCount: 2 },
+  { name: "Link", page: "Navigation", type: "COMPONENT", nodeId: "1:15", variantProperties: [], variantCount: 1 },
+  { name: "Badge", page: "Feedback", type: "COMPONENT", nodeId: "1:17", variantProperties: [], variantCount: 1 },
 ];
 
 test("getComponents: finds the components on every page, a page a call, switching once in each", async () => {
@@ -252,6 +255,43 @@ test("getComponents: skips page dividers, which hold nothing and can't be switch
   assert.deepEqual(listed.result?.map((p) => p.id), [0, 2, 3, 5].map(pageId));
 });
 
+test("getComponents: a set Figma flags as errored is read as errored, and the rest of its page still read", async () => {
+  // A set of one variant named "", as 0.3.0 pushed a component with no
+  // variant properties: Figma renames the variant "=" and throws on reading
+  // the set's componentPropertyDefinitions. That threw out of the page's
+  // read, so diff failed on the whole file over one set.
+  const file: FileSpec = {
+    pages: [
+      { name: "UI Base", nodes: [set("Button", { "": [""] }, { errored: true }), set("Avatar", { size: ["sm", "lg"] })] },
+      { name: "Components", nodes: [set("Tooltip", { "": [""] }, { errored: true, storybookId: "ui-base-tooltip" }), component("Card")] },
+    ],
+  };
+  const { result, error, calls } = await read(file, components);
+  assert.equal(error, null);
+  const error_ = "in get_componentPropertyDefinitions: Component set has existing errors";
+  assert.deepEqual(result, [
+    { name: "Button", page: "UI Base", type: "COMPONENT_SET", nodeId: "1:1", error: error_, variantProperties: [], variantCount: 1 },
+    { name: "Avatar", page: "UI Base", type: "COMPONENT_SET", nodeId: "1:3", variantProperties: [{ name: "size", type: "VARIANT", values: ["sm", "lg"] }], variantCount: 2 },
+    { name: "Tooltip", page: "Components", type: "COMPONENT_SET", nodeId: "1:6", storybookId: "ui-base-tooltip", error: error_, variantProperties: [], variantCount: 1 },
+    { name: "Card", page: "Components", type: "COMPONENT", nodeId: "1:8", variantProperties: [], variantCount: 1 },
+  ]);
+  assert.ok(calls.every((c) => !c.error), calls.map((c) => c.error).join(", "));
+});
+
+test("getComponents: reads the Storybook ID the push stored on a set or a component, and none where it stored none", async () => {
+  const file: FileSpec = {
+    pages: [{ name: "Forms", nodes: [set("Button", { size: ["sm"] }, { storybookId: "forms-button" }), frame("Section", [component("Badge", { storybookId: "forms-badge" })]), component("Logo")] }],
+  };
+  const { result, error } = await read(file, components);
+  assert.equal(error, null);
+  assert.deepEqual(result?.map((c) => [c.name, c.type, c.storybookId]), [
+    ["Button", "COMPONENT_SET", "forms-button"],
+    ["Badge", "COMPONENT", "forms-badge"],
+    ["Logo", "COMPONENT", undefined],
+  ]);
+  assert.ok(result?.every((c) => c.name === "Logo" ? !("storybookId" in c) : true));
+});
+
 test("getPages: lists a file of more pages than one response holds, in slices", async () => {
   const pages = Array.from({ length: 700 }, (_, i) => ({ name: `Page with a fairly long name ${i}`, nodes: [] }));
   const { result, error, calls } = await read({ pages }, (client) => client.getPages("file-key"));
@@ -275,21 +315,25 @@ const TOKENS: FileSpec = {
         { name: "color/overlay", type: "COLOR", values: [{ r: 0, g: 0, b: 0, a: 0.5 }, { r: 1, g: 1, b: 1, a: 0.5 }] },
       ],
     },
-    { name: "Semantic", modes: ["Light", "Dark"], variables: [{ name: "primary", type: "COLOR", values: [{ alias: "Colors/color/palette-0/100" }, { alias: "Colors/color/palette-0/100" }] }] },
+    { name: "Semantic", modes: ["Light", "Dark"], variables: [{ name: "primary", type: "COLOR", values: [{ alias: "Colors/color/palette-0/100" }, { alias: "Colors/color/palette-0/200" }] }] },
     { name: "Spacing", modes: ["Default"], variables: Array.from({ length: 50 }, (_, i) => ({ name: `space/${i}`, type: "FLOAT" as const, values: [i * 4] })) },
   ],
 };
 
-test("getVariables: reads every variable a slice at a time, in each collection's first mode", async () => {
+test("getVariables: reads every variable a slice at a time, in its collection's first mode and, where it has several, in each", async () => {
   const { result, error, calls } = await read(TOKENS, (client) => client.getVariables("file-key"));
   assert.equal(error, null);
   assert.equal(result?.length, 452);
   assert.ok(calls.length > 1 && calls.every((c) => !c.error && c.bytes <= RESPONSE_GUARD && !c.switches.length), calls.map((c) => c.bytes).join(", "));
   assert.equal(new Set(result?.map((v) => `${v.collection}/${v.name}`)).size, 452);
   const byName = new Map(result?.map((v) => [`${v.collection}/${v.name}`, v]));
-  assert.deepEqual(byName.get("Colors/color/palette-0/100"), { name: "color/palette-0/100", resolvedType: "COLOR", value: "#000000", collection: "Colors", mode: "Light" });
-  assert.equal(byName.get("Colors/color/overlay")?.value, "#00000080");
-  assert.equal(byName.get("Semantic/primary")?.value, "#000000");
+  // Every mode, for diff to compare the Dark one with the code's dark
+  // theme: only the first was read, so a wrong dark value never showed.
+  assert.deepEqual(byName.get("Colors/color/palette-0/100"), { name: "color/palette-0/100", resolvedType: "COLOR", value: "#000000", collection: "Colors", mode: "Light", modes: { Light: "#000000", Dark: "#243355" } });
+  assert.deepEqual(byName.get("Colors/color/overlay")?.modes, { Light: "#00000080", Dark: "#ffffff80" });
+  // Each mode's alias is followed, to another variable here.
+  assert.deepEqual(byName.get("Semantic/primary")?.modes, { Light: "#000000", Dark: "#243355" });
+  // A collection of one mode gives no modes.
   assert.deepEqual(byName.get("Spacing/space/3"), { name: "space/3", resolvedType: "FLOAT", value: "12", collection: "Spacing", mode: "Default" });
 });
 
@@ -297,9 +341,19 @@ test("getVariables: --mode reads that mode, from the collections that have it", 
   const { result, error } = await read(TOKENS, (client) => client.getVariables("file-key", "Dark"));
   assert.equal(error, null);
   assert.equal(result?.length, 402);
-  assert.ok(result?.every((v) => v.mode === "Dark" && v.collection !== "Spacing"));
+  assert.ok(result?.every((v) => v.mode === "Dark" && v.collection !== "Spacing" && v.modes === undefined));
   assert.equal(result?.find((v) => v.name === "color/palette-0/100")?.value, "#243355");
   assert.equal(result?.find((v) => v.name === "color/overlay")?.value, "#ffffff80");
+});
+
+test("getVariables: writes a color's alpha as tokens and the audit do, leaving out one that rounds to ff", async () => {
+  // An alpha of 0.999 is ff in two hex digits: written out, it never matched
+  // the token's #000000, which the audit's read matched.
+  const alphas = [1, 0.999, 0.998, 0.5, 0.1, 0];
+  const variables = alphas.map((a, i) => ({ name: `color/${i}`, type: "COLOR" as const, values: [{ r: 0, g: 0, b: 0, a }] }));
+  const { result, error } = await read({ pages: [{ name: "Cover", nodes: [] }], collections: [{ name: "Colors", modes: ["Light"], variables }] }, (client) => client.getVariables("file-key"));
+  assert.equal(error, null);
+  assert.deepEqual(result?.map((v) => v.value), ["#000000", "#000000", "#000000fe", "#00000080", "#0000001a", "#00000000"]);
 });
 
 test("getVariables: leaves out ids that read as null, wherever the slices fall, and reads every variable once", async () => {

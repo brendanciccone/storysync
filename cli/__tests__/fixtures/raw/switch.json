@@ -1,0 +1,94 @@
+{
+ "source": {
+  "story": "ui-base-switch--default",
+  "args": null,
+  "root": "[data-slot=switch]",
+  "browser": "Chrome 154.0.8037.98 on darwin",
+  "note": "What captureTreeInPage read of the shadcn/ui registry's story (MIT), as snap reads it live."
+ },
+ "capture": {
+  "root": {
+   "k": "e",
+   "tag": "span",
+   "box": [
+    0,
+    0,
+    32,
+    18.390625
+   ],
+   "cs": {
+    "display": "flex",
+    "position": "relative",
+    "align-items": "center",
+    "flex-shrink": "0",
+    "background-color": "oklch(0.922 0 0)",
+    "border-top-width": "1px",
+    "border-right-width": "1px",
+    "border-bottom-width": "1px",
+    "border-left-width": "1px",
+    "border-top-color": "rgba(0, 0, 0, 0)",
+    "border-right-color": "rgba(0, 0, 0, 0)",
+    "border-bottom-color": "rgba(0, 0, 0, 0)",
+    "border-left-color": "rgba(0, 0, 0, 0)",
+    "border-top-left-radius": "3.35544e+07px",
+    "border-top-right-radius": "3.35544e+07px",
+    "border-bottom-right-radius": "3.35544e+07px",
+    "border-bottom-left-radius": "3.35544e+07px",
+    "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0.05) 0px 1px 2px 0px"
+   },
+   "kids": [
+    {
+     "k": "e",
+     "tag": "span",
+     "box": [
+      1,
+      1.1875,
+      16,
+      16
+     ],
+     "cs": {
+      "background-color": "oklch(1 0 0)",
+      "border-top-left-radius": "3.35544e+07px",
+      "border-top-right-radius": "3.35544e+07px",
+      "border-bottom-right-radius": "3.35544e+07px",
+      "border-bottom-left-radius": "3.35544e+07px",
+      "box-shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklch(0.145 0 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px"
+     },
+     "kids": [],
+     "path": [
+      0
+     ],
+     "slot": "switch-thumb",
+     "cls": [
+      "bg-background",
+      "dark:data-unchecked:bg-foreground",
+      "dark:data-checked:bg-primary-foreground",
+      "rounded-full",
+      "ring-0"
+     ]
+    }
+   ],
+   "path": [],
+   "slot": "switch",
+   "role": "switch",
+   "cls": [
+    "data-checked:bg-primary",
+    "data-unchecked:bg-input",
+    "focus-visible:border-ring",
+    "focus-visible:ring-ring/50",
+    "aria-invalid:ring-destructive/20",
+    "dark:aria-invalid:ring-destructive/40",
+    "aria-invalid:border-destructive",
+    "dark:aria-invalid:border-destructive/50",
+    "dark:data-unchecked:bg-input/80",
+    "rounded-full",
+    "border-transparent",
+    "shadow-xs",
+    "outline-none",
+    "focus-visible:ring-[3px]",
+    "aria-invalid:ring-[3px]"
+   ]
+  },
+  "fonts": {}
+ }
+}
