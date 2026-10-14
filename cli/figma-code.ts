@@ -215,6 +215,8 @@ interface CompiledComponent {
   dark?: true;
   /** The value snap pins each prop it left out to, as an overlay's `open`: the variant of a dropped property the build keeps. */
   pin?: Record<string, string>;
+  /** The default the last push's build gave each property dropped since and not pinned, so the build keeps its variant at that value. */
+  od?: Record<string, string>;
 }
 
 const round2 = (n: number): number => Math.round(Math.round(n * 1e8) / 1e6) / 100 || 0;
@@ -679,6 +681,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string, f
     };
     if (flags.convert.has(component.key) && component.props.length) set.cv = 1;
     if (component.pin) set.pin = component.pin;
+    if (component.od) set.od = component.od;
     if (end) set.end = 1;
     if (end && flags.removeExtra) set.rm = 1;
     return set;
@@ -791,19 +794,22 @@ function keepEarlierPlan(out: string): string | null {
   return join(dir, "plan.json");
 }
 
+/** A variant property as a build call's DATA gives it. */
+type Prop = SnapComponent["variantProperties"][number];
+
 /**
- * Whether the last build Figma answered of each set built it as a set
- * (true) or as one plain component (false), by storysync id: from the plan
+ * The variant properties the last build Figma answered of each set built it
+ * with, none where it built one plain component, by storysync id: from the plan
  * under `out` and those kept under `out/earlier/`, the newest first, each
  * from its build calls' DATA, the latest first, where a result was saved
  * and didn't refuse the set.
  */
-export function builtShapes(out: string): Map<string, boolean> {
+export function builtShapes(out: string): Map<string, Prop[]> {
   const dir = resolve(out);
   const earlier = join(dir, EARLIER_PLANS_DIR);
   const kept = existsSync(earlier) ? readdirSync(earlier).map((d) => join(earlier, d)).filter((d) => existsSync(join(d, "plan.json"))) : [];
   kept.sort((a, b) => statSync(join(b, "plan.json")).mtimeMs - statSync(join(a, "plan.json")).mtimeMs);
-  const shapes = new Map<string, boolean>();
+  const shapes = new Map<string, Prop[]>();
   for (const at of [...(existsSync(join(dir, "plan.json")) ? [dir] : []), ...kept]) {
     try {
       const plan = JSON.parse(readFileSync(join(at, "plan.json"), "utf8")) as FigmaPlan;
@@ -812,8 +818,8 @@ export function builtShapes(out: string): Map<string, boolean> {
         const result = parseCallResult(readFileSync(join(at, call.result), "utf8"));
         const refused = new Set(((result?.sets ?? []) as { component?: string; refused?: string }[]).filter((r) => r.refused).map((r) => r.component));
         const data = /\nconst DATA = (.*);\n/.exec(readFileSync(join(at, call.file), "utf8"));
-        for (const set of data ? (JSON.parse(data[1]) as { sets: { id: string; props: unknown[] }[] }).sets : []) {
-          if (!shapes.has(set.id) && !refused.has(set.id)) shapes.set(set.id, set.props.length > 0);
+        for (const set of data ? (JSON.parse(data[1]) as { sets: { id: string; props: Prop[] }[] }).sets : []) {
+          if (!shapes.has(set.id) && !refused.has(set.id)) shapes.set(set.id, set.props);
         }
       }
     } catch {
@@ -905,6 +911,14 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
       { kind: "variables", page: "", components: [], collection, description: `Create or update the alpha variables ${alpha.join(", ")} in the ${collection} variable collection, each a token's color at an alpha in every mode, for the translucent paints the builds bind` },
       (seq) => `${header(seq, "variables", "")}${callCode([["DATA", data]], templates.variables)}`,
     );
+  }
+
+  // What the last push built each set with: the default of each property
+  // dropped since and not pinned, so the build keeps that variant.
+  const shapes = builtShapes(opts.out);
+  for (const c of components) {
+    const od = Object.fromEntries((shapes.get(c.id) ?? []).filter((p) => !c.props.some((q) => q.name === p.name) && !(p.name in (c.pin ?? {}))).map((p) => [p.name, p.defaultValue]));
+    if (Object.keys(od).length) c.od = od;
   }
 
   // Builds: by page, each component's variants in snap order, packed. A
@@ -1014,13 +1028,12 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // An earlier push of a component as one plain component, where it now
   // has variant properties, is the user's to convert: the build refuses
   // its part until figma code is run again with --convert.
-  const shapes = builtShapes(opts.out);
   for (const c of built) {
     const before = shapes.get(c.id);
-    if (before === false && c.props.length && !convert.has(c.key)) {
+    if (before && !before.length && c.props.length && !convert.has(c.key)) {
       warnings.push(`${c.key}: an earlier push built it as one plain component, and it now has variant properties (${c.props.map((p) => p.name).join(", ")}): ask the user whether to make that component the first variant of its set, in place, which keeps its instances, then run figma code again with --convert ${c.key}; without it, its build part is refused and the rest built`);
     }
-    if (before === true && !c.props.length) warnings.push(`${c.key}: an earlier push built it as a set, and it now has no variant properties: its build part is refused and the rest built, so ask the user whether to skip it`);
+    if (before?.length && !c.props.length) warnings.push(`${c.key}: an earlier push built it as a set, and it now has no variant properties: its build part is refused and the rest built, so ask the user whether to skip it`);
   }
 
   // Images: one call per page whose sets show one.

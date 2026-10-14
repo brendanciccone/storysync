@@ -783,11 +783,11 @@ export function imageSize(bytes: Uint8Array): { width: number; height: number } 
 // coordinates of its own: its children's x and y, and its own, are in the
 // frame around it, and its box is what its children cover. It has no fills
 // or strokes; it has effects, as Figma's groups do, which the build reads.
-type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GROUP" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON";
+type Kind = "DOCUMENT" | "PAGE" | "FRAME" | "COMPONENT" | "COMPONENT_SET" | "GROUP" | "TEXT" | "VECTOR" | "ELLIPSE" | "RECTANGLE" | "LINE" | "POLYGON" | "INSTANCE";
 
 const CONTAINERS = new Set<Kind>(["DOCUMENT", "PAGE", "FRAME", "COMPONENT", "COMPONENT_SET", "GROUP"]);
 const FRAMES = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET"]);
-const SCENE = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "GROUP", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
+const SCENE = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "GROUP", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON", "INSTANCE"]);
 /** What a variable mode can be set on. */
 const MODED = new Set<Kind>([...FRAMES, "PAGE"]);
 const GEOMETRY = new Set<Kind>(["FRAME", "COMPONENT", "COMPONENT_SET", "TEXT", "VECTOR", "ELLIPSE", "RECTANGLE", "LINE", "POLYGON"]);
@@ -887,6 +887,8 @@ class Node {
   parent: Node | null = null;
   kids: Node[] = [];
   removed = false;
+  /** An instance's main component: one a designer placed, which a build must keep pointing at a live variant. */
+  main: Node | null = null;
   data = new Map<string, string>();
   // Geometry, in the parent's coordinates; auto layout overwrites what it controls.
   x = 0;
@@ -1831,7 +1833,7 @@ const PROPS: Record<string, Prop> = {
     },
   },
   variantProperties: {
-    types: new Set(["COMPONENT"]),
+    types: new Set<Kind>(["COMPONENT"]),
     get: (n) => (n.parent?.type === "COMPONENT_SET"
       ? Object.fromEntries(n.name.split(",").map((s) => s.split("=").map((t) => t.trim())))
       : null),
@@ -1958,6 +1960,31 @@ const METHODS: Record<string, Method> = {
   resize: { types: SCENE, fn: (n, w, h) => resizeNode(n, w, h, false) },
   resizeWithoutConstraints: { types: SCENE, fn: (n, w, h) => resizeNode(n, w, h, true) },
   rescale: { types: SCENE, fn: (n, s) => rescaleNode(n, finite("rescale", s, 0.01)) },
+  // Instances, as a designer places them: on the current page, each on its
+  // main component until swapComponent moves it to another.
+  createInstance: {
+    types: new Set<Kind>(["COMPONENT"]),
+    fn: (n) => {
+      const copy = new Node(n.doc, "INSTANCE", n.name);
+      [copy.w, copy.h, copy.main] = [n.w, n.h, n];
+      if (n.doc.call) n.doc.call.created++;
+      attach(n.doc.call?.current ?? n.doc.pages[0], copy);
+      return copy.handle;
+    },
+  },
+  getInstancesAsync: {
+    types: new Set<Kind>(["COMPONENT"]),
+    fn: async (n) => handles([...n.doc.byId.values()].filter((i) => i.type === "INSTANCE" && !i.removed && i.main === n)),
+  },
+  getMainComponentAsync: { types: new Set<Kind>(["INSTANCE"]), fn: async (n) => n.main?.handle ?? null },
+  swapComponent: {
+    types: new Set<Kind>(["INSTANCE"]),
+    fn: (n, component) => {
+      const c = unwrap(component);
+      if (c.type !== "COMPONENT" || c.removed) throw new Error("in swapComponent: Expected a component node");
+      n.main = c;
+    },
+  },
   clone: {
     types: SCENE,
     fn: (n) => {

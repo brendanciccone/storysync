@@ -814,21 +814,22 @@ for (const set of DATA.sets) {
   }
   // Variants an earlier push built under other properties are renamed onto
   // this part's, so their instances follow: a property added takes its
-  // default value; of a property dropped, a variant at the value snap now
-  // pins it to (`pin`) is kept, a measured one before a placeholder. The
-  // rest stay, extra, until the user has them removed (`rm`).
+  // default value; of a property dropped, the variant at the value snap now
+  // pins it to (`pin`) is kept, else at its old default (`od`, from the
+  // last plan), a measured one before a placeholder. The rest stay, extra.
   let renamed = 0;
+  const vals = (c) => Object.fromEntries(c.name.split(', ').map((s) => s.split('=')));
+  const pairs = (o) => Object.keys(o).sort().map((k) => k + '=' + o[k]).join();
+  // An old variant's values in this part's properties, and whether it is at
+  // the pinned or default value of each property dropped.
+  const onto = (old) => pairs(Object.fromEntries(set.props.map((p) => [p.name, p.name in old ? old[p.name] : p.defaultValue])));
+  const same = (old) => Object.keys(old).every((k) => set.props.some((p) => p.name === k) || old[k] === ((set.pin || {})[k] || (set.od || {})[k] || old[k]));
   if (node && node.type === 'COMPONENT_SET') {
     const take = {};
     for (const c of node.children) {
-      if (names.includes(c.name) || !get(c, 'slug')) continue;
-      const old = Object.fromEntries(c.name.split(', ').map((s) => s.split('=')));
-      if (Object.keys(old).some((k) => set.pin && k in set.pin && set.pin[k] !== old[k] && !set.props.some((p) => p.name === k))) continue;
-      // This part's name of those values, in whatever order it gives them.
-      const pairs = (name) => name.split(', ').sort().join();
-      const as = pairs(set.props.map((p) => p.name + '=' + (p.name in old ? old[p.name] : p.defaultValue)).join(', '));
-      const to = names.find((name) => pairs(name) === as);
-      if (!to || node.children.some((d) => d.name === to)) continue;
+      const old = vals(c);
+      const to = names.find((name) => pairs(vals({ name })) === onto(old));
+      if (names.includes(c.name) || !get(c, 'slug') || !same(old) || !to || node.children.some((d) => d.name === to)) continue;
       if (!take[to] || (get(c, 'src') === 'measured' && get(take[to], 'src') !== 'measured')) take[to] = c;
     }
     for (const to in take) {
@@ -956,23 +957,42 @@ for (const set of DATA.sets) {
     const cells = [];
     const extra = [];
     let removed = 0;
+    const cell = (n, at) => ({ node: n, at, key: at.slice(1).join(), d: drawn(n) });
+    const stale = [];
     for (const n of node.children) {
-      const pairs = n.name.split(', ');
-      const pos = pairs.length === axes.length ? pairs.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
-      // A variant an earlier push built that no property names now: on the
-      // set's last part, no longer read back by its index, or removed where
-      // the user said so (`rm`, figma code --remove-extra).
-      if (pos.includes(-1) && set.end && get(n, 'slug')) {
-        put(n, 'i', '');
-        if (set.rm) {
-          await loadFonts(textsIn(n));
-          n.remove();
-          removed++;
-          continue;
+      const named = n.name.split(', ');
+      const pos = named.length === axes.length ? named.map((s, i) => (s.startsWith(axes[i][0]) ? axes[i][1].indexOf(s.slice(axes[i][0].length)) : -1)) : [-1];
+      if (pos.includes(-1) && set.end && get(n, 'slug')) stale.push(n);
+      else (pos.includes(-1) ? extra : cells).push(cell(n, pos));
+    }
+    // A variant an earlier push built that no property names now, on the
+    // set's last part: no longer read back by its index. Its instances move
+    // to the variant of its values, where there is one: always where it is
+    // at the pinned or old default value of each property dropped, else
+    // where the user has the extras removed (`rm`, figma code
+    // --remove-extra), which removes one only once none is left on it.
+    let swapped = 0;
+    for (const n of stale) {
+      put(n, 'i', '');
+      const old = vals(n);
+      const to = cells.find((c) => pairs(vals(c.node)) === onto(old));
+      let left = 0;
+      for (const i of await n.getInstancesAsync()) {
+        try {
+          if (!to || !(set.rm || same(old))) throw 0;
+          i.swapComponent(to.node);
+          swapped++;
+        } catch (e) {
+          left++;
         }
       }
-      (pos.includes(-1) ? extra : cells).push({ node: n, at: pos, key: pos.slice(1).join(), d: drawn(n) });
+      if (set.rm && !left) {
+        await loadFonts(textsIn(n));
+        n.remove();
+        removed++;
+      } else extra.push(cell(n, [-1]));
     }
+    if (swapped) out.swapped = swapped;
     if (removed) out.removed = removed;
     cells.sort((a, b) => a.at[0] - b.at[0] || byColumn(a.at, b.at) || byId(a, b));
     const grid = [];

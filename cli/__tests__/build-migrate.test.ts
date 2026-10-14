@@ -50,7 +50,7 @@ async function codeIn(snap: TreeFixture, out: string, options: object = {}): Pro
   return { ...coded, out, code: (call) => readFileSync(join(out, call.file), "utf8") };
 }
 
-const children = (mock: MockFigma, id: string) => (mock.handle(id) as { children: { id: string; name: string }[] }).children.map((c) => [c.id, c.name]);
+const children = (mock: MockFigma, id: string) => (mock.handle(id) as { children: { id: string; name: string }[] }).children.map((c) => [c.id, c.name] as [string, string]);
 
 test("build: variants an earlier push built are renamed onto a property added since, keeping their node ids, so instances follow (probe 9a)", async () => {
   // ToggleGroup gained `disabled`: the old variants are its disabled=false ones.
@@ -91,6 +91,69 @@ test("build: of a property dropped since, the variants at the value snap pins it
   const [removed] = await push(mock, await codeFor(after, { removeExtra: true }));
   assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].extra, sets(removed)[0].variants], [6, 0, 6]);
   assert.ok(children(mock, set.id).every(([id]) => old.get([...old].find(([, i]) => i === id)![0]) === id));
+});
+
+/** Each instance on the file's pages, by id: the name of the variant it is on, null where that variant is gone. */
+async function mains(mock: MockFigma): Promise<Record<string, string | null>> {
+  const run = await mock.run(`const out = {}; for (const p of figma.root.children) { await p.loadAsync(); for (const i of p.findAllWithCriteria({ types: ["INSTANCE"] })) { const m = await i.getMainComponentAsync(); out[i.id] = m.removed ? null : m.name; } } return out;`);
+  return run.value as Record<string, string | null>;
+}
+
+/** Places an instance of each of the set's variants, as a designer does: by instance id, the name of the variant. */
+async function placeInstances(mock: MockFigma, set: string): Promise<Map<string, string>> {
+  const run = await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(set)}); return s.children.map((v) => [v.createInstance().id, v.name]);`);
+  return new Map(run.value as [string, string][]);
+}
+
+test("build: a variant an earlier push left beside the one its values now name moves its instances onto that one, counts as extra, and is removed only once they are", async () => {
+  // Pass 8's ToggleGroup: its old variants, without `disabled`, beside the
+  // new ones it built with it, each instance still on an old one.
+  const before = withoutProp(loadTreeFixture("example-button"), "disabled", "false");
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const [first] = await push(mock, await codeFor(before));
+  const id = sets(first)[0].id;
+  const placed = await placeInstances(mock, id);
+  const cloned = await mock.run(`const s = await figma.getNodeByIdAsync(${JSON.stringify(id)}); for (const t of s.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName); for (const v of [...s.children]) { const c = v.clone(); s.appendChild(c); c.name = v.name + ", disabled=false"; }`);
+  assert.ok(cloned.ok, cloned.text);
+  const old = children(mock, id);
+  const full = loadTreeFixture("example-button");
+  const [then] = await push(mock, await codeFor(full));
+  const [set] = sets(then);
+  assert.deepEqual([set.renamed, set.extra, set.variants, (set as { swapped?: number }).swapped], [undefined, 6, 18, 6]);
+  const on = await mains(mock);
+  for (const [instance, name] of placed) assert.equal(on[instance], `${name}, disabled=false`, name);
+  // Removed where the user says so: the old ones only, every instance on a variant still there.
+  const [removed] = await push(mock, await codeFor(full, { removeExtra: true }));
+  assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].extra, sets(removed)[0].variants], [6, 0, 12]);
+  const left = new Set(children(mock, id).map(([i]) => i));
+  for (const [i, name] of old) assert.equal(left.has(i), name.endsWith("disabled=false"), name);
+  assert.deepEqual(await mains(mock), on);
+});
+
+test("build: of a property dropped with no pin, the variants at its old default are kept, with their instances; the rest are extra, their instances moved only when the user has them removed", async () => {
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  const mock = mockFor([full]);
+  const a = await codeFor(full);
+  const [first] = await push(mock, a);
+  const id = sets(first)[0].id;
+  const old = new Map(children(mock, id));
+  const placed = await placeInstances(mock, id);
+  // Run again over the same plan directory: figma code knows from the last plan that `disabled` defaulted to false.
+  const [then] = await push(mock, await codeIn(after, a.out));
+  const [set] = sets(then);
+  assert.deepEqual([set.renamed, set.added, set.extra, set.variants], [6, 0, 6, 12]);
+  for (const [i, name] of children(mock, id)) {
+    if (!old.get(i)!.endsWith("disabled=true")) assert.equal(name, old.get(i)!.replace(", disabled=false", ""), name);
+  }
+  // Each instance is where it was: on its variant, renamed or extra.
+  const on = await mains(mock);
+  for (const [instance, name] of placed) assert.equal(on[instance], name.replace(", disabled=false", ""), name);
+  // Removed where the user says so, each instance moved first to the variant of its other values.
+  const [removed] = await push(mock, await codeIn(after, a.out, { removeExtra: true }));
+  assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].variants], [6, 6]);
+  const moved = await mains(mock);
+  for (const [instance, name] of placed) assert.equal(moved[instance], name.replace(/, disabled=(true|false)/, ""), name);
 });
 
 test("build: a plain component an earlier push built, now with variant properties, is refused until the user says to convert it, then made its set's first variant in place", async () => {
@@ -193,12 +256,15 @@ test("build: a variant too big for one call is sent in parts, kept on the page u
   // of Card's nodes, and the next the rest. Where every call carries the
   // template, each part holds a few, its icons' markup among them.
   for (const inlineTemplates of [false, true]) {
-    const coded = await codeFor(card, { maxChars: 24_000, inlineTemplates });
+    // Where every call carries the template, 25,000 leaves each about
+    // 2,500 characters beside it, so no icon's markup is over alone.
+    const maxChars = inlineTemplates ? 25_000 : 24_000;
+    const coded = await codeFor(card, { maxChars, inlineTemplates });
     const builds = coded.plan.calls.filter((c) => c.kind === "build");
     const parts = builds.filter((c) => /variant 1 of 2, part \d+ of/.test(c.description)).length;
     assert.ok(inlineTemplates ? parts > 3 : parts === 2, `${parts} parts`);
     assert.match(builds[0].description, new RegExp(`^Create or update Card \\(variant 1 of 2, part 1 of ${parts}\\) on page "ui/base"$`));
-    for (const call of builds) assert.ok(call.chars <= 24_000, `${call.file}: ${call.chars}`);
+    for (const call of builds) assert.ok(call.chars <= maxChars, `${call.file}: ${call.chars}`);
     const mock = mockFor([card]);
     const runs = await runPlan(mock, coded, ["build"]);
     assert.deepEqual(sets(runs[0]), [{ component: "ui-base-card", name: "Card", stashed: 1 }]);
