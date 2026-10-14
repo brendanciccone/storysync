@@ -1036,7 +1036,7 @@ figma
   .option("--read-limit <n>", "Most characters a read call is predicted to return (use_figma returns at most 20kb)", String(DEFAULT_READ_LIMIT))
   .option("--no-minify", "Send the templates' readable sources, comment lines blanked, instead of their minified build, for debugging")
   .option("--convert <names>", "Comma-separated components an earlier push built as one plain component that now have variant properties: the user said to make that component the first variant of the set, in place, which keeps its instances")
-  .option("--remove-extra", "Remove from each set built the variants an earlier push built that no variant property names now, once the user said to; without it they stay, counted as extra")
+  .option("--remove-extra", "Remove from each set whose last build counted extra variants those an earlier push built that no variant property names now, once the user said to; without it they stay, counted as extra")
   .option("--inline-templates", "Carry the template in every build and read call, rather than the first of each kind storing it in the Figma file for the rest")
   .option("--json", "Output JSON instead of formatted text")
   .action(async (opts) => {

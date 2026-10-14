@@ -86,6 +86,9 @@ export interface FigmaCodeOptions {
   /**
    * Remove, from each set built, the variants an earlier push built that no
    * variant property names now, once the user said to: `--remove-extra`.
+   * Only a set whose last build Figma answered counted some in `extra`, or
+   * one no saved build answered, is told to, so the calls of the others
+   * stay as they were.
    */
   removeExtra?: boolean;
   /**
@@ -734,7 +737,8 @@ interface Part {
 /** What a build call's set says beyond its variants: the user's answers, and the values snap pinned. */
 interface SetFlags {
   convert: Set<string>;
-  removeExtra: boolean;
+  /** Whether the set of this storysync id removes its extra variants (`rm`). */
+  removeExtra: (id: string) => boolean;
 }
 
 type Interned = [number, number, string, number, number, number, number, number];
@@ -784,7 +788,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string, f
     if (component.pin) set.pin = component.pin;
     if (component.od) set.od = component.od;
     if (end) set.end = 1;
-    if (end && flags.removeExtra) set.rm = 1;
+    if (end && flags.removeExtra(component.id)) set.rm = 1;
     return set;
   });
   return `${header(seq, "build", page)}${callCode([["DATA", { page, S: table.values, sets }]], template, "figma code", carry)}`;
@@ -931,6 +935,35 @@ export function builtShapes(out: string): Map<string, Prop[]> {
 }
 
 /**
+ * The `extra` the last build Figma answered of each set counted, by
+ * storysync id, read as builtShapes reads: from the plan under `out` and
+ * those kept under `out/earlier/`, the newest first, each from its build
+ * calls' results, the latest first, where it didn't refuse the set.
+ */
+export function builtExtras(out: string): Map<string, number> {
+  const dir = resolve(out);
+  const earlier = join(dir, EARLIER_PLANS_DIR);
+  const kept = existsSync(earlier) ? readdirSync(earlier).map((d) => join(earlier, d)).filter((d) => existsSync(join(d, "plan.json"))) : [];
+  kept.sort((a, b) => statSync(join(b, "plan.json")).mtimeMs - statSync(join(a, "plan.json")).mtimeMs);
+  const extras = new Map<string, number>();
+  for (const at of [...(existsSync(join(dir, "plan.json")) ? [dir] : []), ...kept]) {
+    try {
+      const plan = JSON.parse(readFileSync(join(at, "plan.json"), "utf8")) as FigmaPlan;
+      for (const call of [...plan.calls].reverse()) {
+        if (call.kind !== "build" || !existsSync(join(at, call.result))) continue;
+        const result = parseCallResult(readFileSync(join(at, call.result), "utf8"));
+        for (const set of (result?.sets ?? []) as { component?: string; refused?: string; stashed?: number; extra?: number }[]) {
+          if (set.component && !set.refused && !set.stashed && !extras.has(set.component)) extras.set(set.component, set.extra ?? 0);
+        }
+      }
+    } catch {
+      // Not a plan, or results, this storysync wrote: nothing to go by.
+    }
+  }
+  return extras;
+}
+
+/**
  * The styles.json `--snap` names: the path itself, or the one in a
  * directory it names, such as `.storysync/snaps`. An error that says what
  * to do where there is none, not the file system's ENOENT or EISDIR.
@@ -1057,7 +1090,11 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   // the variant out whole.
   const keys = new Map(entries.map((e, i) => [e, componentKey(all[i])]));
   const convert = new Set(opts.convert?.length ? selectComponents(entries, opts.convert, [], "--convert").map((e) => keys.get(e)!) : []);
-  const flags: SetFlags = { convert, removeExtra: Boolean(opts.removeExtra) };
+  // --remove-extra tells a set to remove its extra variants only where
+  // its last build counted some, or none answered: one with none to
+  // remove keeps its call as it was, byte for byte.
+  const extras = opts.removeExtra ? builtExtras(opts.out) : new Map<string, number>();
+  const flags: SetFlags = { convert, removeExtra: (id) => Boolean(opts.removeExtra) && (extras.get(id) ?? 1) > 0 };
   const isEnd = (p: Part) => p.variants[p.variants.length - 1] === p.component.variants[p.component.variants.length - 1] && (!p.chunk || p.chunk.p[0] === p.chunk.p[1]);
   // The first build call, and the first read, carries its template and
   // stores it in the file; the rest of their kind run what it stored.
