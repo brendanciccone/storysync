@@ -624,8 +624,12 @@ class Table {
 interface Part {
   component: CompiledComponent;
   variants: CompiledVariant[];
-  /** One part (`p`) of a variant too big for one call, alone in its part: its records, and the calls of the parts before the last. */
-  chunk?: { records: Record_[]; p: [number, number]; calls?: string };
+  /**
+   * One part (`p`) of a variant too big for one call, alone in its part:
+   * its records, from the variant's record `o`, the hash of each part (`h`
+   * this one's, `e` those before it) and the calls of those before.
+   */
+  chunk?: { records: Record_[]; p: [number, number]; o: number; h: string; e: string[]; calls?: string };
   /** Whether this part holds the component's last variant, whole or its last part: the set's last part. */
   end?: boolean;
 }
@@ -676,7 +680,7 @@ function buildCode(seq: number, page: string, parts: Part[], template: string, f
     const set: Record<string, unknown> = {
       id: component.id, title: component.title ?? "", name: component.name, props: component.props, base,
       v: chunk
-        ? variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, { r: intern(chunk.records, table), p: chunk.p, ...(chunk.calls ? { c: chunk.calls } : {}) }])
+        ? variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, { r: intern(chunk.records, table), p: chunk.p, o: chunk.o, h: chunk.h, e: chunk.e, ...(chunk.calls ? { c: chunk.calls } : {}) }])
         : variants.map((v) => [v.name, v.slug, v.i, v.src, v.digest, deltaOf(base, intern(v.records, table))]),
     };
     if (flags.convert.has(component.key) && component.props.length) set.cv = 1;
@@ -922,9 +926,12 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   }
 
   // Builds: by page, each component's variants in snap order, packed. A
-  // variant too big for one call is sent in parts, each call as many of its
-  // records as fit: the build keeps each part on the page, and the last
-  // part's call builds the variant whole.
+  // variant too big for one call, by its characters or its nodes, is sent
+  // in parts, each call as many of its records as fit: each part's call
+  // builds its records, in the order snap gave them, so each one's parent
+  // is built before it, and keeps them on the page for the parts after it;
+  // the last part's call removes what snap no longer measures and lays
+  // the variant out whole.
   const keys = new Map(entries.map((e, i) => [e, componentKey(all[i])]));
   const convert = new Set(opts.convert?.length ? selectComponents(entries, opts.convert, [], "--convert").map((e) => keys.get(e)!) : []);
   const flags: SetFlags = { convert, removeExtra: Boolean(opts.removeExtra) };
@@ -968,24 +975,28 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
           parts = next;
           continue;
         }
-        // It starts a call of its own, over --max-nodes warned.
+        // It starts a call of its own.
         flush();
         const alone: Part[] = [{ component, variants: [variant] }];
-        if (code(calls.length + 1, page, alone).length <= maxChars) {
+        if (variant.records.length <= maxNodes && code(calls.length + 1, page, alone).length <= maxChars) {
           parts = alone;
           continue;
         }
-        // In parts, each as many of its records as fit beside the template:
-        // a node too big for --max-chars alone is a part of its own, warned,
-        // and one too big for any call leaves its variant out, said.
+        // In parts, each as many of its records as fit beside the template,
+        // and at most --max-nodes: a node too big for --max-chars alone is a
+        // part of its own, warned, and one too big for any call leaves its
+        // variant out, said.
         const { records } = variant;
         const chunks: Record_[][] = [];
+        const offsets: number[] = [];
         for (let a = 0; a < records.length;) {
           // Only the first call of the plan's builds carries the template.
           const seq = calls.length + 1 + chunks.length;
           const storing = opts.inlineTemplates || (first.build === undefined && !chunks.length) ? undefined : false;
-          const size = (b: number) => code(seq, page, [{ component, variants: [variant], chunk: { records: records.slice(a, b), p: [99, 99], calls: "99, 99, 99" } }], storing).length + 100;
-          const fits = (b: number) => size(b) <= maxChars;
+          const before = chunks.map(() => "ffffffff");
+          const size = (b: number) => code(seq, page, [{ component, variants: [variant], chunk: { records: records.slice(a, b), p: [99, 99], o: a, h: "ffffffff", e: before, ...(before.length ? { calls: before.map(() => "99").join(", ") } : {}) } }], storing).length + 100;
+          const fits = (b: number) => b - a <= maxNodes && size(b) <= maxChars;
+          offsets.push(a);
           if (!fits(a + 1)) {
             const chars = size(a + 1);
             if (chars > USE_FIGMA_CODE_LIMIT) {
@@ -1008,14 +1019,17 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
           a = lo;
         }
         if (tooBig.has(variant)) continue;
+        // Each part's hash, over its records and where they start, which
+        // each later part checks against what the earlier ones kept, so a
+        // part another split of the variant kept is never built on.
+        const hashes = chunks.map((chunk, k) => fnv1a32(canonicalJson([offsets[k], chunk])));
         const seqs: string[] = [];
         chunks.forEach((chunk, k) => {
-          const end = k === chunks.length - 1;
-          parts = [{ component, variants: [variant], chunk: { records: chunk, p: [k + 1, chunks.length], ...(end ? { calls: seqs.join(", ") } : {}) } }];
+          const p: [number, number] = [k + 1, chunks.length];
+          parts = [{ component, variants: [variant], chunk: { records: chunk, p, o: offsets[k], h: hashes[k], e: hashes.slice(0, k), ...(k ? { calls: seqs.join(", ") } : {}) } }];
           seqs.push(pad(calls.length + 1));
           flush();
         });
-        if (records.length > maxNodes) warnings.push(`${component.key} ${variant.slug}: sent in ${chunks.length} calls, the last of which builds its ${records.length} nodes, over --max-nodes ${maxNodes}`);
       }
     }
     flush();

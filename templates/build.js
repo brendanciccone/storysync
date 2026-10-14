@@ -13,7 +13,7 @@
 //
 // DATA = { page, S, sets }
 //   S     the call's table of strings and styles; records refer to it by index.
-//   sets  [{ id, title, name, props, base, v, cv?, pin?, end?, rm? }], each
+//   sets  [{ id, title, name, props, base, v, cv?, pin?, od?, end?, rm? }], each
 //         one part of a set:
 //         id, title   the component's Storybook id and title, kept on the set
 //                     as shared plugin data, by which it is found again;
@@ -24,10 +24,14 @@
 //                     measure; delta [[index, [x, y, w, h] | 0, style | -1]]
 //                     against base, or { r: records } in full, or a part of
 //                     a variant too big for one call, { r, p: [part, of],
-//                     c: the calls of the parts before, on the last };
+//                     o: its first record's index in the variant, h: its
+//                     hash, e: the hashes of the parts before it, c: their
+//                     calls };
 //         cv          1 where the user said to make the plain component an
 //                     earlier push built the first variant of this set;
 //         pin         { prop: value } snap pins each prop it left out to;
+//         od          { prop: value } the default the last push built each
+//                     prop dropped since with;
 //         end         1 on the set's last part; rm, 1 there where the user
 //                     said to remove the variants no property names now.
 //   A record is [key, parent, kind, x, y, w, h, style]: key and style index
@@ -37,8 +41,8 @@
 //
 // It returns { kind: 'build', tpl: 2, page, sets, uploads, fonts, unbound,
 // fallbacks, omitted? }: per set what changed (section 8.2), or `refused`,
-// the question for the user that left it as it was, or `stashed`, the
-// parts kept for a later call; the image layers to upload_assets, font
+// the question for the user that left it as it was, and `stashed`, the
+// parts it built and kept for a later call; the image layers to upload_assets, font
 // stand-ins, variable names that didn't bind, spike fallbacks taken, and
 // how many list entries were left out to keep the response under
 // use_figma's 20kb.
@@ -423,7 +427,11 @@ const hexOf = (c) => '#' + [c.r, c.g, c.b].map((v) => Math.round(v * 255).toStri
 // missing, removes keyed layers snap no longer measures, puts each parent's
 // keyed children in record order after its designer layers, and styles every
 // node. Returns the nodes by record index, and the designer layers counted.
-const converge = async (root, recs) => {
+// A part of a variant (section: parts) builds its own records, from `pre`:
+// those before it are its earlier parts', found by their keys, `miss` said
+// where one is gone. Only the last part (`last`) removes what no record
+// keys, puts every layer in its order and counts a designer's.
+const converge = async (root, recs, pre, last, miss) => {
   // Every font the variant's texts have now, before anything moves.
   await loadFonts(textsIn(root));
   const have = new Map();
@@ -465,7 +473,7 @@ const converge = async (root, recs) => {
     walk(root);
   }
   // And every font they will have.
-  for (const rec of recs) if (rec[2] === 'T') await loadFont(S[rec[7]].t);
+  for (const rec of recs.slice(pre)) if (rec[2] === 'T') await loadFont(S[rec[7]].t);
   const nodes = [root];
   for (let i = 1; i < recs.length; i++) {
     const [ki, , kind, , , , , si] = recs[i];
@@ -473,6 +481,11 @@ const converge = async (root, recs) => {
     at[2] = k;
     let n = have.get(k);
     have.delete(k);
+    if (i < pre) {
+      if (!n) throw new Error(miss);
+      nodes[i] = n;
+      continue;
+    }
     if (n && !fits(n, kind, S[si])) {
       n.remove();
       n = null;
@@ -484,21 +497,23 @@ const converge = async (root, recs) => {
     }
     nodes[i] = n;
   }
-  for (const n of have.values()) if (!n.removed) n.remove();
+  if (last) for (const n of have.values()) if (!n.removed) n.remove();
   // A new text's default font, before it moves into place.
   await loadFonts(nodes.filter((n) => n.type === 'TEXT'));
+  // A part's own layers go into their parents, in order; the last part
+  // puts them all in theirs.
   for (let i = 0; i < recs.length; i++) {
     const kids = [];
-    for (let j = i + 1; j < recs.length; j++) if (recs[j][1] === i) kids.push(nodes[j]);
+    for (let j = i + 1; j < recs.length; j++) if (recs[j][1] === i && (last || j >= pre)) kids.push(nodes[j]);
     if (!kids.length) continue;
     const now = nodes[i].children.filter((c) => get(c, 'k'));
-    if (now.length !== kids.length || now.some((c, j) => c !== kids[j])) for (const c of kids) nodes[i].appendChild(c);
+    if (!last || now.length !== kids.length || now.some((c, j) => c !== kids[j])) for (const c of kids) if (last || c.parent !== nodes[i]) nodes[i].appendChild(c);
   }
   let designer = 0;
   for (let i = 0; i < recs.length; i++) {
     at[2] = S[recs[i][0]];
-    await style(nodes[i], recs[i], nodes[recs[i][1]], i === 0);
-    if ('children' in nodes[i] && recs[i][2] !== 'V' || i === 0) designer += nodes[i].children.filter((c) => !get(c, 'k') && !get(c, 'vs')).length;
+    if (i >= pre) await style(nodes[i], recs[i], nodes[recs[i][1]], i === 0);
+    if (last && ('children' in nodes[i] && recs[i][2] !== 'V' || i === 0)) designer += nodes[i].children.filter((c) => !get(c, 'k') && !get(c, 'vs')).length;
   }
   return { nodes, designer };
 };
@@ -573,25 +588,23 @@ const slack = (nodes, recs) => {
       for (const j of round) {
         const [t, r] = [nodes[j], recs[j]];
         const z = S[r[7]].t;
-        t.resize(r[5], r[6]);
+        const fix = () => t.resize(r[5], r[6]);
+        fix();
         // Fixed, it must still be one line. Where Figma's font sets it
         // wider than the browser did, it would wrap (probe 9a: Geist wraps
         // "Select a fruit" at 84.5): it hugs, and the frame that fixes its
         // width grows by what it lacks.
         t.textAutoResize = 'HEIGHT';
-        if (t.height <= 1.5 * (z.l || 1.27 * z.z)) {
-          t.textAutoResize = 'NONE';
-          t.resize(r[5], r[6]);
-          continue;
-        }
-        t.textAutoResize = 'WIDTH_AND_HEIGHT';
+        const one = t.height <= 1.5 * (z.l || 1.27 * z.z);
+        t.textAutoResize = one ? 'NONE' : 'WIDTH_AND_HEIGHT';
+        if (one) fix();
         let q = r[1];
         while (q && nodes[q].layoutSizingHorizontal !== 'FIXED') q = recs[q][1];
         const f = nodes[q];
         const v = f.layoutSizingVertical;
-        if (f.layoutSizingHorizontal !== 'FIXED') continue;
+        if (one || f.layoutSizingHorizontal !== 'FIXED') continue;
         f.resize(f.width + t.width - r[5], f.height);
-        if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
+        f.layoutSizingVertical = v;
       }
       return;
     }
@@ -773,14 +786,16 @@ const push = (n, moved) => {
 // on to the others.
 for (const set of DATA.sets) {
   const want = set.props.length ? 'COMPONENT_SET' : 'COMPONENT';
-  // A variant too big for one call comes in parts (`p`: [part, of]). Each
-  // but the last is kept on the page, its strings and styles with it, an
-  // icon's markup (a style's `m`) too, until the last part's call builds
-  // the variant whole and removes them.
+  // A variant too big for one call comes in parts (`p`: [part, of]), each
+  // built by its own call. Each but the last is kept on the page, its
+  // strings and styles with it, an icon's markup (a style's `m`) too, so
+  // the parts after it find its layers and the last lays the variant out
+  // whole, then removes them.
   const key = (slug, k) => 'part ' + set.id + ' ' + slug + ' ' + k;
-  const parts = [];
-  set.v = set.v.filter(([, slug, , , digest, d]) => {
-    if (!d.p || d.p[0] === d.p[1]) return true;
+  const forget = (slug, n) => {
+    for (let k = 1; k < n; k++) put(page, key(slug, k), '');
+  };
+  const keep = (slug, digest, d) => {
     const used = [];
     const ix = {};
     const re = (i) => {
@@ -789,14 +804,9 @@ for (const set of DATA.sets) {
       if (S[i].m !== undefined) used[j] = Object.assign({}, S[i], { m: re(S[i].m) });
       return j;
     };
-    put(page, key(slug, d.p[0]), JSON.stringify({ d: digest, S: used, r: d.r.map((q) => [re(q[0]), ...q.slice(1, 7), re(q[7])]) }));
-    parts.push(slug);
-    return false;
-  });
-  if (!set.v.length) {
-    results.push({ component: set.id, name: set.name, stashed: parts.length });
-    continue;
-  }
+    put(page, key(slug, d.p[0]), JSON.stringify({ d: digest, h: d.h, S: used, r: d.r.map((q) => [re(q[0]), ...q.slice(1, 7), re(q[7])]) }));
+  };
+  let stashed = 0;
   const names = set.v.map((v) => v[0]);
   // The set: by name anywhere on the page, else by its storysync id, so a
   // renamed set is found and a copy of one is not.
@@ -821,7 +831,7 @@ for (const set of DATA.sets) {
         : twice ? 'The set "' + set.name + '" has ' + kids.filter((c) => c.name === twice).length + ' variants named "' + twice + '", not one' : '';
   if (why) {
     // Nor are the parts of its variants kept for it.
-    for (const [, slug, , , , d] of set.v) if (d.p) for (let k = 1; k < d.p[1]; k++) put(page, key(slug, k), '');
+    for (const [, slug, , , , d] of set.v) if (d.p) forget(slug, d.p[1]);
     results.push({ component: set.id, name: set.name, refused: why });
     continue;
   }
@@ -874,19 +884,21 @@ for (const set of DATA.sets) {
     for (const [name, slug, index, src, digest, delta] of set.v) {
       at = [set.title || set.name, slug];
       let recs = recordsOf(set.base, delta);
-      if (delta.p) {
-        // The last part of a variant: its earlier parts' records first.
-        const before = [];
-        for (let k = 1; k < delta.p[1]; k++) {
-          const o = JSON.parse(get(page, key(slug, k)) || '{}');
-          if (o.d !== digest) throw new Error('Variant ' + slug + ' of ' + set.name + ' is sent in ' + delta.p[1] + ' calls: send call ' + delta.c + ' first, then this one again');
-          const n = S.length;
-          S.push(...o.S.map((v) => (v.m !== undefined ? Object.assign({}, v, { m: v.m + n }) : v)));
-          before.push(...o.r.map((q) => [q[0] + n, ...q.slice(1, 7), q[7] + n]));
-        }
-        recs = before.concat(recs);
-        done.push([slug, delta.p[1]]);
+      // A part of a variant: the parts before it, as this plan split it (each
+      // part's hash `h`, those before it `e`), records and all, first.
+      const [k, of] = delta.p || [1, 1];
+      const miss = 'Variant ' + slug + ' of ' + set.name + ' is sent in ' + of + ' calls: send call ' + delta.c + ' first, then this one again';
+      const before = [];
+      for (let j = 1; j < k; j++) {
+        const o = JSON.parse(get(page, key(slug, j)) || '{}');
+        if (o.d !== digest || o.h !== delta.e[j - 1]) throw new Error(miss);
+        const n = S.length;
+        S.push(...o.S.map((v) => (v.m !== undefined ? Object.assign({}, v, { m: v.m + n }) : v)));
+        before.push(...o.r.map((q) => [q[0] + n, ...q.slice(1, 7), q[7] + n]));
       }
+      recs = before.concat(recs);
+      const last = k === of;
+      if (of > 1 && last) done.push([slug, of]);
       let variant = existing.get(name);
       if (!variant && first && recs.filter((r) => firstKeys.has(r[0])).length * 2 >= recs.length) {
         // A new variant that shares most of its layers with one already
@@ -928,16 +940,21 @@ for (const set of DATA.sets) {
         if (gone) migrated++;
       }
       if (want === 'COMPONENT_SET') variant.name = name;
-      const { nodes, designer } = await converge(variant, recs);
-      slack(nodes, recs);
-      keepLines(nodes, recs);
-      designerLayers += designer;
-      if (src) checkLayout(nodes, recs, slug, absoluteContainers);
-      put(variant, 'slug', slug);
-      put(variant, 'i', String(index));
-      put(variant, 'src', src ? 'measured' : 'unmeasured');
-      put(variant, 'tpl', '2');
-      put(variant, 'd', digest);
+      const { nodes, designer } = await converge(variant, recs, before.length, last, miss);
+      if (last) {
+        slack(nodes, recs);
+        keepLines(nodes, recs);
+        designerLayers += designer;
+        if (src) checkLayout(nodes, recs, slug, absoluteContainers);
+        put(variant, 'slug', slug);
+        put(variant, 'i', String(index));
+        put(variant, 'src', src ? 'measured' : 'unmeasured');
+        put(variant, 'tpl', '2');
+        put(variant, 'd', digest);
+      } else {
+        keep(slug, digest, delta);
+        stashed++;
+      }
       if (!first) {
         first = variant;
         firstKeys = new Set(recs.map((r) => r[0]));
@@ -947,7 +964,7 @@ for (const set of DATA.sets) {
     for (const v of created) if (!v.removed) v.remove();
     throw e;
   }
-  for (const [slug, n] of done) for (let k = 1; k < n; k++) put(page, key(slug, k), '');
+  for (const [slug, n] of done) forget(slug, n);
   if (want === 'COMPONENT') node = first;
   else if (!node) node = figma.combineAsVariants(created, page);
   else for (const v of created) node.appendChild(v);
@@ -961,7 +978,7 @@ for (const set of DATA.sets) {
   };
   if (converted) out.converted = 1;
   if (renamed) out.renamed = renamed;
-  if (parts.length) out.stashed = parts.length;
+  if (stashed) out.stashed = stashed;
   results.push(out);
   if (want === 'COMPONENT_SET') {
     // Lays the whole set out by its properties, as 0.4.0 did, each variant

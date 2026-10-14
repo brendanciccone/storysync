@@ -1229,7 +1229,8 @@ test("build: a layer that moves is moved with every font in it loaded, a designe
 test("build: a variant another call built is moved in the set's grid with its fonts loaded", async () => {
   const fixture = loadTreeFixture("switch");
   // One variant a call: the second call lays out the set, moving the first variant.
-  const coded = await codeFor(fixture, { maxNodes: 1 });
+  const nodes = (await codeFor(fixture)).plan.calls.find((c) => c.kind === "build")!.nodes!;
+  const coded = await codeFor(fixture, { maxNodes: nodes - 1 });
   const mock = mockFor([fixture]);
   const [first, second] = coded.plan.calls.filter((c) => c.kind === "build");
   const one = await mock.run(coded.code(first));

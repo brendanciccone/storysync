@@ -40,11 +40,16 @@ import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
  *   for what the live re-check found the build must do itself: a variant
  *   continued across calls, a set refused alone, a plain component made a
  *   set, variants renamed onto new properties, a set that grew moving
- *   what it grew onto, and a wider font given room. The first call keeps
- *   19,200 for DATA, over 2.5 times the fourth live push's largest
- *   variant, 7,454 beside the template, and the template 2,500 below it.
- * - A variant too big for a call's room is sent in parts, each in a call
- *   of its own (figma-code.ts), so no variant needs more room than that.
+ *   what it grew onto, and a wider font given room; then instances moved
+ *   off stale variants and each part of a variant built by its own call.
+ *   No trim made that room: the lever is the stored template, which only
+ *   the first call carries. With the template at its budget, the first
+ *   call keeps 19,100 for DATA, over 2.5 times the fourth live push's
+ *   largest variant, 7,454 beside the template; at its size now, 21,000.
+ * - A variant too big for a call's room is sent in parts, each built by a
+ *   call of its own (figma-code.ts), so no variant needs more room than
+ *   that, and the first call's room is a matter of how many calls a plan
+ *   takes, not of what it can build.
  * - A read call is its template, the guard and a header of a few hundred
  *   characters, nowhere near 45,000, and what it returns is held by its
  *   LIMIT, not by its code.
@@ -78,7 +83,7 @@ test("templates: the build's budget leaves a call room for its data, packed and 
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 19_000, "the first call keeps 19,000 for DATA");
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 2.5 * 7_454, "over 2.5 times the room the largest took");
   assert.ok(MAX_CALL_CHARS - loading >= 43_000, "a call after it keeps 43,000 for DATA");
-  assert.ok(BUDGETS.build - templateLiteral(loadTemplate("build")).length >= 2_500, "the build template keeps 2,500 below its budget");
+  assert.ok(MAX_CALL_CHARS - templateLiteral(loadTemplate("build")).length - storing >= 21_000, "the first call keeps 21,000 for DATA beside the template it stores");
   assert.ok(BUDGETS.readback + storing + 1_000 < MAX_CALL_CHARS, "a read call is its template, the guard and a short header");
 });
 
@@ -91,7 +96,9 @@ test("templates: a readable build call, after figma code --no-minify, keeps a pa
   assert.equal(readable[0], source[0]);
   readable.forEach((line, i) => assert.equal(line, i > 0 && /^\s*\/\//.test(source[i]) ? "" : source[i], `line ${i + 1}`));
   const guard = callCode([["DATA", 0]], "").length - callConstants([["DATA", 0]]).length;
-  assert.ok(templateLiteral(readable.join("\n")).length + guard + 7_454 <= MAX_CALL_CHARS, "a readable call has the room the largest variant took, under --max-chars");
+  // The first readable call, which stores it, keeps room for a few
+  // variants; one bigger than that is sent in parts.
+  assert.ok(templateLiteral(readable.join("\n")).length + guard + 5_000 <= MAX_CALL_CHARS, "a readable call keeps 5,000 for DATA, under --max-chars");
   for (const name of treeFixtureNames()) {
     const coded = await codeFor(loadTreeFixture(name), { minify: false });
     assert.deepEqual(coded.warnings.filter((w) => /use_figma call takes|over --max-chars/.test(w)), [], name);

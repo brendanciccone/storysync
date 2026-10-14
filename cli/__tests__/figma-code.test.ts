@@ -226,10 +226,11 @@ test("figma code: every call, and a read's continuation, ends its constants with
   assert.equal(sum, callSum(values));
 });
 
-test("figma code: a variant over --max-nodes gets a call of its own, and a warning", async () => {
+test("figma code: a variant over --max-nodes is sent in parts of at most that many, with no warning", async () => {
   const coded = await codeFor(loadTreeFixture("sidebar"), { maxNodes: 10 });
-  assert.equal(coded.plan.calls.filter((c) => c.kind === "build").length, 1);
-  assert.deepEqual(coded.warnings, ["call 01 holds one variant of 25 nodes, over --max-nodes 10"]);
+  const builds = coded.plan.calls.filter((c) => c.kind === "build");
+  assert.deepEqual(builds.map((c) => [c.nodes, c.description.replace(/ on page .*/, "")]), [1, 2, 3].map((k) => [k < 3 ? 10 : 5, `Create or update Sidebar (variant 1 of 1, part ${k} of 3)`]));
+  assert.deepEqual(coded.warnings, []);
 });
 
 test("figma code: a call's variants share their base's records and styles, each sent once", async () => {

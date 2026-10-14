@@ -270,15 +270,14 @@ test("build and read: the first call of each kind stores its template in the fil
   assert.ok(reads.slice(1).every((r) => r.includes('const T = figma.root.getSharedPluginData("storysync","template readback");')));
 });
 
-test("build: a variant too big for one call is sent in parts, kept on the page until its last part builds it whole, which says what to send where a part is missing", async () => {
+test("build: a variant too big for one call is sent in parts, each built by its own call and kept on the page until the last lays the variant out, which says what to send where a part is missing", async () => {
   const card = loadTreeFixture("card");
-  // At 24,000 the first call, which carries the build template, holds a few
-  // of Card's nodes, and the next the rest. Where every call carries the
-  // template, each part holds a few, its icons' markup among them.
+  // About 1,700 characters beside the stored template, the first call holds
+  // a few of Card's nodes, and the next the rest. Where every call carries
+  // the template, each part holds a few, its icons' markup among them.
+  const template = loadTemplate("build").length;
   for (const inlineTemplates of [false, true]) {
-    // Where every call carries the template, 25,000 leaves each about
-    // 2,500 characters beside it, so no icon's markup is over alone.
-    const maxChars = inlineTemplates ? 25_000 : 24_000;
+    const maxChars = template + (inlineTemplates ? 2_700 : 1_700);
     const coded = await codeFor(card, { maxChars, inlineTemplates });
     const builds = coded.plan.calls.filter((c) => c.kind === "build");
     const parts = builds.filter((c) => /variant 1 of 2, part \d+ of/.test(c.description)).length;
@@ -287,7 +286,8 @@ test("build: a variant too big for one call is sent in parts, kept on the page u
     for (const call of builds) assert.ok(call.chars <= maxChars, `${call.file}: ${call.chars}`);
     const mock = mockFor([card]);
     const runs = await runPlan(mock, coded, ["build"]);
-    assert.deepEqual(sets(runs[0]), [{ component: "ui-base-card", name: "Card", stashed: 1 }]);
+    // The first part's call built its nodes, the set with them, and kept them for the rest.
+    assert.deepEqual([sets(runs[0])[0].stashed, sets(runs[0])[0].added, runs[0].created > 1], [1, 1, true]);
     assert.deepEqual(runs.flatMap((r) => (r.value as { fallbacks: unknown[] }).fallbacks), [], "every icon imported from its own markup");
     // Built whole: every layer where snap measured it, and nothing left on the page.
     for (const variant of fixtureVariants(card)) {
@@ -296,7 +296,8 @@ test("build: a variant too big for one call is sent in parts, kept on the page u
     }
     assert.deepEqual(mock.pages().flatMap((p: NodeView) => Object.keys(p.data).filter((k) => k.startsWith("storysync.part "))), []);
     // Built again, the same; its last part sent without the ones before says which to send.
-    await runPlan(mock, coded, ["build"]);
+    const again = await runPlan(mock, coded, ["build"]);
+    assert.deepEqual([again.reduce((t, r) => t + r.created, 0), again.reduce((t, r) => t + r.removed, 0)], [0, 0]);
     const last = parts - 1;
     const fresh = mockFor([card]);
     for (const call of builds.slice(0, last)) assert.ok((await fresh.run(coded.code(call))).ok);
@@ -304,13 +305,45 @@ test("build: a variant too big for one call is sent in parts, kept on the page u
     const slug = card.components[0].variants[0].slug;
     await fresh.run(`figma.root.children.find((p) => p.name === "ui/base").setSharedPluginData("storysync", "part ui-base-card ${slug} 1", "");`);
     const missing = await fresh.run(coded.code(builds[last]));
-    assert.match(missing.text, new RegExp(`^Error: Variant ${card.components[0].variants[0].slug} of Card is sent in ${parts} calls: send call ${builds.slice(0, last).map((c) => String(c.seq).padStart(2, "0")).join(", ")} first, then this one again$`));
+    assert.match(missing.text, new RegExp(`^Error: Variant ${slug} of Card is sent in ${parts} calls: send call ${builds.slice(0, last).map((c) => String(c.seq).padStart(2, "0")).join(", ")} first, then this one again$`));
     // A set refused at its last part keeps none of its parts on the page.
     const twice = mockFor([card]);
     await twice.run(`const p = figma.createPage(); p.name = "ui/base"; for (const x of [0, 400]) { const c = figma.createComponent(); c.name = "size=default"; const s = figma.combineAsVariants([c], p); s.name = "Card"; s.x = x; }`);
     const refused = await runPlan(twice, coded, ["build"]);
     assert.match(sets(refused[last])[0].refused!, /ask the user which to update$/);
     assert.deepEqual(twice.pages().flatMap((p: NodeView) => Object.keys(p.data).filter((k) => k.startsWith("storysync.part "))), []);
+  }
+});
+
+test("build: a variant of more nodes than --max-nodes is sent in parts of at most that many, each built in its own call, under Figma's time limit", async () => {
+  const card = loadTreeFixture("card");
+  const coded = await codeFor(card, { maxNodes: 8 });
+  const builds = coded.plan.calls.filter((c) => c.kind === "build");
+  assert.ok(builds.length > 2 && builds.every((c) => c.nodes! <= 8), builds.map((c) => c.nodes).join());
+  assert.ok(!coded.warnings.some((w) => /max-nodes/.test(w)), coded.warnings.join("\n"));
+  const mock = mockFor([card]);
+  await runPlan(mock, coded, ["build"]);
+  for (const variant of fixtureVariants(card)) {
+    assert.deepEqual(boxDrift(mock, variantsBySlug(mock).get(variant.slug)!, variant.nodes, absoluteBoxes(variant.nodes)), [], variant.slug);
+  }
+});
+
+test("build: a part is built only on the parts this plan split its variant into, so one another split kept says which call to send", async () => {
+  // Card's first part from a plan at one --max-chars, the rest from plans at others.
+  const card = loadTreeFixture("card");
+  const template = loadTemplate("build").length;
+  const split = await codeFor(card, { maxChars: template + 1_700 });
+  const slug = card.components[0].variants[0].slug;
+  for (const room of [1_000, 2_200]) {
+    const other = await codeFor(card, { maxChars: template + room });
+    const builds = other.plan.calls.filter((c) => c.kind === "build" && c.description.includes("variant 1 of 2, part"));
+    assert.ok(builds.length > 1, `${room}: ${builds.length} parts`);
+    const mock = mockFor([card]);
+    assert.ok((await mock.run(split.code(split.plan.calls[0]))).ok);
+    const pages = JSON.stringify(mock.pages().map((p: NodeView) => p.data));
+    const next = await mock.run(other.code(builds[1]));
+    assert.equal(next.text, `Error: Variant ${slug} of Card is sent in ${builds.length} calls: send call 01 first, then this one again`, `${room}`);
+    assert.equal(JSON.stringify(mock.pages().map((p: NodeView) => p.data)), pages, "nothing kept");
   }
 });
 
