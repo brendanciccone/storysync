@@ -1599,7 +1599,7 @@ test("build: a variant copied from one with auto layout and strokes included, bu
   }
 });
 
-test("build: labels Figma rounds up to a whole pixel keep their measured widths where the rounding would wrap a line (Item) or run past a fixed frame (Breadcrumb), and hug elsewhere", async () => {
+test("build: where Figma rounds hugging labels up to a whole pixel, the frame that fixes the width grows by what they took, so the labels hug and nothing wraps (Item) or runs past its frame (Breadcrumb)", async () => {
   type Text = { width: number; height: number; x: number; textAutoResize: string };
   // Item: "Action" is 43.13 measured and 44 in Figma, which narrows the
   // description's column by 0.87, its own width, short of one line.
@@ -1610,30 +1610,34 @@ test("build: labels Figma rounds up to a whole pixel keep their measured widths 
     const text = (k: string) => built.mock.handle(keyed(root, k)!.id) as Text;
     const measured = (k: string) => variant.nodes.find((n) => n.k === k)!.box;
     assert.equal(text("item-content/item-description/#text").height, Math.ceil(measured("item-content/item-description/#text")[3]), `${variant.slug}: the description on one line`);
-    assert.deepEqual([text("button/#text").width, text("button/#text").textAutoResize], [measured("button/#text")[2], "HEIGHT"], variant.slug);
-    // As tall as measured, but for its title's line, which Figma rounds up to a whole pixel.
+    const label = measured("button/#text")[2];
+    assert.deepEqual([text("button/#text").width, text("button/#text").textAutoResize], [Math.ceil(label), "WIDTH_AND_HEIGHT"], variant.slug);
+    // As wide as measured and the label's rounding; as tall, but for its
+    // title's line, which Figma rounds up to a whole pixel too.
+    assert.ok(Math.abs(root.width - (variant.nodes[0].box[2] + Math.ceil(label) - label)) < 0.01, `${variant.slug}: ${root.width}`);
     assert.ok(root.height < variant.nodes[0].box[3] + 1, `${variant.slug}: ${root.height}`);
+    assert.equal((built.mock.handle(root.id) as { layoutSizingVertical: string }).layoutSizingVertical, "HUG");
     assert.deepEqual(result(built.runs[0]).fallbacks, []);
   }
-  // Breadcrumb: three labels, each up to a pixel wider, end 1.71px past
-  // the list's fixed 272.29; at their own widths each lands where measured.
+  // Breadcrumb: three labels, each up to a pixel wider, would end 1.71px
+  // past the list, which fills the nav's fixed 272.29: the nav grows by it.
   const crumbs = finalFixture("breadcrumb");
   const { mock } = await buildAll(crumbs);
   const [variant] = fixtureVariants(crumbs);
   const root = variantsBySlug(mock).get(variant.slug)!;
+  const list = mock.handle(keyed(root, "breadcrumb-list")!.id) as { width: number };
   for (const k of ["breadcrumb-list/breadcrumb-link", "breadcrumb-list/breadcrumb-link:2", "breadcrumb-list/breadcrumb-page"]) {
     const text = mock.handle(keyed(root, k)!.id) as Text;
-    const [x, , w] = variant.nodes.find((n) => n.k === k)!.box;
-    // Within the 0.01s snap rounds each box to.
-    assert.ok(Math.abs(text.x - x) <= 0.02 && text.width === w, `${k}: ${text.x}, ${text.width}`);
+    assert.deepEqual([text.textAutoResize, text.width], ["WIDTH_AND_HEIGHT", Math.ceil(variant.nodes.find((n) => n.k === k)!.box[2])], k);
   }
+  const page = mock.handle(keyed(root, "breadcrumb-list/breadcrumb-page")!.id) as Text;
+  assert.deepEqual([page.x + page.width, list.width, root.width], [274, 274, 274]);
   assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)), []);
-  // A button whose label rounds up and changes nothing else keeps it hugging.
+  // A button whose label rounds up and changes nothing else is as it was.
   const button = loadTreeFixture("example-button");
   const plain = await buildAll(button);
-  const label = (view: NodeView): NodeView => (view.type === "TEXT" ? view : (view.children ?? []).map(label).find(Boolean)!);
-  const own = plain.mock.handle(label(variantsBySlug(plain.mock).values().next().value!).id) as Text;
-  assert.equal(own.textAutoResize, "WIDTH_AND_HEIGHT");
+  const [own] = fixtureVariants(button);
+  assert.equal((plain.mock.handle(variantsBySlug(plain.mock).get(own.slug)!.id) as { layoutSizingHorizontal: string }).layoutSizingHorizontal, "HUG");
 });
 
 test("build: a balanced text's lines break where the browser broke them, at its measured box, and read back as its characters", async () => {

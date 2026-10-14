@@ -530,35 +530,33 @@ const balance = (n, t, w) => {
 };
 
 // Figma rounds a hugging label's width up to a pixel (probe 8a: Item's
-// "Action", 43.13, is 44). Where that wraps a label measured on one line
-// (Item's description, 0.87px short) or runs a row past its frame
-// (Breadcrumb's last item), each such label takes its measured width, at
-// which Figma keeps it on one line, else hugs again. Elsewhere it hugs.
-const trueWidths = (nodes, recs) => {
-  const rounded = [];
+// "Action", 43.13, is 44), which narrows a filling sibling, Item's
+// description, until it wraps, or runs a row past its frame, Breadcrumb's.
+// By up to all that rounding, the frame that fixes the width grows by what
+// a child lost, so the labels still hug.
+const slack = (nodes, recs) => {
+  let most = 0.05;
   for (let i = 1; i < recs.length; i++) {
-    const t = S[recs[i][7]].t;
-    const n = nodes[i];
-    if (t && t.ar === 'W' && n.textAutoResize === 'WIDTH_AND_HEIGHT' && n.width > recs[i][5] + 0.001 && n.width < recs[i][5] + 1) rounded.push(i);
+    const d = nodes[i].width - recs[i][5];
+    if ((S[recs[i][7]].t || {}).ar === 'W' && nodes[i].textAutoResize === 'WIDTH_AND_HEIGHT' && d > 0 && d < 1) most += d;
   }
-  if (!rounded.length) return;
-  let changed = false;
-  for (let i = 1; i < recs.length && !changed; i++) {
-    const n = nodes[i];
-    const st = S[recs[i][7]];
-    if (st.t && st.t.o && n.type === 'TEXT') changed = wraps(n, st.t);
-    const p = nodes[recs[i][1]];
-    if (changed || st.v === 0 || n.rotation || !('layoutMode' in p) || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
-    const rp = recs[recs[i][1]];
-    changed = (n.x + n.width > p.width + 0.01 && recs[i][3] + recs[i][5] <= rp[5] + 0.01) || (n.y + n.height > p.height + 0.01 && recs[i][4] + recs[i][6] <= rp[6] + 0.01);
+  const grow = new Map();
+  for (let i = 1; i < recs.length && most > 0.06; i++) {
+    const [n, r] = [nodes[i], recs[i]];
+    const p = nodes[r[1]];
+    if (S[r[7]].v === 0 || n.rotation || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
+    const over = (x, w, pw) => Math.max(0, p.paddingLeft - x) + Math.max(0, x + w + p.paddingRight - pw);
+    const d = p.layoutMode === 'HORIZONTAL' && n.layoutGrow ? r[5] - n.width : over(n.x, n.width, p.width) - over(r[3], r[5], recs[r[1]][5]);
+    let j = r[1];
+    while (j && nodes[j].layoutSizingHorizontal === 'FILL') j = recs[j][1];
+    if (d > 0.01 && d < most) grow.set(j, Math.max(grow.get(j) || 0, d));
   }
-  if (!changed) return;
-  for (const i of rounded) {
-    const n = nodes[i];
-    const t = S[recs[i][7]].t;
-    n.resize(recs[i][5], n.height);
-    n.textAutoResize = 'HEIGHT';
-    if (wraps(n, t)) n.textAutoResize = 'WIDTH_AND_HEIGHT';
+  for (const [j, d] of grow) {
+    const f = nodes[j];
+    const v = f.layoutSizingVertical;
+    if (f.layoutSizingHorizontal !== 'FIXED') continue;
+    f.resize(f.width + d, f.height);
+    if (f.layoutSizingVertical !== v) f.layoutSizingVertical = v;
   }
 };
 
@@ -775,7 +773,7 @@ for (const [s, set] of DATA.sets.entries()) {
       }
       if (want === 'COMPONENT_SET') variant.name = name;
       const { nodes, designer } = await converge(variant, recs);
-      trueWidths(nodes, recs);
+      slack(nodes, recs);
       keepLines(nodes, recs);
       designerLayers += designer;
       if (src) checkLayout(nodes, recs, slug, absoluteContainers);
