@@ -464,44 +464,110 @@ test("build: of two sets built at one height that lie on each other, the one tha
   assert.deepEqual(then.find((s) => s.name === "Button")!.moved, [toggle.id]);
 });
 
-test("build: settle over random layouts moves each set at most once, never up, onto nothing, and never a designer's layer", async () => {
+test("build: settle over random layouts moves each set at most once, never up, onto nothing, never a designer's layer, and grows a section or frame to hold what it moved, an auto layout's children left to Figma", async () => {
   let seed = 7;
   const rand = (n: number) => {
     seed = (seed * 1103515245 + 12345) % 2147483648;
     return seed % n;
   };
-  for (let round = 0; round < 12; round++) {
+  const kinds = ["page", "section", "frame", "auto layout"] as const;
+  for (let round = 0; round < 24; round++) {
+    const kind = kinds[round % 4];
     const mock = mockFor([loadTreeFixture("example-button")]);
     const coded = await codeFor(loadTreeFixture("example-button"));
     const [first] = await push(mock, coded);
     const button = sets(first)[0];
-    const b = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
-    const layers = Array.from({ length: 6 }, (_, i) => ({
-      ours: rand(3) > 0, x: b.x + rand(3) * 60 - 60, y: b.y + rand(8) * 40 - 40, w: 40 + rand(4) * 60, h: 20 + rand(4) * 30, i,
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    // Button in a section, a frame or an auto layout frame, or on the page;
+    // each layer in it or on the page, a set a push built or a designer's
+    // frame or section.
+    const layers = Array.from({ length: 7 }, (_, i) => ({
+      ours: rand(3) > 0, section: rand(2) === 0, inside: kind !== "page" && rand(2) === 0,
+      x: rand(4) * 60 - 60, y: rand(10) * 40 - 40, w: 40 + rand(4) * 60, h: 20 + rand(4) * 30, i,
     }));
-    const ids = (await mock.run(`const parent = (await figma.getNodeByIdAsync(${JSON.stringify(button.id)})).parent; const out = [];
-      for (const l of ${JSON.stringify(layers)}) {
-        const n = l.ours ? figma.createComponent() : figma.createFrame();
-        n.resize(l.w, l.h); n.x = l.x; n.y = l.y; n.name = "layer " + l.i;
-        if (l.ours) n.setSharedPluginData("storysync", "id", "stand-in-" + l.i);
-        parent.appendChild(n); out.push(n.id);
+    // In a box, a set a push built lies on Button, to be moved past the box's bottom.
+    if (kind !== "page") Object.assign(layers[0], { ours: true, inside: true, x: 20, y: 30 - b.height, w: b.width, h: 30 });
+    const made = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      let box = null;
+      if (${JSON.stringify(kind)} !== "page") {
+        box = ${JSON.stringify(kind)} === "section" ? figma.createSection() : figma.createFrame();
+        page.appendChild(box); box.name = "box"; box.x = ${b.x}; box.y = ${b.y}; box.resizeWithoutConstraints(${b.width + 200}, ${b.height + 100});
+        if (${JSON.stringify(kind)} === "auto layout") Object.assign(box, { layoutMode: "VERTICAL", itemSpacing: 10, primaryAxisSizingMode: "FIXED" });
+        for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+        box.appendChild(set); if (${JSON.stringify(kind)} !== "auto layout") { set.x = 20; set.y = 20; }
       }
-      return out;`)).value as string[];
+      const out = [];
+      for (const l of ${JSON.stringify(layers)}) {
+        const n = l.ours ? figma.createComponent() : l.section && !l.inside ? figma.createSection() : figma.createFrame();
+        (l.inside ? box : page).appendChild(n);
+        n.resizeWithoutConstraints(l.w, l.h); n.name = "layer " + l.i;
+        if (!l.inside || ${JSON.stringify(kind)} !== "auto layout") { n.x = (l.inside ? 0 : ${b.x}) + l.x; n.y = (l.inside ? ${b.height} : ${b.y + b.height}) + l.y; }
+        if (l.ours) n.setSharedPluginData("storysync", "id", "stand-in-" + l.i);
+        out.push(n.id);
+      }
+      return { box: box && box.id, ids: out };`)).value as { box: string | null; ids: string[] };
+    assert.ok(made, `round ${round}: set up`);
     const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
-    const before = new Map([button.id, ...ids].map((id) => [id, at(id).y]));
+    const all = [button.id, ...made.ids, ...(made.box ? [made.box] : [])];
+    const before = new Map(all.map((id) => [id, { x: at(id).x, y: at(id).y }]));
     const [then] = await push(mock, coded);
     const moved = sets(then)[0].moved ?? [];
+    const where = (id: string) => (id === button.id ? kind !== "page" : layers[made.ids.indexOf(id)]?.inside ?? false);
+    const ours = (id: string) => id === button.id || (made.ids.includes(id) && layers[made.ids.indexOf(id)].ours);
     assert.equal(new Set(moved).size, moved.length, `round ${round}: each id once`);
-    for (const id of [button.id, ...ids]) assert.ok(at(id).y >= before.get(id)! - 0.01, `round ${round}: nothing moves up`);
-    ids.forEach((id, i) => {
-      if (!layers[i].ours) assert.equal(at(id).y, before.get(id), `round ${round}: a designer's layer stays`);
-      else if (!moved.includes(id)) assert.equal(at(id).y, before.get(id), `round ${round}: one not named stays`);
-    });
+    for (const id of all) assert.ok(at(id).y >= before.get(id)!.y - 0.01, `round ${round}: nothing moves up`);
+    for (const id of all) {
+      if (!ours(id) || !moved.includes(id)) assert.deepEqual([at(id).x, at(id).y], [before.get(id)!.x, before.get(id)!.y], `round ${round}: ${id} stays`);
+    }
+    if (kind === "auto layout") assert.ok(!moved.some(where), `round ${round}: Figma lays out an auto layout's children`);
     const hit = (p: string, q: string) => {
       const [a, c] = [at(p), at(q)];
       return a.x < c.x + c.width && c.x < a.x + a.width && a.y < c.y + c.height && c.y < a.y + a.height;
     };
-    for (const id of moved) for (const other of [button.id, ...ids]) if (other !== id) assert.ok(!hit(id, other), `round ${round}: a moved set lies on nothing`);
+    for (const id of moved) {
+      for (const other of all) if (other !== id && where(other) === where(id)) assert.ok(!hit(id, other), `round ${round}: a moved set lies on nothing`);
+    }
+    if (made.box && kind !== "auto layout") {
+      const box = at(made.box);
+      for (const id of [button.id, ...moved].filter(where)) {
+        assert.ok(at(id).x + at(id).width <= box.width && at(id).y + at(id).height <= box.height, `round ${round}: the ${kind} holds what the push built or moved in it`);
+      }
+    }
+  }
+});
+
+test("build: a set moved past a designer's frame grows the frame, which clips what runs past it; in an auto layout frame, settle moves nothing", async () => {
+  // A designer's "Components" frame holding Button and Select, Select
+  // moved below the frame's bottom, where it was clipped from the canvas.
+  for (const auto of [false, true]) {
+    const mock = mockFor([loadTreeFixture("example-button")]);
+    const coded = await codeFor(loadTreeFixture("example-button"));
+    const [first] = await push(mock, coded);
+    const button = sets(first)[0];
+    const live = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const b = { x: live.x, y: live.y, width: live.width, height: live.height };
+    const ids = (await mock.run(`const set = await figma.getNodeByIdAsync(${JSON.stringify(button.id)}); const page = set.parent;
+      const f = figma.createFrame(); page.appendChild(f); f.name = "Components"; f.x = ${b.x}; f.y = ${b.y}; f.resize(${b.width + 100}, ${b.height + 120});
+      if (${auto}) Object.assign(f, { layoutMode: "VERTICAL", itemSpacing: 0, primaryAxisSizingMode: "FIXED" });
+      for (const t of set.findAllWithCriteria({ types: ["TEXT"] })) await figma.loadFontAsync(t.fontName);
+      f.appendChild(set); if (!${auto}) { set.x = 50; set.y = 50; }
+      const select = figma.createComponent(); f.appendChild(select); select.name = "Select"; select.resize(${b.width}, 30);
+      if (!${auto}) { select.x = 50; select.y = 60; }
+      select.setSharedPluginData("storysync", "id", "stand-in-select");
+      return { f: f.id, select: select.id };`)).value as Record<string, string>;
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+    const was = { select: at(ids.select).y, f: [at(ids.f).x, at(ids.f).y, at(ids.f).width, at(ids.f).height] };
+    const [then] = await push(mock, coded);
+    const [built] = sets(then);
+    const [f, select] = [at(ids.f), at(ids.select)];
+    if (auto) {
+      assert.deepEqual([built.moved, select.y, [f.x, f.y, f.width, f.height]], [undefined, was.select, was.f], "auto layout: Figma places them");
+    } else {
+      assert.deepEqual(built.moved, [ids.select]);
+      assert.equal(select.y, 50 + b.height + 100);
+      assert.deepEqual([f.x, f.y, f.width, f.height], [b.x, b.y, b.width + 100, select.y + select.height + 100], "grown to hold Select, where it was");
+    }
   }
 });
 

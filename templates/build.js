@@ -791,6 +791,8 @@ const settle = (built) => {
   for (const [n] of built) for (let p = n.parent; p.parent; p = p.parent) up.add(p);
   const depth = (n) => (n.parent ? depth(n.parent) + 1 : 0);
   for (const parent of [...up].sort((a, b) => depth(b) - depth(a))) {
+    // Figma lays out an auto layout's children: none is moved there.
+    if ('layoutMode' in parent && parent.layoutMode !== 'NONE') continue;
     const ours = (m) => /^COMPONENT/.test(m.type) && idOf(m);
     const all = parent.children;
     const sets = all.filter(ours);
@@ -818,12 +820,13 @@ const settle = (built) => {
       done.set(n, by);
       for (const m of sets) if (!done.has(m) && !due.has(m) && hit(m, n)) due.set(m, by);
     }
-    // Figma grows no section a child moves past (probe 10): one a set
-    // built or moved here now runs past grows to hold it, 100 to spare,
-    // and is settled among its own siblings as a set that grew is, in the
-    // result of the first set that ran past it.
+    // Figma grows no section a child moves past (probe 10), and a frame
+    // clips what runs past it: one a set built or moved here now runs
+    // past grows to hold it, 100 to spare, and is settled among its own
+    // siblings as a set that grew is, in the result of the first set that
+    // ran past it.
     let by;
-    if (parent.type === 'SECTION') {
+    if (parent.type === 'SECTION' || parent.type === 'FRAME') {
       for (const [n, o] of done) {
         const [r, b, w, h] = [n.x + n.width, n.y + n.height, parent.width, parent.height];
         if (r > w || b > h) {
