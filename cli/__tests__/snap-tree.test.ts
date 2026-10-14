@@ -751,7 +751,8 @@ test("buildTree: past the root, a text takes the text color class of the element
 test("classEvidence: the utilities that name a paint's token, variant prefixes and opacity cut off but a dark: one's, every one", () => {
   assert.deepEqual(
     classEvidence(["bg-primary", "data-[state=checked]:bg-primary", "hover:bg-primary/90", "text-primary-foreground", "dark:bg-input/30", "bg-[#fff]", "p-2", "rounded-md", "[&_svg]:text-x", "bg-muted/[.5]"]),
-    ["bg-muted", "bg-primary", "dark:bg-input/30", "rounded-md", "text-primary-foreground", "text-x"],
+    // `[&_svg]:text-x` colors the svg inside, not the element: no evidence of its own.
+    ["bg-muted", "bg-primary", "dark:bg-input/30", "rounded-md", "text-primary-foreground"],
   );
   // shadcn/ui's destructive Button: the dark theme paints destructive at
   // 20%, which snap, measuring the light theme, sees only in the class.
@@ -872,4 +873,24 @@ test("buildTree: under a wrapper, a child's flex facts are the wrapper's, which 
   assert.equal(node.abs, undefined);
   const floating = el("div", [8, 8, 24, 24], { position: "absolute" }, [el("span", [8, 8, 24, 24], { ...BORDER, position: "relative" })]);
   assert.equal(buildTree(tree(el("div", [0, 0, 40, 40], {}, [floating]))).nodes[1].abs, 1);
+});
+
+test("buildTree: a pseudo-element's classes are its host's before: or after: ones, and no class for another box is the element's own", () => {
+  const BORDERED = { ...BORDER, "border-top-style": "solid", "border-right-style": "solid", "border-bottom-style": "solid", "border-left-style": "solid" };
+  const text = (cls: string[] = []) => el("div", [0, 0, 200, 20], {}, [run("Title", [[0, 1.5, 40, 17]])], { text: TEXT, cls, slot: "alert-title" });
+  // Avatar: its ring is the root's ::after, after:border-border; Marker's
+  // lines its ::before and ::after, before:bg-border and after:bg-border.
+  const avatar = el("span", [0, 0, 32, 32], { display: "flex" }, [
+    { k: "p", which: "before", cs: { "background-color": "rgb(229, 229, 229)" }, content: "", box: [0, 0, 32, 1], how: "flow" },
+    { k: "p", which: "after", cs: BORDERED, content: "", box: [0, 0, 32, 32], how: "abs" },
+  ], { cls: ["after:border-border", "before:bg-border", "dark:after:bg-input/30", "rounded-full", "[&_a]:hover:text-foreground"] });
+  const nodes = byKey(buildTree(tree(avatar)).nodes);
+  assert.deepEqual(nodes.get("::after")!.cls, ["border-border", "dark:bg-input/30"]);
+  assert.deepEqual(nodes.get("::before")!.cls, ["bg-border"]);
+  // shadcn/ui's alert title colors its links on hover, [&_a]:hover:text-foreground:
+  // its own color is the alert's text-card-foreground, which it inherits.
+  const alert = el("div", [0, 0, 200, 40], { display: "flex", "background-color": "rgb(255, 255, 255)" }, [text(["[&_a]:hover:text-foreground"])], { cls: ["bg-card", "text-card-foreground", "*:[svg]:text-current"] });
+  const title = byKey(buildTree(tree(alert)).nodes).get("alert-title")!;
+  assert.deepEqual([title.cls, title.nocls], [["text-card-foreground"], undefined]);
+  assert.deepEqual(classEvidence(["[&>svg]:text-x", "*:bg-x", "**:bg-y", "[.dark_&]:bg-z", "has-[>svg]:bg-w", "[&:hover]:bg-v"]), ["bg-v", "bg-w", "bg-z"]);
 });

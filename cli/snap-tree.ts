@@ -320,11 +320,79 @@ function utilitiesOf(tokens: readonly string[]): { name: string; prefixed: boole
       else if (ch === "]" || ch === ")") depth--;
       else if (ch === ":" && depth === 0) cut = i;
     }
+    // One for another box than the element's: a child's, a descendant's or
+    // a pseudo-element's, never its own paint.
+    if (variantsOf(token.slice(0, cut + 1)).some(targetsOther)) continue;
     const whole = token.slice(cut + 1).replace(/^!|!$/g, "");
     const utility = whole.replace(/\/(?:\[[^\]]*\]|[^/[\]]*)$/, "");
     found.push({ name: utility, prefixed: cut >= 0, dark: token.slice(0, cut + 1).replace(/^!/, "") === "dark:", alpha: whole.slice(utility.length) });
   }
   return found;
+}
+
+/** A class token's variant prefix, `dark:hover:`, as its variants, `dark` and `hover`: split at each `:` outside brackets. */
+function variantsOf(prefix: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < prefix.length; i++) {
+    const ch = prefix[i];
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (ch === ":" && depth === 0) {
+      out.push(prefix.slice(from, i).replace(/^!/, ""));
+      from = i + 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a variant applies its class to another box than the element's:
+ * `*:` and `**:`, its children and descendants; an arbitrary variant whose
+ * selector goes on past its `&`, as shadcn/ui's alert title's
+ * `[&_a]:hover:text-foreground` colors its links, not the title;
+ * `before:` and `after:`, its pseudo-elements, whose own classes they are
+ * (pseudoClasses). `[.dark_&]` and `has-[>svg]` still style the element.
+ */
+function targetsOther(variant: string): boolean {
+  if (variant === "*" || variant === "**" || variant === "before" || variant === "after") return true;
+  const m = /^\[(.*)\]$/.exec(variant);
+  const amp = m ? m[1].indexOf("&") : -1;
+  if (amp < 0) return false;
+  let depth = 0;
+  for (const ch of m![1].slice(amp + 1)) {
+    if (ch === "[" || ch === "(") depth++;
+    else if (ch === "]" || ch === ")") depth--;
+    else if (depth === 0 && /[_ >+~]/.test(ch)) return true;
+  }
+  return false;
+}
+
+/**
+ * The classes of a `::before` or `::after` (`which`): its host's that its
+ * `before:` or `after:` variant applies, without it, so Avatar's
+ * `after:border-border` is its ring's `border-border`, and
+ * `dark:after:bg-x/20` its `dark:bg-x/20`.
+ */
+export function pseudoClasses(host: readonly string[], which: "before" | "after"): string[] {
+  const out: string[] = [];
+  for (const token of host) {
+    let depth = 0;
+    let cut = -1;
+    for (let i = 0; i < token.length; i++) {
+      const ch = token[i];
+      if (ch === "[" || ch === "(") depth++;
+      else if (ch === "]" || ch === ")") depth--;
+      else if (ch === ":" && depth === 0) cut = i;
+    }
+    const variants = variantsOf(token.slice(0, cut + 1));
+    if (!variants.includes(which)) continue;
+    const rest = variants.filter((v) => v !== which);
+    if (rest.some(targetsOther)) continue;
+    out.push([...rest, token.slice(cut + 1)].join(":"));
+  }
+  return out;
 }
 
 /**
@@ -1005,6 +1073,10 @@ function factsOf(item: Item, key: string, parent: Item | null, parentBox: Box, c
     if (transform) node.tf = transform;
     applyPaint(node, p.cs, p.box, css);
     applyEffects(node, css, false);
+    // Its classes are its host's `after:` ones (or `before:`), which name
+    // its tokens: Avatar's ring is `after:border-border`.
+    const cls = classEvidence(pseudoClasses(item.parent?.el?.cls ?? [], p.which));
+    if (cls.length) node.cls = cls;
     if (node.t === "T") {
       node.tx = textFacts(p.text ?? {}, css, content, null, item.box, ctx.fonts);
       node.tx.ink = [0, 0, item.box[2], item.box[3]];
