@@ -408,6 +408,13 @@ export interface VerifyResult {
       designerLayers: number;
       /** Nodes under roots whose readback has no tree: see VariantVerdict.childrenNotReadBack. */
       notReadBack: number;
+      /**
+       * Variants in Figma's sets that snap no longer measures, read back
+       * or not (unmeasuredInFigma, and unreadInFigma's `uncovered`), as an
+       * earlier push left under other properties: extra in the headline,
+       * and a --strict failure until the user has them removed.
+       */
+      extraVariants?: number;
     };
   };
   /**
@@ -1514,7 +1521,7 @@ export function verify(
         unread: unreadInFigma.reduce((n, u) => n + u.unbuilt.length + u.uncovered, 0),
       } : {}),
       ...(options.notRead ? { notRead: verdicts.filter((v) => v.status === "not_read").length } : {}),
-      ...(treeMode ? { elements } : {}),
+      ...(treeMode ? { elements: { ...elements, extraVariants: unmeasuredInFigma.length + (extended ? unreadInFigma : []).reduce((n, u) => n + u.uncovered, 0) } } : {}),
     },
     snapIssues,
     snapWarnings,
@@ -1707,6 +1714,7 @@ export function treeStrictFailures(result: VerifyResult, { allowDesignerLayers =
     if (e.drifted) out.push(`${e.drifted} ${e.drifted === 1 ? "element" : "elements"} drifted`);
     if (e.missing) out.push(`${e.missing} ${e.missing === 1 ? "element is" : "elements are"} missing from Figma`);
     if (e.extra) out.push(`${e.extra} keyed ${e.extra === 1 ? "layer" : "layers"} in Figma snap no longer measures`);
+    if (e.extraVariants) out.push(`${e.extraVariants} ${e.extraVariants === 1 ? "variant" : "variants"} in Figma's sets snap no longer measures`);
     if (e.notReadBack) out.push(`${e.notReadBack} ${e.notReadBack === 1 ? "element" : "elements"} under roots read back without their tree`);
     if (e.designerLayers && !allowDesignerLayers) out.push(`${e.designerLayers} designer ${e.designerLayers === 1 ? "layer" : "layers"} inside variants`);
   }
@@ -2029,7 +2037,7 @@ export function formatElementReport(result: VerifyResult, beside: readonly strin
     ...result.unmeasuredInFigma.map((u) => `${u.component} ${u.slug}`),
     ...(result.unreadInFigma ?? []).filter((u) => u.uncovered).map((u) => `${u.component}: ${u.uncovered} ${u.uncovered === 1 ? "variant" : "variants"} no read covered`),
   ];
-  const staleCount = result.unmeasuredInFigma.length + (result.unreadInFigma ?? []).reduce((n, u) => n + u.uncovered, 0);
+  const staleCount = e.extraVariants ?? 0;
   const counts = [
     `missing ${e.missing}`, `drifted ${e.drifted}`, `extra ${e.extra + staleCount}`, `designer layers ${e.designerLayers}`,
     `not measured ${summary.notMeasured ?? 0}`,
