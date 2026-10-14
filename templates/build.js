@@ -496,9 +496,13 @@ const converge = async (root, recs) => {
 // line height or Figma's for the font (1.21em to 1.36em), not of the box
 // measured, which a row that stretches its items makes taller. Without its
 // line limit, as a truncated text wraps where it would be cut.
+// A control's value (`v`) is sized to its box: it grows to its lines a moment.
 const wraps = (n, t) => {
+  const [w, h] = [n.width, n.height];
+  if (t.v) n.textAutoResize = 'HEIGHT';
   n.maxLines = null;
   const out = n.height > 1.5 * (t.l || 1.27 * t.z);
+  if (t.v) setLines(n, t, w, h);
   n.maxLines = t.tr || null;
   return out;
 };
@@ -560,8 +564,8 @@ const slack = (nodes, recs) => {
   }
 };
 
-// Keeps each text the browser drew whole on one line (`o`) so in Figma,
-// once the variant is laid out. Figma's font can set it wider than the box
+// Keeps each text the browser drew whole on one line (`o`), and an input's
+// value, so in Figma, once the variant is laid out. Figma's font can set it wider than the box
 // it was measured in: Inter is wider than the system-ui a snap from before
 // the stand-ins measured, and Figma may one day hold another Inter than
 // snap's. At that width it would wrap, or, truncated, end in an ellipsis
@@ -573,10 +577,19 @@ const keepLines = (nodes, recs) => {
   for (let i = 1; i < recs.length; i++) {
     const st = S[recs[i][7]];
     const t = st.t;
-    if (!t || !t.o) continue;
+    if (!t || (!t.o && t.v !== 'C')) continue;
     const n = nodes[i];
     if (!wraps(n, t)) continue;
     at[2] = S[recs[i][0]];
+    // An input's value: one line, as the browser draws it, cut at its box.
+    // A textarea's wraps there too.
+    if (t.v) {
+      if (t.v === 'C') {
+        [n.textTruncation, n.maxLines] = ['ENDING', 1];
+        fallback('cut short', 'Figma sets it wider');
+      }
+      continue;
+    }
     const fills = (st.z || [])[0] === 'L';
     if (fills && !t.tr) continue;
     if (!fills) {

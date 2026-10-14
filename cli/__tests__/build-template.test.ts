@@ -1678,6 +1678,28 @@ test("build: an input's value keeps its control's content box, its line at the m
   assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)).filter((d) => String(d).includes(input)), []);
 });
 
+test("build: an input's value Figma sets wider than its box stays on one line in it, cut short and named so, as a textarea's wraps", async () => {
+  // The same input 200 wide: "Describe another approach…" takes two lines
+  // at 178, which a value built at its box would draw past it, unseen.
+  const fixture = finalFixture("questionnaire");
+  const input = "questionnaire-item/questionnaire-choices/questionnaire-input";
+  const nodes = fixture.components[0].tree!.base;
+  nodes.find((n) => n.k === input)!.box[2] = 200;
+  nodes.find((n) => n.k === `${input}/#value`)!.box[2] = 178;
+  const { mock, runs } = await buildAll(fixture);
+  const [variant] = fixtureVariants(fixture);
+  const value = mock.handle(keyed(variantsBySlug(mock).get(variant.slug)!, `${input}/#value`)!.id) as { width: number; height: number; textAutoResize: string; textTruncation: string; maxLines: number };
+  // A fixed-size text cut short reads TRUNCATE, and no maxLines in auto layout (the live text probe).
+  assert.deepEqual([value.width, value.height, value.textAutoResize, value.textTruncation, value.maxLines], [178, 26, "TRUNCATE", "ENDING", null]);
+  assert.deepEqual(result(runs[0]).fallbacks.map(([, key, what]) => [key.endsWith("#value"), what]), [[true, "cut short: Figma sets it wider"]]);
+  // At its own 475.47 it fits: nothing cut.
+  const wide = finalFixture("questionnaire");
+  const built = await buildAll(wide);
+  const own = built.mock.handle(keyed(variantsBySlug(built.mock).get(variant.slug)!, `${input}/#value`)!.id) as { textTruncation: string };
+  assert.equal(own.textTruncation, "DISABLED");
+  assert.deepEqual(result(built.runs[0]).fallbacks, []);
+});
+
 test("build: a ring on a frame without a fill clips the frame and gives it a fill that draws nothing, so Figma draws it; the readback reads the frame as measured", async () => {
   // coder's ConfirmDialog Cancel button: a 1px border, no background, and
   // a focus ring (box-shadow 0 0 0 2px #61a6fa), which Figma drew nowhere:
