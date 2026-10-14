@@ -23,8 +23,9 @@
 // opacity at a mode switch, where bound to the token Figma would reset it
 // to the token's alpha (probes 7b and 7c). Each is made beside its token,
 // with the token's scopes, its value in each mode the token's at that
-// alpha: those `alpha` names, which the plan's paints bind, and every one
-// an earlier push made, kept up to date with its token. One whose token is
+// alpha, or at the dark theme's own in Dark, `destructive 10% dark 20%`:
+// those `alpha` names, which the plan's paints bind, and every one an
+// earlier push made, kept up to date with its token. One whose token is
 // gone is stale.
 
 const NAME = DATA.collection;
@@ -75,12 +76,14 @@ for (const v of await figma.variables.getLocalVariablesAsync()) {
   total++;
 }
 
-// An alpha variable's token and alpha, from its name, or null.
-const ALPHA = /^(.+) (\d{1,3}(?:,\d)?)%$/;
+// An alpha variable's token and alphas, Light's and Dark's, from its name,
+// or null.
+const ALPHA = /^(.+?) (\d{1,3}(?:,\d)?)%(?: dark (\d{1,3}(?:,\d)?)%)?$/;
 const alphaOf = (name) => {
   const m = ALPHA.exec(name);
-  const percent = m ? Number(m[2].replace(',', '.')) : 101;
-  return percent <= 100 ? [m[1], Math.round((percent / 100) * 255) / 255] : null;
+  if (!m) return null;
+  const [k, kDark] = [m[2], m[3] || m[2]].map((p) => Number(p.replace(',', '.')));
+  return k <= 100 && kDark <= 100 ? [m[1], Math.round((k / 100) * 255) / 255, Math.round((kDark / 100) * 255) / 255] : null;
 };
 
 const stale = [];
@@ -133,9 +136,9 @@ const TOKEN = {};
 for (const v of DATA.vars) if (v[1] === 'COLOR') TOKEN[v[0]] = v;
 const at = (s, k) => s.slice(0, 7) + Math.round(hex(s)[3] * k * 255).toString(16).padStart(2, '0');
 const alphas = [...new Set((DATA.alpha || []).concat(Object.keys(byName)))].sort().filter((name) => alphaOf(name) && TOKEN[alphaOf(name)[0]]).map((name) => {
-  const [token, k] = alphaOf(name);
+  const [token, k, kDark] = alphaOf(name);
   const [, , scopes, lightValue, darkValue] = TOKEN[token];
-  return [name, 'COLOR', scopes, at(lightValue, k), at(darkValue === undefined ? lightValue : darkValue, k)];
+  return [name, 'COLOR', scopes, at(lightValue, k), at(darkValue === undefined ? lightValue : darkValue, kDark)];
 });
 
 const created = [];

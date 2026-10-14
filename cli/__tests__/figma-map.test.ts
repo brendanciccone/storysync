@@ -217,6 +217,30 @@ test("nodeStyle: a shadow's color binds where its ring-* class names the token, 
   assert.deepEqual(c2.unbound, [{ key: "", property: "effect", value: "#0a0a0a1a", candidates: ["card/foreground", "foreground", "popover/foreground", "sidebar/foreground"] }]);
 });
 
+test("nodeStyle: where a dark: class paints the token at another alpha, the paint binds to the alpha variable that holds each theme's, from a tree that keeps it", () => {
+  // shadcn/ui's destructive Button: bg-destructive/10 dark:bg-destructive/20.
+  const alphas = new Map();
+  const c: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas, darkAlpha: true };
+  const button = (cls: string[], bg = "#df22251a") => frame({ k: "", bg, cls });
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive/20", "text-destructive"]), c).f, [["#df2225", 0.102, "destructive 10% dark 20%", "destructive"]]);
+  // Opaque in the light theme and translucent in the dark: shadcn/ui's
+  // older destructive button, bg-destructive dark:bg-destructive/60.
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive/60"], "#df2225"), c).f, [["#df2225", 1, "destructive 100% dark 60%", "destructive"]]);
+  // dark: without an opacity paints it whole; one at the light theme's alpha changes nothing.
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive"]), c).f, [["#df2225", 0.102, "destructive 10% dark 100%", "destructive"]]);
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive/10"]), c).f, [["#df2225", 0.102, "destructive 10%", "destructive"]]);
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive"], "#df2225"), c).f, [["#df2225", 1, "destructive"]]);
+  assert.deepEqual([...alphas.values()], [
+    { variable: "destructive 10% dark 20%", token: "destructive", alpha: 0.102, dark: 0.2 },
+    { variable: "destructive 100% dark 60%", token: "destructive", alpha: 1, dark: 0.6 },
+    { variable: "destructive 10% dark 100%", token: "destructive", alpha: 0.102, dark: 1 },
+    { variable: "destructive 10%", token: "destructive", alpha: 0.102 },
+  ]);
+  // A tree snapped before cut a dark: class's opacity off, so its dark: says no alpha.
+  const old: MapContext = { ...ctx(new Binder(SHADCN_TOKENS)), alphas: new Map() };
+  assert.deepEqual(nodeStyle(button(["bg-destructive", "dark:bg-destructive"]), old).f, [["#df2225", 0.102, "destructive 10%", "destructive"]]);
+});
+
 test("nodeStyle: an icon's translucent paint binds to its token's alpha variable, by its color and opacity as the markup draws them", () => {
   // text-destructive/50 on a lucide icon: snap writes the alpha as stroke-opacity, on the root where every shape shares it.
   const markup = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#df2225" stroke-opacity="0.5" stroke-width="2"><path d="M1 1"/><circle cx="1" cy="1" r="1" stroke-opacity="0.1"/><path d="M2 2" stroke="#0a0a0a"/></svg>';

@@ -6,8 +6,9 @@
 // binding by value alone would pick one at random, and the push used to ask
 // the agent to read the component's source to choose. snap now records the
 // node's own class evidence (`cls`: `bg-primary`, `text-card-foreground`,
-// `rounded-lg`, with any variant prefix and `/NN` opacity stripped), which
-// names the token the code used: a value binds when exactly one of its
+// `rounded-lg`, with any variant prefix and `/NN` opacity stripped, but a
+// `dark:` class's, `dark:bg-destructive/20`), which names the token the
+// code used: a value binds when exactly one of its
 // tokens is named by a class for that property. Otherwise it stays as
 // measured, unbound, and is listed with the tokens it matches, rather than
 // guessed. The value is always snap's; the class only picks among the
@@ -147,7 +148,7 @@ export class Binder {
    * A project's font size (`text-body`) sets none.
    */
   private unnamedColor(role: PaintRole, cls: readonly string[] | undefined): string | undefined {
-    return (cls ?? []).map((c) => c.replace(/^dark:/, "")).find((c) => {
+    return (cls ?? []).map((c) => readEvidence(c).utility).find((c) => {
       const property = utilitySetsColor(c);
       if (!property || !SETS[role]?.includes(property) || this.sizeClasses.has(c)) return false;
       const name = c.slice(c.indexOf("-") + 1);
@@ -163,6 +164,26 @@ export class Binder {
    */
   opaque(name: string): boolean {
     return this.opaqueColors.has(name);
+  }
+
+  /**
+   * The alpha (0-1) the dark theme paints `token` at in `role`, where a
+   * `dark:` class names it, `dark:bg-destructive/20` 0.2 and
+   * `dark:bg-destructive` 1, as a snap that keeps a `dark:` class's
+   * opacity writes them; undefined where none names it, or two name it at
+   * different alphas.
+   */
+  darkAlpha(token: string, role: PaintRole, cls: readonly string[] | undefined): number | undefined {
+    const found = new Set<number>();
+    for (const entry of cls ?? []) {
+      const { dark, utility, alpha } = readEvidence(entry);
+      if (!dark) continue;
+      const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
+      if (!prefix) continue;
+      const rest = utility.slice(prefix.length + 1).toLowerCase();
+      if (tokenClassName(token) === rest || tokenClassName(token) === rest.replace(SIDE, "")) found.add(alpha ?? 1);
+    }
+    return found.size === 1 ? [...found][0] : undefined;
   }
 
   /** The radius token a corner radius of `px` binds to, given the node's classes. */
@@ -185,18 +206,33 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
   const named = new Set<string>();
   const dark = new Set<string>();
   for (const entry of cls ?? []) {
-    const c = entry.replace(/^dark:/, "");
+    const { dark: isDark, utility: c } = readEvidence(entry);
     const prefix = prefixes.find((p) => c.startsWith(`${p}-`));
     if (!prefix) continue;
     const rest = c.slice(prefix.length + 1).toLowerCase();
     for (const name of [rest, rest.replace(SIDE, "")]) {
       const token = candidates.find((t) => tokenClassName(t) === name);
       if (token) named.add(token);
-      if (token && c !== entry) dark.add(token);
+      if (token && isDark) dark.add(token);
     }
   }
   const variable = named.size === 1 ? [...named][0] : dark.size === 1 ? [...dark][0] : null;
   return { variable, named: named.size };
+}
+
+/**
+ * A `cls` entry as the utility it names, whether the dark theme alone
+ * applies it, and the opacity a `dark:` one keeps: `dark:bg-destructive/20`
+ * is `bg-destructive`, dark, at 0.2; `/[.25]` and `/[25%]` are 0.25. snap
+ * keeps no other entry's opacity, which the paint's measured alpha holds.
+ */
+export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number } {
+  const dark = entry.startsWith("dark:");
+  const rest = dark ? entry.slice(5) : entry;
+  const m = /^(.+?)\/(?:(\d+(?:\.\d+)?)|\[(\d*\.?\d+)(%?)\])$/.exec(rest);
+  if (!m) return { dark, utility: rest };
+  const alpha = m[2] !== undefined ? Number(m[2]) / 100 : Number(m[3]) / (m[4] ? 100 : 1);
+  return { dark, utility: m[1], ...(Number.isFinite(alpha) && alpha >= 0 && alpha <= 1 ? { alpha } : {}) };
 }
 
 // --- Alpha variables ------------------------------------------------------------
@@ -211,30 +247,41 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
 // `destructive 10%`, `destructive 30%` and `foreground 10%`, each mode's
 // value the token's at that alpha, and each kept its alpha through every
 // switch, its frame's, a frame's around it and an instance's, in a call of
-// their own too. So `figma tokens` makes a variable for each token and alpha
-// the plan binds below 1, beside the token in its collection, and the build
-// binds the paint to it. The name is the token's and the alpha as a percent,
-// `destructive 10%`: no token is named with a space or `%`, so none can
-// clash, and Figma lists it beside its token. Figma refuses a period in a
-// name (probe 7c), so an alpha of no whole percent, which Tailwind's `/NN`
-// never gives, has a comma: `destructive 12,5%`.
+// their own too. So a variable is made for each token and alpha the plan
+// binds below 1, beside the token in its collection, and the build binds
+// the paint to it: the plan's first call makes those (figma-code.ts), and
+// `figma tokens` keeps them up to date with their tokens. The name is the
+// token's and the alpha as a percent, `destructive 10%`: no token is named
+// with a space or `%`, so none can clash, and Figma lists it beside its
+// token. Figma refuses a period in a name (probe 7c), so an alpha of no
+// whole percent, which Tailwind's `/NN` never gives, has a comma:
+// `destructive 12,5%`. Where the dark theme paints the token at another
+// alpha, as shadcn/ui's destructive button's `bg-destructive/10
+// dark:bg-destructive/20` does, the variable holds each mode's own alpha
+// and says both, `destructive 10% dark 20%`, which probe 7c's third call
+// made beside `destructive` and `destructive 10%` and saw keep 10% in Light
+// and 20% in Dark through every switch.
 
-/** An alpha variable's name: its token's, a space, and the alpha in percent. */
-export const ALPHA_VARIABLE = /^(.+) (\d{1,3}(?:,\d)?)%$/;
+/** An alpha variable's name: its token's, a space, the alpha in percent, and the dark theme's where it differs. */
+export const ALPHA_VARIABLE = /^(.+?) (\d{1,3}(?:,\d)?)%(?: dark (\d{1,3}(?:,\d)?)%)?$/;
 
 /** An alpha 0-1 as the byte `#rrggbbaa` writes, which is what snap measures. */
-const alphaByte = (alpha: number): number => Math.max(0, Math.min(255, Math.round(alpha * 255)));
+export const alphaByte = (alpha: number): number => Math.max(0, Math.min(255, Math.round(alpha * 255)));
 
 /**
- * The alpha variable of `token` at `alpha` (0-1): `destructive 10%`. The
- * percent is the shortest, whole or to a tenth, that reads back as the same
- * byte, so each byte has one name and the name gives the byte.
+ * The alpha variable of `token` at `alpha` (0-1), and at `dark` in the dark
+ * theme where that is another byte: `destructive 10%`, `destructive 10% dark
+ * 20%`. Each percent is the shortest, whole or to a tenth, that reads back
+ * as the same byte, so each byte has one name and the name gives the byte.
  */
-export function alphaVariableName(token: string, alpha: number): string {
-  const byte = alphaByte(alpha);
-  const whole = Math.round((byte * 100) / 255);
-  const percent = alphaOfPercent(whole) === byte ? String(whole) : (Math.round((byte * 1000) / 255) / 10).toFixed(1).replace(".", ",");
-  return `${token} ${percent}%`;
+export function alphaVariableName(token: string, alpha: number, dark?: number): string {
+  const percent = (a: number) => {
+    const byte = alphaByte(a);
+    const whole = Math.round((byte * 100) / 255);
+    return alphaOfPercent(whole) === byte ? String(whole) : (Math.round((byte * 1000) / 255) / 10).toFixed(1).replace(".", ",");
+  };
+  const darkPart = dark === undefined || alphaByte(dark) === alphaByte(alpha) ? "" : ` dark ${percent(dark)}%`;
+  return `${token} ${percent(alpha)}%${darkPart}`;
 }
 
 /**
@@ -246,11 +293,15 @@ function alphaOfPercent(percent: number): number {
   return Math.round((percent / 100) * 255);
 }
 
-/** The token and alpha (0-1, as the byte gives it) an alpha variable's name stands for, or null for another name. */
-export function parseAlphaVariable(name: string): { token: string; alpha: number } | null {
+/**
+ * The token and alphas (0-1, as the bytes give them) an alpha variable's
+ * name stands for, `dark` where the dark theme's differs, or null for
+ * another name.
+ */
+export function parseAlphaVariable(name: string): { token: string; alpha: number; dark?: number } | null {
   const m = ALPHA_VARIABLE.exec(name);
   if (!m) return null;
-  const percent = Number(m[2].replace(",", "."));
-  if (percent > 100) return null;
-  return { token: m[1], alpha: alphaOfPercent(percent) / 255 };
+  const [light, dark] = [m[2], m[3]].map((p) => (p === undefined ? undefined : Number(p.replace(",", "."))));
+  if (light! > 100 || (dark ?? 0) > 100) return null;
+  return { token: m[1], alpha: alphaOfPercent(light!) / 255, ...(dark !== undefined ? { dark: alphaOfPercent(dark) / 255 } : {}) };
 }

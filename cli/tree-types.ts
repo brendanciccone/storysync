@@ -153,6 +153,12 @@ export interface ComponentTree {
   base: TreeNode[];                                          // base variant, preorder, siblings in paint order
   assets: { svg: Record<string, string>; img: Record<string, ImageAsset> };
   truncated?: { nodes: number; at: string };
+  /**
+   * 1 where `cls` keeps a `dark:` class's opacity, `dark:bg-destructive/20`,
+   * so a `dark:` class without one paints at 1. A tree snapped before cut
+   * it off, and its `dark:` classes say no alpha.
+   */
+  darkAlpha?: 1;
 }
 
 /**
@@ -249,13 +255,16 @@ export interface FigmaPlan {
   calls: PlanCall[];
   /** Each value bound by the project's base styles, where no class names its token, with the rule (section 8.9). */
   bindings?: PlanBinding[];
-  /** The alpha variables the build binds translucent paints to, by name, which `figma tokens` makes from this list. */
+  /** The alpha variables the build binds translucent paints to, by name, which the plan's `variables` call makes, and `figma tokens` keeps up to date. */
   alphas?: PlanAlpha[];
 }
 
-/** A token's color at an alpha below 1, 0-1 as `#rrggbbaa` gives it: the variable `figma tokens` makes, named `variable`. */
+/**
+ * A token's color at an alpha, 0-1 as `#rrggbbaa` gives it, and at `dark` in
+ * the dark theme where that differs: the variable named `variable`.
+ */
 export interface PlanAlpha {
-  variable: string; token: string; alpha: number;
+  variable: string; token: string; alpha: number; dark?: number;
 }
 
 /** A paint bound to `variable` by a base style's rule, `from`, as tokens' `defaults` gives it, in the layers `keys`. */

@@ -11,7 +11,7 @@
 // Geometry lives here too: a Figma frame's box is its border box less any
 // stroke built OUTSIDE it, and its children sit relative to that box.
 
-import { alphaVariableName } from "./figma-bind.js";
+import { alphaByte, alphaVariableName } from "./figma-bind.js";
 import type { Binder, PaintRole } from "./figma-bind.js";
 import { SPIKE } from "./figma-spike.js";
 import { standInFor } from "./fonts.js";
@@ -139,8 +139,10 @@ export interface MapContext {
   unbound: Unbound[];
   /** The paints a base style bound, each with its rule. */
   byDefault?: BoundByDefault[];
-  /** The alpha variables the paints bind, by name: what `figma tokens` makes from the plan. */
+  /** The alpha variables the paints bind, by name: what the plan's `variables` call makes. */
   alphas?: Map<string, PlanAlpha>;
+  /** Whether the tree's `cls` keeps a `dark:` class's opacity (ComponentTree's `darkAlpha`), which then gives the dark theme's alpha. */
+  darkAlpha?: boolean;
   /**
    * The parent's classes, for the color of a `#text` or `#value` run that
    * carries none of its own. snap writes the `text-*` class a run inherits on
@@ -183,19 +185,25 @@ export function solidPaint(hex: string, role: PaintRole, cls: string[] | undefin
     ctx.unbound.push({ key, property, value: hex.toLowerCase(), candidates: decision.candidates });
   }
   if (decision.variable && decision.from) ctx.byDefault?.push({ key, property, value: hex.toLowerCase(), variable: decision.variable, from: decision.from });
-  if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx)];
+  if (decision.variable) return [rgb, alpha, ...boundTo(decision.variable, alpha, ctx, role, cls)];
   return alpha === 1 ? rgb : [rgb, alpha];
 }
 
 /**
  * What a paint or shadow of `token`'s color at `alpha` binds to: the token,
- * where it is opaque, or holds that alpha itself; else its alpha variable,
- * then the token, recorded for `figma tokens` to make.
+ * where it is opaque and painted opaque in both themes, or is translucent
+ * and holds that alpha itself; else its alpha variable, then the token,
+ * recorded for the plan's `variables` call to make. A `dark:` class that
+ * names the token at another alpha (`dark:bg-destructive/20` beside
+ * `bg-destructive/10`) gives the variable that alpha in Dark.
  */
-function boundTo(token: string, alpha: number, ctx: MapContext): [string] | [string, string] {
-  if (alpha >= 1 || !ctx.binder.opaque(token)) return [token];
-  const variable = alphaVariableName(token, alpha);
-  if (!ctx.alphas?.has(variable)) ctx.alphas?.set(variable, { variable, token, alpha: round3(Math.round(alpha * 255) / 255) });
+function boundTo(token: string, alpha: number, ctx: MapContext, role: PaintRole, cls: readonly string[] | undefined): [string] | [string, string] {
+  const named = ctx.darkAlpha ? ctx.binder.darkAlpha(token, role, cls) : undefined;
+  const dark = named === undefined || alphaByte(named) === alphaByte(alpha) ? undefined : named;
+  if (!ctx.binder.opaque(token) || (alpha >= 1 && dark === undefined)) return [token];
+  const variable = alphaVariableName(token, alpha, dark);
+  const at = (a: number) => round3(alphaByte(a) / 255);
+  if (!ctx.alphas?.has(variable)) ctx.alphas?.set(variable, { variable, token, alpha: at(alpha), ...(dark !== undefined ? { dark: at(dark) } : {}) });
   return [variable, token];
 }
 
@@ -410,7 +418,7 @@ function effectsOf(node: TreeNode, ctx: MapContext): FigmaEffect[] {
     if (alpha === 0) continue;
     const effect: FigmaEffect = [inset ? "I" : "D", x, y, blur, spread, rgb, alpha];
     const decision = ctx.binder.color(color, "effect", node.cls);
-    if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx));
+    if (decision.variable) effect.push(...boundTo(decision.variable, alpha, ctx, "effect", node.cls));
     else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "effect", value: color.toLowerCase(), candidates: decision.candidates });
     out.push(effect);
   }
@@ -591,7 +599,7 @@ export function nodeStyle(node: TreeNode, ctx: MapContext, markup?: string): Omi
         // A translucent shape's paint binds to the alpha variable, by its
         // color and opacity as the import draws them, `#rrggbb@0.5`.
         for (const alpha of alphas) {
-          const [variable, token] = boundTo(decision.variable, alpha, ctx);
+          const [variable, token] = boundTo(decision.variable, alpha, ctx, "vector", node.cls);
           if (token) binds[`${hex}@${alpha}`] = variable;
         }
       } else if (decision.candidates.length > 1) ctx.unbound.push({ key: node.k, property: "vector", value: hex, candidates: decision.candidates });
