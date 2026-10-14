@@ -132,10 +132,10 @@ export function globalsParam(globals: Record<string, string>): string {
  * snap couldn't render it light, and what to do. `of` is how many of its
  * measured variants were dark, where not all.
  */
-export function describeDarkScheme(label: string, by: string | undefined, why: string, of?: { dark: number; measured: number }): string {
+export function describeDarkScheme(by: string | undefined, why: string, of?: { dark: number; measured: number }): string {
   const which = of && of.dark < of.measured ? ` (${of.dark} of ${of.measured} measured variants)` : "";
   return (
-    `${label} was measured in its dark color scheme${by ? ` (${by})` : ""}${which}, as ${why}, so its colors are the dark theme's, ` +
+    `It was measured in its dark color scheme${by ? ` (${by})` : ""}${which}, as ${why}, so its colors are the dark theme's, ` +
     `recorded as \`scheme: "dark"\`, and \`figma code\` binds them by the tokens' dark values. To measure the light scheme, ` +
     `let the story render light: through a Storybook global its URL can set, such as addon-themes' \`theme\`, or a theme ` +
     `decorator that follows one, then measure it again with --components and --merge.`

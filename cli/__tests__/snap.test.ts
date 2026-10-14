@@ -2876,7 +2876,7 @@ test("runSnap: a story that renders dark whatever snap sets is recorded as dark,
     assert.equal(component.scheme, "dark");
     assert.equal(component.globals, undefined);
     const warning = component.warnings.find((w) => /dark color scheme/.test(w));
-    assert.match(warning ?? "", /^ui\/base\/Switch was measured in its dark color scheme \(html\.dark\), as Storybook rendered it dark, and still did with globals=theme:light/);
+    assert.match(warning ?? "", /^It was measured in its dark color scheme \(html\.dark\), as Storybook rendered it dark, and still did with globals=theme:light/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2885,11 +2885,11 @@ test("runSnap: a story that renders dark whatever snap sets is recorded as dark,
 test("describeStoryErrors: a story that calls an implicit action while it renders gets its fix, and other errors none", () => {
   const error = "We detected that you use an implicit action arg while rendering of your story. (implicit action: onLayoutChanged)";
   const failed = [{ status: "render_error" as const, error }, { status: "render_error" as const, error }];
-  const warning = describeStoryErrors("ui/radix/ResizablePanelGroup", "ui-radix-resizablepanelgroup--default", failed);
-  assert.match(warning ?? "", /^ui\/radix\/ResizablePanelGroup: every variant failed to render with Storybook's own error, not snap's: ui-radix-resizablepanelgroup--default calls its `onLayoutChanged` arg while it renders/);
+  const warning = describeStoryErrors("ui-radix-resizablepanelgroup--default", failed);
+  assert.match(warning ?? "", /^Every variant failed to render with Storybook's own error, not snap's: ui-radix-resizablepanelgroup--default calls its `onLayoutChanged` arg while it renders/);
   assert.match(warning ?? "", /`args: \{ onLayoutChanged: fn\(\) \}` with `fn` from `storybook\/test`/);
-  assert.match(describeStoryErrors("X", "x--default", [...failed, { status: "ok", error: null }]) ?? "", /^X: 2 of 3 variants failed/);
-  assert.equal(describeStoryErrors("X", "x--default", [{ status: "render_error", error: "boom" }]), null);
+  assert.match(describeStoryErrors("x--default", [...failed, { status: "ok", error: null }]) ?? "", /^2 of 3 variants failed/);
+  assert.equal(describeStoryErrors("x--default", [{ status: "render_error", error: "boom" }]), null);
 });
 
 test("snapMessages: what the text output says, i, ! and ✗ lines and each variant not measured, for --json's messages", () => {

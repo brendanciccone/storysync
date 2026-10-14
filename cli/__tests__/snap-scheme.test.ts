@@ -50,7 +50,7 @@ test("lightGlobals: nothing to set where no global names a theme, or the URL can
 
 test("globalsParam and describeDarkScheme", () => {
   assert.equal(globalsParam({ theme: "light", mode: "a b" }), "theme:light;mode:a b");
-  const warning = describeDarkScheme("components/Button", "html.dark", "its preview has no theme global", { dark: 2, measured: 4 });
-  assert.match(warning, /^components\/Button was measured in its dark color scheme \(html\.dark\) \(2 of 4 measured variants\), as its preview has no theme global/);
+  const warning = describeDarkScheme("html.dark", "its preview has no theme global", { dark: 2, measured: 4 });
+  assert.match(warning, /^It was measured in its dark color scheme \(html\.dark\) \(2 of 4 measured variants\), as its preview has no theme global/);
   assert.match(warning, /`scheme: "dark"`/);
 });
