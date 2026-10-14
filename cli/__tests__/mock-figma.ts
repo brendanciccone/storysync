@@ -1618,7 +1618,9 @@ function place(n: Node, axis: Axis, value: number): void {
 const PROPS: Record<string, Prop> = {
   id: { get: (n) => n.id },
   type: { get: (n) => n.type },
-  removed: { get: (n) => n.removed },
+  // Figma keeps a removed component, soft-deleted: `removed` false, no
+  // parent, its name still read, as an instance left on it shows (probe 9a, call 3).
+  removed: { get: (n) => n.removed && n.type !== "COMPONENT" },
   parent: { get: (n) => n.parent?.handle ?? null },
   name: {
     get: (n) => n.name,
@@ -2062,7 +2064,7 @@ const HANDLER: ProxyHandler<Record<string, unknown>> = {
     const spec = PROPS[prop];
     const method = METHODS[prop];
     if (!spec && !method) return undefined;
-    if (n.removed && prop !== "removed" && prop !== "id") throw new Error(`in get_${prop}: The node with id "${n.id}" does not exist`);
+    if (n.removed && prop !== "removed" && prop !== "id" && !(n.type === "COMPONENT" && (prop === "name" || prop === "parent"))) throw new Error(`in get_${prop}: The node with id "${n.id}" does not exist`);
     const types = spec?.types ?? method?.types;
     if (types && !types.has(n.type)) throw new TypeError(`node.${prop}: no such property '${prop}' on ${n.type} node`);
     if (method) return (...args: unknown[]) => method.fn(n, ...args);

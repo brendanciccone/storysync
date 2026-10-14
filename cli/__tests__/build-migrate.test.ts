@@ -93,9 +93,9 @@ test("build: of a property dropped since, the variants at the value snap pins it
   assert.ok(children(mock, set.id).every(([id]) => old.get([...old].find(([, i]) => i === id)![0]) === id));
 });
 
-/** Each instance on the file's pages, by id: the name of the variant it is on, null where that variant is gone. */
+/** Each instance on the file's pages, by id: the name of the variant it is on, null where that variant is gone, soft-deleted, with no parent (probe 9a, call 3). */
 async function mains(mock: MockFigma): Promise<Record<string, string | null>> {
-  const run = await mock.run(`const out = {}; for (const p of figma.root.children) { await p.loadAsync(); for (const i of p.findAllWithCriteria({ types: ["INSTANCE"] })) { const m = await i.getMainComponentAsync(); out[i.id] = m.removed ? null : m.name; } } return out;`);
+  const run = await mock.run(`const out = {}; for (const p of figma.root.children) { await p.loadAsync(); for (const i of p.findAllWithCriteria({ types: ["INSTANCE"] })) { const m = await i.getMainComponentAsync(); out[i.id] = m.parent ? m.name : null; } } return out;`);
   return run.value as Record<string, string | null>;
 }
 
