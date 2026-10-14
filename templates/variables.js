@@ -60,8 +60,11 @@ if (modes.length === 1 && first.name !== FIRST) {
   collection.renameMode(first.modeId, FIRST);
 }
 const light = first.modeId;
-// Dark: the collection's own, or added where the tokens have one. A Dark
-// mode the tokens no longer fill takes each light value, as the browser does.
+// Dark: the collection's own, or added where the tokens have one. Written
+// only where the tokens carry it: a Dark mode they don't fill keeps every
+// value it has, a designer's own included, and a variable made new takes
+// its light value there, as the browser keeps a variable no theme sets.
+const WRITE_DARK = DATA.modes.length > 1;
 const darkMode = modeNamed('Dark');
 let dark = darkMode && darkMode.modeId !== light ? darkMode.modeId : null;
 if (!dark && DATA.modes.length > 1) {
@@ -208,7 +211,7 @@ for (const [name, type, scopes, lightValue, darkValue] of DATA.vars.concat(alpha
     changed = true;
   }
   const values = [[light, lightValue]];
-  if (dark) values.push([dark, darkValue === undefined ? lightValue : darkValue]);
+  if (dark && (WRITE_DARK || !had)) values.push([dark, darkValue === undefined ? lightValue : darkValue]);
   const was = v.valuesByMode || {};
   for (const [mode, value] of values) {
     if (had && same(type, was[mode], value)) continue;

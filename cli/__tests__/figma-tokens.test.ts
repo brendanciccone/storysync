@@ -238,10 +238,27 @@ test("figma tokens: a dark theme the tokens gain renames the lone Default mode L
   await pushTokens(mock, TOKENS);
   assert.equal(mock.variableWrites.length, writes);
 
-  // The dark theme gone again: the Dark mode stays, each value its light one, as the browser has it.
+  // The dark theme gone again: the Dark mode stays, and keeps its values; the tokens carry none to write.
   const [dropped] = await pushTokens(mock, lightOnly);
-  assert.deepEqual([dropped.modes, dropped.renamedModes, dropped.updated], [["Light", "Dark"], [], ["background", "border"]]);
-  assert.deepEqual(mock.collections()[0].variables[0].values, { Light: "#ffffff", Dark: "#ffffff" });
+  assert.deepEqual([dropped.modes, dropped.renamedModes, dropped.updated], [["Light", "Dark"], [], []]);
+  assert.deepEqual(mock.collections()[0].variables[0].values, { Light: "#ffffff", Dark: "#0a0a0a" });
+});
+
+test("figma tokens: tokens of no dark value never write a designer's hand-made Dark mode, and a variable made new takes its light value there", async () => {
+  const mock = new MockFigma();
+  // A designer's own Dark mode, painted by hand.
+  mock.addVariable("background", "COLOR", { Light: "#ffffff", Dark: "#0a0a0a" }, "Colors");
+  mock.addVariable("border", "COLOR", { Light: "#e5e5e5", Dark: "#27272a" }, "Colors");
+  const lightOnly = copy(TOKENS);
+  for (const t of lightOnly.collections[0].tokens) delete t.dark;
+  const writes = mock.variableWrites.length;
+  const [colors] = await pushTokens(mock, lightOnly);
+  assert.deepEqual([colors.modes, colors.renamedModes, colors.addedModes, colors.created], [["Light", "Dark"], [], [], ["chart/1"]]);
+  const values = Object.fromEntries(mock.collections()[0].variables.map((v) => [v.name, v.values]));
+  assert.deepEqual(values.background, { Light: "#ffffff", Dark: "#0a0a0a" });
+  assert.deepEqual(values.border, { Light: "#e5e5e5", Dark: "#27272a" });
+  assert.deepEqual(values["chart/1"], { Light: "#8ec5ff", Dark: "#8ec5ff" });
+  assert.equal(mock.variableWrites.slice(writes).some((w) => /^value (?:background|border) Dark$/.test(w)), false, mock.variableWrites.slice(writes).join("; "));
 });
 
 test("figma tokens: a plan of one mode keeps Light alone and says why, on every push", async () => {
