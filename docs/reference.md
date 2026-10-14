@@ -204,8 +204,9 @@ storysync figma code [options]
   --components <names>   Comma-separated component names, titles or IDs to build (default: every
                          component in the snap); a name that matches nothing is an error
   --skip <names>         Comma-separated component names, titles or IDs to leave out
-  --out <dir>            Where plan.json, calls/ and results/ go; an earlier plan's calls and results
-                         there are removed (default: ".storysync/figma")
+  --out <dir>            Where plan.json, calls/ and results/ go; an earlier plan Figma answered a
+                         read of moves to earlier/ there with its calls and results, and any other's
+                         are removed (default: ".storysync/figma")
   --max-chars <n>        Most characters of code in one build call (default: 45000)
   --max-nodes <n>        Most layers one build call creates or restyles (default: 400)
   --read-limit <n>       Most characters a read call is predicted to return (default: 17000)
@@ -220,6 +221,8 @@ storysync figma tokens [--tokens <path>] [--plan <path>] [--alpha <name>]... [--
 `figma tokens` defaults to `--tokens .storysync/tokens.json`, `--plan .storysync/figma/plan.json`, `--out .storysync/figma/tokens` and `--max-variables 40`.
 
 `figma code` writes `<out>/plan.json` and the calls under `<out>/calls/`, in the order they're sent: a `variables` call that makes the alpha variables its translucent paints bind to, where they bind any; the builds, a page at a time, with several component sets in a call; an `images` call for each page that shows a picture; one `label` call; and the read calls. `plan.json` lists each call with its file, its description and the path its response is saved to under `<out>/results/`. Two runs on the same snap write the same bytes. It refuses a snap taken with `--root-only`.
+
+An earlier plan in `<out>` that Figma answered a read call of, the last push's, is moved with its calls and results to `<out>/earlier/<digest>/`, and its path printed (`earlier` in `--json`): the snap keeps that push's components, so `verify --plan <out>/earlier/<digest>/plan.json` still scores it. Any other plan's calls and results are removed, so a response saved for one can't be read as the new plan's.
 
 It prints each call, its warnings, the alpha variables its translucent paints bind to, which its first call makes (see [Variable binding](#variable-binding)), and the push's [estimate](https://github.com/brendanciccone/storysync/blob/main/README.md#what-a-push-costs):
 

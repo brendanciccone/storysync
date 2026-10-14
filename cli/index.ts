@@ -1026,7 +1026,7 @@ figma
   .option("--tokens <path>", "`storysync tokens --json` output, for binding paints and radii to variables; without it nothing is bound", ".storysync/tokens.json")
   .option("--components <names>", "Comma-separated component names, titles or IDs to build (default: every component in the snap); a name that matches nothing is an error")
   .option("--skip <names>", "Comma-separated component names, titles or IDs to leave out")
-  .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan's calls and results there are removed", ".storysync/figma")
+  .option("--out <dir>", "Where plan.json, calls/ and results/ go; an earlier plan Figma answered a read of moves to earlier/ there with its calls and results, and any other's are removed", ".storysync/figma")
   .option("--max-chars <n>", `Most characters of code in one build call (use_figma takes at most ${USE_FIGMA_CODE_LIMIT})`, String(MAX_CALL_CHARS))
   .option("--max-nodes <n>", "Most layers one build call creates or restyles; lower it, to 200 say, after `Script exceeded time limit`", String(SPIKE.maxNodes))
   .option("--read-limit <n>", "Most characters a read call is predicted to return (use_figma returns at most 20kb)", String(DEFAULT_READ_LIMIT))
@@ -1038,7 +1038,7 @@ figma
     const maxNodes = parsePositiveInteger(opts.maxNodes, "--max-nodes");
     const readLimit = parsePositiveInteger(opts.readLimit, "--read-limit");
     try {
-      const { plan, planPath, warnings, bindings, alphas } = await runFigmaCode({
+      const { plan, planPath, warnings, bindings, alphas, earlier } = await runFigmaCode({
         snap: opts.snap as string,
         tokens: opts.tokens as string,
         components: opts.components ? (opts.components as string).split(",") : undefined,
@@ -1052,10 +1052,12 @@ figma
       // What the push costs the agent, in tokens: the skills show it and ask before sending.
       const estimate = estimatePush(plan);
       if (json) {
-        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, alphas, warnings, estimate }));
+        console.log(JSON.stringify({ planPath, calls: plan.calls, bindings, alphas, warnings, estimate, ...(earlier ? { earlier } : {}) }));
         return;
       }
       const where = shownPath(planPath);
+      // The plan this one replaces, which Figma answered: still verifiable.
+      if (earlier) console.log(chalk.dim(`\n  i The earlier plan, with its calls and results, is now ${shownPath(earlier)}: \`storysync verify --plan ${shownPath(earlier)}\` still scores it`));
       const counts = new Map<string, number>();
       for (const call of plan.calls) counts.set(call.kind, (counts.get(call.kind) ?? 0) + 1);
       const kinds = [...counts].map(([kind, n]) => `${n} ${kind}`).join(", ");

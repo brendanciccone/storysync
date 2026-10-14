@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callConstants, callSum } from "../checksum.js";
-import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, predictRead, runFigmaCode, runFigmaNext } from "../figma-code.js";
+import { CALL_CONSTANTS, DEFAULT_READ_LIMIT, ESTIMATE, describeEstimate, estimatePush, formatTokens, loadTemplate, parseCallResult, planSnapChanged, predictRead, readPlan, runFigmaCode, runFigmaNext } from "../figma-code.js";
 import { READ_LIMIT, loadPlanResults } from "../figma-results.js";
 import { MAX_CALL_CHARS } from "../figma-spike.js";
 import { describeMeasurementNotes } from "../snap.js";
@@ -411,6 +411,37 @@ test("figma code: a new plan clears the last plan's calls and results, and leave
   for (const file of old) assert.ok(!existsSync(join(coded.out, file)), `${file} is removed`);
   for (const file of [...foreign, "results/06.json"]) assert.ok(existsSync(join(coded.out, file)), `${file} is kept`);
   assert.deepEqual(readdirSync(join(coded.out, "calls")).filter((f) => !foreign.includes(`calls/${f}`)), coded.plan.calls.map((c) => c.file.slice(6)));
+});
+
+test("figma code: a new plan keeps the one Figma answered under earlier/, which verify --plan can still score", async () => {
+  // Each push writes its plan to .storysync/figma, while the snap keeps
+  // every push's components: the last push's plan must stay verifiable.
+  const snap = loadTreeFixture("example-button");
+  const coded = await codeFor(snap, { templates: {} });
+  const mock = mockFor([snap]);
+  mkdirSync(join(coded.out, "results"), { recursive: true });
+  for (const call of coded.plan.calls) {
+    const run = await mock.run(coded.code(call));
+    assert.ok(run.ok, `${call.file}: ${run.text}`);
+    writeFileSync(join(coded.out, call.result), run.text);
+  }
+  const again = await runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: {} });
+  assert.ok(again.earlier, "the answered plan is kept");
+  assert.equal(dirname(dirname(again.earlier!)), join(coded.out, "earlier"));
+  assert.deepEqual(readdirSync(join(coded.out, "results")), []);
+  const earlier = readPlan(again.earlier!);
+  assert.equal(resolve(dirname(again.earlier!), earlier.snap.path), coded.snapPath);
+  assert.equal(planSnapChanged(earlier, readFileSync(coded.snapPath)), false);
+  const { readback, notRead, problems } = loadPlanResults(again.earlier!);
+  assert.deepEqual([notRead, problems], [[], []]);
+  const result = verify(JSON.parse(readFileSync(coded.snapPath, "utf8")), readback, 0.5, { notRead });
+  assert.ok((result.summary.elements?.verified ?? 0) > 0);
+  // A plan with no read answered has nothing to verify: removed, as before.
+  writeFileSync(join(coded.out, again.plan.calls[0].result), "{}");
+  const third = await runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: {} });
+  assert.equal(third.earlier, undefined);
+  assert.deepEqual(readdirSync(join(coded.out, "results")), []);
+  assert.deepEqual(readdirSync(join(coded.out, "earlier"), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(coded.out, "earlier", e.name, "plan.json")), [again.earlier]);
 });
 
 test("figma code: every planned call runs in the mock, in order", async () => {
