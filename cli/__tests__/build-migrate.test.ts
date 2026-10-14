@@ -5,7 +5,7 @@
 // big for one call, sent in parts.
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { missingTemplate, templateKey } from "../checksum.js";
@@ -207,6 +207,29 @@ test("figma code --remove-extra <names>: only the components named remove their 
   assert.deepEqual(removed.map((s) => [s.name, s.removed, s.extra]), [["Button", 6, 0], ["Twin", undefined, 6]]);
   // A name that matches nothing is an error, as for --convert.
   await assert.rejects(codeIn(both(after, twinAfter), a.out, { removeExtra: ["Tabs"] }), /--remove-extra/);
+});
+
+test("figma code --remove-extra: an answer from another Figma file says nothing of this one's sets", async () => {
+  const full = loadTreeFixture("example-button");
+  const after = withoutProp(full, "disabled", "false");
+  const a = mockFor([full]);
+  a.fileKey = "fileA";
+  const first = await codeFor(full);
+  await push(a, first);
+  const second = await codeIn(after, first.out);
+  const answered = (await push(a, second)).flatMap(sets);
+  assert.deepEqual(answered.map((s) => s.extra), [6]);
+  // Kept, as a plan Figma answered a read of is.
+  const kept = join(first.out, "earlier", "a0a0a0a0");
+  mkdirSync(kept, { recursive: true });
+  for (const name of ["plan.json", "calls", "results"]) cpSync(join(first.out, name), join(kept, name), { recursive: true });
+  // Then the project pushed to file B, Switch alone: the newest answer is B's.
+  const b = mockFor([loadTreeFixture("switch")]);
+  b.fileKey = "fileB";
+  await push(b, await codeIn(loadTreeFixture("switch"), first.out));
+  const c = await codeIn(after, first.out, { removeExtra: true });
+  for (const call of c.plan.calls) assert.ok(!c.code(call).includes('"rm":1'), call.file);
+  assert.ok(c.warnings.some((w) => w.startsWith("--remove-extra left Forms/Button as it is")), c.warnings.join("\n"));
 });
 
 test("build: a plain component an earlier push built, now with variant properties, is refused until the user says to convert it, then made its set's first variant in place", async () => {

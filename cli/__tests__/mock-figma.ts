@@ -826,6 +826,8 @@ class Doc {
   /** The next variable's id number: never one a removed variable had. */
   nextVariable = 1;
   call: Call | null = null;
+  /** The file's key, as figma.fileKey gives it; none unless a test sets one (MockFigma.fileKey). */
+  fileKey: string | undefined;
   constructor(readonly options: Required<Omit<MockFigmaOptions, "pages" | "reencodeImage">> & Pick<MockFigmaOptions, "reencodeImage">, pages: string[]) {
     this.root = new Node(this, "DOCUMENT", "Document", "0:0");
     for (const name of pages) this.addPage(name);
@@ -2192,6 +2194,7 @@ function figmaGlobal(doc: Doc, call: Call): Record<string, unknown> {
   const figma: Record<string, unknown> = {
     mixed: MIXED,
     root: doc.root.handle,
+    fileKey: doc.fileKey,
     get currentPage() {
       return call.current.handle;
     },
@@ -2410,6 +2413,10 @@ export interface NodeView {
 export class MockFigma {
   private readonly doc: Doc;
   readonly runs: MockRun[] = [];
+  /** The key figma.fileKey gives the calls from here on, as another Figma file's would. */
+  set fileKey(key: string | undefined) {
+    this.doc.fileKey = key;
+  }
 
   constructor(options: MockFigmaOptions = {}) {
     this.doc = new Doc({

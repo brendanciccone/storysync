@@ -940,7 +940,9 @@ export function builtShapes(out: string): Map<string, Prop[]> {
  * The `extra` the last build Figma answered of each set counted, by
  * storysync id, read as builtShapes reads: from the plan under `out` and
  * those kept under `out/earlier/`, the newest first, each from its build
- * calls' results, the latest first, where it didn't refuse the set.
+ * calls' results, the latest first, where it didn't refuse the set. Only
+ * answers from the file the newest came from count (`file`, its key), so
+ * a plan another file answered says nothing of this one's sets.
  */
 export function builtExtras(out: string): Map<string, number> {
   const dir = resolve(out);
@@ -948,12 +950,16 @@ export function builtExtras(out: string): Map<string, number> {
   const kept = existsSync(earlier) ? readdirSync(earlier).map((d) => join(earlier, d)).filter((d) => existsSync(join(d, "plan.json"))) : [];
   kept.sort((a, b) => statSync(join(b, "plan.json")).mtimeMs - statSync(join(a, "plan.json")).mtimeMs);
   const extras = new Map<string, number>();
+  let file: unknown = null;
   for (const at of [...(existsSync(join(dir, "plan.json")) ? [dir] : []), ...kept]) {
     try {
       const plan = JSON.parse(readFileSync(join(at, "plan.json"), "utf8")) as FigmaPlan;
       for (const call of [...plan.calls].reverse()) {
         if (call.kind !== "build" || !existsSync(join(at, call.result))) continue;
         const result = parseCallResult(readFileSync(join(at, call.result), "utf8"));
+        if (!result) continue;
+        if (file === null) file = result.file;
+        if (result.file !== file) continue;
         for (const set of (result?.sets ?? []) as { component?: string; refused?: string; stashed?: number; extra?: number }[]) {
           if (set.component && !set.refused && !set.stashed && !extras.has(set.component)) extras.set(set.component, set.extra ?? 0);
         }

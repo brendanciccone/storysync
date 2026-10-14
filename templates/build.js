@@ -766,7 +766,8 @@ const recordsOf = (base, delta) => {
 
 const idOf = (n) => get(n, 'id');
 const results = [];
-const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+// Whether a lies on b, or on b moved to y.
+const hit = (a, b, y = b.y) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < y + b.height && y < a.y + a.height;
 // Once the call's sets are built, moves the sets and components a push
 // built off one another, each at most once and only one that lies on
 // another, taken top first, and of two built here at one height the one
@@ -792,14 +793,13 @@ const settle = (built) => {
     while (due.size) {
       const [n, out] = [...due].reduce((a, b) => (b[0].y < a[0].y ? b : a));
       due.delete(n);
-      const at = (y) => ({ x: n.x, y, width: n.width, height: n.height });
       // Named in the result of a set it lies on that has moved or grew.
       const onto = sets.find((m) => done.has(m) && hit(m, n));
       const by = onto ? done.get(onto) : out;
       let y = n.y;
       // What it lies on at y: a set done, or not due and starting above y,
       // and, once it moves, a designer's layer.
-      for (let on; (on = all.filter((m) => m !== n && hit(m, at(y)) && (ours(m) ? !due.has(m) && (done.has(m) || m.y < y) : y !== n.y))).length; ) {
+      for (let on; (on = all.filter((m) => m !== n && hit(m, n, y) && (ours(m) ? !due.has(m) && (done.has(m) || m.y < y) : y !== n.y))).length; ) {
         y = Math.max(...on.map((m) => m.y + m.height)) + 100;
       }
       if (y !== n.y) {
@@ -1143,7 +1143,9 @@ settle(built);
 for (const [node, out] of built) out.overlaps = lying(node);
 for (const [node, by] of moves) by.overlaps += lying(node);
 
-const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
+// `file`, the file's key, ties the answer to its file: figma code reads
+// another plan's answers only where they are the same file's.
+const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, file: figma.fileKey, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
 // use_figma returns at most 20,480 bytes, and refuses a call that would
 // return more, keeping none of its changes (the seventh probe), so a build
 // whose response grew past it would fail each time it was sent. The lists
