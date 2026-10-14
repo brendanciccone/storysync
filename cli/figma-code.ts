@@ -86,9 +86,9 @@ export interface FigmaCodeOptions {
   /**
    * Remove, from each set built, the variants an earlier push built that no
    * variant property names now, once the user said to: `--remove-extra`.
-   * Only a set whose last build Figma answered counted some in `extra`, or
-   * one no saved build answered, is told to, so the calls of the others
-   * stay as they were.
+   * Only a set whose last build Figma answered counted some in `extra` is
+   * told to, so the calls of the others stay as they were; one no saved
+   * answer counted is left alone, and named in a warning.
    */
   removeExtra?: boolean;
   /**
@@ -1091,10 +1091,16 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   const keys = new Map(entries.map((e, i) => [e, componentKey(all[i])]));
   const convert = new Set(opts.convert?.length ? selectComponents(entries, opts.convert, [], "--convert").map((e) => keys.get(e)!) : []);
   // --remove-extra tells a set to remove its extra variants only where
-  // its last build counted some, or none answered: one with none to
-  // remove keeps its call as it was, byte for byte.
+  // its last build Figma answered counted some: one with none to remove
+  // keeps its call as it was, byte for byte, and one no saved answer
+  // counted, as after a fresh clone or a teammate's push, is left alone,
+  // never removed from on a guess.
   const extras = opts.removeExtra ? builtExtras(opts.out) : new Map<string, number>();
-  const flags: SetFlags = { convert, removeExtra: (id) => Boolean(opts.removeExtra) && (extras.get(id) ?? 1) > 0 };
+  const flags: SetFlags = { convert, removeExtra: (id) => Boolean(opts.removeExtra) && (extras.get(id) ?? 0) > 0 };
+  const unknown = opts.removeExtra ? components.filter((c) => !extras.has(c.id)).map((c) => c.title ?? c.name) : [];
+  if (unknown.length) {
+    warnings.push(`--remove-extra left ${unknown.join(", ")} as ${unknown.length === 1 ? "it is" : "they are"}: no saved build response says how many extra variants ${unknown.length === 1 ? "it has" : "they have"}. Send this plan, then run figma code --remove-extra again to remove those its builds count in \`extra\``);
+  }
   const isEnd = (p: Part) => p.variants[p.variants.length - 1] === p.component.variants[p.component.variants.length - 1] && (!p.chunk || p.chunk.p[0] === p.chunk.p[1]);
   // The first build call, and the first read, carries its template and
   // stores it in the file; the rest of their kind run what it stored.

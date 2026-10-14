@@ -76,7 +76,8 @@ test("build: of a property dropped since, the variants at the value snap pins it
   const mock = mockFor([full]);
   const [first] = await push(mock, await codeFor(full));
   const old = new Map(children(mock, sets(first)[0].id).map(([id, name]) => [name, id]));
-  const [then] = await push(mock, await codeFor(after));
+  const built = await codeFor(after);
+  const [then] = await push(mock, built);
   const [set] = sets(then);
   assert.deepEqual([set.renamed, set.added, set.extra, set.variants, set.removed], [6, 0, 6, 12, undefined]);
   const now = children(mock, set.id);
@@ -88,7 +89,7 @@ test("build: of a property dropped since, the variants at the value snap pins it
     else assert.deepEqual([name, variant.data["storysync.i"] ?? ""], [was, ""]);
   }
   // Removed once the user says so, and only those.
-  const [removed] = await push(mock, await codeFor(after, { removeExtra: true }));
+  const [removed] = await push(mock, await codeIn(after, built.out, { removeExtra: true }));
   assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].extra, sets(removed)[0].variants], [6, 0, 6]);
   assert.ok(children(mock, set.id).every(([id]) => old.get([...old].find(([, i]) => i === id)![0]) === id));
 });
@@ -117,13 +118,14 @@ test("build: a variant an earlier push left beside the one its values now name m
   assert.ok(cloned.ok, cloned.text);
   const old = children(mock, id);
   const full = loadTreeFixture("example-button");
-  const [then] = await push(mock, await codeFor(full));
+  const built = await codeFor(full);
+  const [then] = await push(mock, built);
   const [set] = sets(then);
   assert.deepEqual([set.renamed, set.extra, set.variants, (set as { swapped?: number }).swapped], [undefined, 6, 18, 6]);
   const on = await mains(mock);
   for (const [instance, name] of placed) assert.equal(on[instance], `${name}, disabled=false`, name);
   // Removed where the user says so: the old ones only, every instance on a variant still there.
-  const [removed] = await push(mock, await codeFor(full, { removeExtra: true }));
+  const [removed] = await push(mock, await codeIn(full, built.out, { removeExtra: true }));
   assert.deepEqual([sets(removed)[0].removed, sets(removed)[0].extra, sets(removed)[0].variants], [6, 0, 12]);
   const left = new Set(children(mock, id).map(([i]) => i));
   for (const [i, name] of old) assert.equal(left.has(i), name.endsWith("disabled=false"), name);
@@ -179,6 +181,13 @@ test("figma code --remove-extra: only a set whose last build counted extra varia
   assert.ok(now.Forms.includes('"rm":1') && !now.Toggles.includes('"rm":1'));
   const removed = (await push(mock, c)).flatMap(sets);
   assert.deepEqual(removed.map((s) => [s.name, s.removed, s.extra]), [["Button", 6, 0], ["Switch", undefined, 0]]);
+});
+
+test("figma code --remove-extra: a set no saved build response counted extra variants of is left alone, and named", async () => {
+  // A fresh clone, or a teammate's push: nothing says what Figma holds.
+  const coded = await codeFor(withoutProp(loadTreeFixture("example-button"), "disabled", "false"), { removeExtra: true });
+  for (const call of coded.plan.calls) assert.ok(!coded.code(call).includes('"rm":1'), call.file);
+  assert.ok(coded.warnings.some((w) => /^--remove-extra left Forms\/Button as it is: no saved build response says how many extra variants it has\. Send this plan, then run figma code --remove-extra again/.test(w)), coded.warnings.join("\n"));
 });
 
 test("build: a plain component an earlier push built, now with variant properties, is refused until the user says to convert it, then made its set's first variant in place", async () => {
