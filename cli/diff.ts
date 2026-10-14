@@ -164,8 +164,12 @@ function normalizeForCompare(category: string, value: string): string {
 
 // --- Token diffing ---
 
-/** A Tailwind palette color's class name, which a per-mode variable may be made from though no token has it. */
-const TAILWIND_PALETTE_NAME = /^(?:[a-z]+-\d{2,3}|black|white|transparent)$/;
+/**
+ * A Tailwind palette color's class name, which a per-mode variable may be
+ * made from though no token has it, or an arbitrary color's, `[#3f3f3f]`,
+ * as a rule's literal colors are paired (Sonner's description).
+ */
+const TAILWIND_PALETTE_NAME = /^(?:[a-z]+-\d{2,3}|black|white|transparent|\[#[0-9a-f]{6}(?:[0-9a-f]{2})?\])$/;
 
 /** Whether a Figma mode is a dark theme's, by its name: `Dark`, `Dark mode`, `dark`. */
 const isDarkMode = (mode: string) => /dark/i.test(mode);

@@ -564,6 +564,16 @@ test("figma tokens: a per-mode variable holds the light class's color in Light a
   assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
 });
 
+test("figma tokens: a pair of a rule's literal colors, Sonner's description, holds each in its mode, and a push with no plan keeps it", async () => {
+  const mock = new MockFigma();
+  const pair: PlanAlpha = { variable: "[#3f3f3f] dark [#e8e8e8]", token: "[#3f3f3f]", alpha: 1, darkToken: "[#e8e8e8]", dark: 1, palette: { "[#3f3f3f]": "#3f3f3f", "[#e8e8e8]": "#e8e8e8" } };
+  const [colors] = await pushTokens(mock, TOKENS, {}, [pair]);
+  assert.deepEqual([colors.alpha, colors.stale], [["[#3f3f3f] dark [#e8e8e8]"], []]);
+  assert.deepEqual(mock.collections()[0].variables.find((v) => v.name === pair.variable)!.values, { Light: "#3f3f3f", Dark: "#e8e8e8" });
+  const plain = await pushTokens(mock, TOKENS);
+  assert.deepEqual([plain[0].stale, changes(plain[0])], [[], NOTHING]);
+});
+
 test("figma tokens: an alpha variable nothing binds is removed once the user confirms it, and not made again", async () => {
   const mock = new MockFigma();
   await pushTokens(mock, TOKENS, {}, [{ variable: "background 10%", token: "background", alpha: 0.102 }]);

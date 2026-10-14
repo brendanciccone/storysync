@@ -27,7 +27,7 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { callCode, fnv1a32Bytes } from "./checksum.js";
-import { alphaVariableName, colorOfClass, parseAlphaVariable } from "./figma-bind.js";
+import { alphaVariableName, colorOfClass, literalHex, parseAlphaVariable } from "./figma-bind.js";
 import { assertCompiles, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
 import type { FigmaCodeOptions } from "./figma-code.js";
 import { lengthToPx, tokenColorToHex, withoutRepeatedDefault } from "./tokens.js";
@@ -374,11 +374,11 @@ function alphasToMake(planPath: string | undefined, names: string[], collections
     const parsed = read?.darkToken ? { ...read, darkToken: colorOfClass(read.darkToken, tokenColors) } : read;
     const colors = parsed ? [parsed.token, parsed.darkToken].filter((c): c is string => c !== undefined) : [];
     const collection = parsed && collectionOf(collections, colors);
-    const unknown = colors.filter((c) => !isColorToken(collections, c) && !(projectPalette ??= paletteOf()).has(c));
+    const unknown = colors.filter((c) => !isColorToken(collections, c) && !(projectPalette ??= paletteOf()).has(c) && !literalHex(c));
     if (!parsed || !collection || unknown.length) {
       throw new Error(`--alpha ${name}: name an alpha variable as a color token, a space and its alpha in percent, \`destructive 30%\`, or with the dark theme's after it, \`destructive 10% dark 20%\`, or with the color the dark theme paints, \`background dark input 30%\`, of color tokens these tokens have or Tailwind's palette`);
     }
-    for (const c of colors) if (!isColorToken(collections, c)) palette.set(c, projectPalette!.get(c)!);
+    for (const c of colors) if (!isColorToken(collections, c)) palette.set(c, projectPalette!.get(c) ?? literalHex(c)!);
     put(alphaVariableName(parsed.token, parsed.alpha, parsed.dark, parsed.darkToken), { token: parsed.token, ...(parsed.darkToken ? { darkToken: parsed.darkToken } : {}) }, collection);
   }
   let fromPlan: number | null = null;

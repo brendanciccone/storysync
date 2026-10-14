@@ -407,6 +407,7 @@ test("Binder: a custom property behind the color names its token as a class does
   assert.equal(binder.color("#0a0a0a", "text", ["var:text-normal-text"], ["color"]).variable, null);
   assert.equal(binder.color("#0a0a0a", "text", undefined, ["color"]).variable, "foreground");
   assert.deepEqual(readEvidence("var:bg-popover"), { dark: false, utility: "bg-popover", fromVar: true });
+  assert.deepEqual(readEvidence("var:dark:text-[#e8e8e8]"), { dark: true, utility: "text-[#e8e8e8]", fromVar: true });
 });
 
 test("Binder: a value its tokens hold alike in every mode stays unbound where a palette, arbitrary or rule's color sets it", () => {

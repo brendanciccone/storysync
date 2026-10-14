@@ -419,7 +419,7 @@ test("nodeStyle: a rounded-full circle binds no step of the radius scale that eq
   assert.equal(nodeStyle({ ...item([]), box: [0, 0, 40, 40] }, ctx(shadcn)).rv, "md");
 });
 
-test("nodeStyle: a color its tokens hold alike in every mode, set by a palette class, pairs its own colors rather than binding a token", () => {
+test("nodeStyle: a color its tokens hold alike in every mode, set by a palette class or a rule's literal, pairs its own colors rather than binding a token", () => {
   // coder's #e4e4e7 is border/DEFAULT and input, #27272a in Dark: bg-zinc-200 must stay zinc-200.
   const tokens = { collections: [{ category: "colors" as const, tokens: ([
     ["border/DEFAULT", "#e4e4e7", "#27272a"], ["input", "#e4e4e7", "#27272a"], ["popover", "#ffffff", "#171717"], ["card", "#ffffff", "#171717"],
@@ -430,6 +430,9 @@ test("nodeStyle: a color its tokens hold alike in every mode, set by a palette c
   assert.deepEqual(nodeStyle(frame({ k: "a", bg: "#e4e4e7", cls: ["bg-zinc-200", "dark:bg-zinc-700"] }), c).f, [["#e4e4e7", 1, "zinc-200 dark zinc-700"]]);
   assert.deepEqual(nodeStyle(frame({ k: "b", bg: "#e4e4e7", cls: ["bg-zinc-200"] }), c).f, ["#e4e4e7"]);
   assert.deepEqual(c.byDefault ?? [], []);
+  // Sonner's description: `color: #3f3f3f`, and hsl(0 0% 91%) under its dark theme, which snap writes as rule evidence.
+  assert.deepEqual(nodeStyle(frame({ k: "d", bg: "#3f3f3f", cls: ["var:bg-[#3f3f3f]", "var:dark:bg-[#e8e8e8]"] }), c).f, [["#3f3f3f", 1, "[#3f3f3f] dark [#e8e8e8]"]]);
+  assert.deepEqual(alphas.get("[#3f3f3f] dark [#e8e8e8]"), { variable: "[#3f3f3f] dark [#e8e8e8]", token: "[#3f3f3f]", alpha: 1, darkToken: "[#e8e8e8]", dark: 1, palette: { "[#3f3f3f]": "#3f3f3f", "[#e8e8e8]": "#e8e8e8" } });
 });
 
 test("nodeStyle: where a dark: class paints another color, the paint binds to a per-mode variable of the two, a palette color's with its value", () => {

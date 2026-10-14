@@ -165,7 +165,7 @@ test("diffTokens: a per-mode variable figma code made, of two code tokens or Tai
   const diffs = diffTokens(code, [
     color("background", "#ffffff"), color("input", "#e5e5e5"),
     color("background dark input 30%", "#ffffff"), color("input 0% dark 30%", "#e5e5e500"), color("slate-50 dark slate-900", "#f8fafc"), color("background dark slate-900", "#ffffff"),
-    color("gone dark input 30%", "#ffffff"), color("brand dark accent", "#ffffff"),
+    color("gone dark input 30%", "#ffffff"), color("brand dark accent", "#ffffff"), color("[#3f3f3f] dark [#e8e8e8]", "#3f3f3f"),
   ]);
   assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["gone dark input 30%", "missing_from_code"], ["brand dark accent", "missing_from_code"]]);
 });

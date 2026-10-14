@@ -281,14 +281,14 @@ export class Binder {
     return (scheme === "dark" ? this.darkOpaque : this.opaqueColors).has(name);
   }
 
-  /** Whether `name` is a color token's, rather than a palette color's. */
+  /** Whether `name` is a color token's, rather than a palette or arbitrary color's. */
   isToken(name: string): boolean {
     return this.lightHex.has(name);
   }
 
   /** A color token's light value, `#rrggbb(aa)`, or a palette color's, by its name; undefined for neither. */
   hexOf(name: string): string | undefined {
-    return this.lightHex.get(name) ?? this.palette.get(name);
+    return this.lightHex.get(name) ?? this.palette.get(name) ?? literalHex(name);
   }
 
   /**
@@ -329,17 +329,22 @@ export class Binder {
       if (!prefix) continue;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
       for (const name of [rest, rest.replace(SIDE, "")]) {
-        if (!this.tokenByClass.has(name) && this.palette.get(name)?.slice(0, 7) === rgb.toLowerCase().slice(0, 7)) names.add(name);
+        if (!this.tokenByClass.has(name) && (this.palette.get(name) ?? literalHex(name))?.slice(0, 7) === rgb.toLowerCase().slice(0, 7)) names.add(name);
       }
     }
     return names.size === 1 ? [...names][0] : undefined;
   }
 
-  /** A token (by its name) or a palette color (with its value) a class names, after its prefix; tokens first, as Tailwind's theme puts them over its palette. */
+  /**
+   * A token (by its name) or a palette color (with its value) a class
+   * names, after its prefix; tokens first, as Tailwind's theme puts them
+   * over its palette. An arbitrary color, `[#e8e8e8]`, is its own value:
+   * a class's, or a rule's that snap writes so (`var:dark:text-[#e8e8e8]`).
+   */
   private colorNamed(name: string): Omit<DarkPaint, "alpha"> | undefined {
     const token = this.tokenByClass.get(name);
     if (token) return { name: token };
-    const hex = this.palette.get(name);
+    const hex = this.palette.get(name) ?? literalHex(name);
     return hex ? { name, hex } : undefined;
   }
 
@@ -396,6 +401,12 @@ const FULL_RADIUS = /^rounded(?:-(?:[trblse]|tl|tr|br|bl|ss|se|es|ee))?-full$/;
  * `border-default`, as a config whose key is `default` names it
  * (`border-border-default` on coder's).
  */
+/** An arbitrary color as a class names it, `[#e8e8e8]`: its value, `#rrggbb(aa)`. */
+export function literalHex(name: string): string | undefined {
+  const m = /^\[(#[0-9a-f]{6}(?:[0-9a-f]{2})?)\]$/i.exec(name);
+  return m ? m[1].toLowerCase() : undefined;
+}
+
 /** A class's arbitrary color, `[#e4e4e7]`, `[rgb(…)]` or `[color:…]`, after its prefix. */
 const ARBITRARY_COLOR = /^\[(?:#|(?:rgba?|hsla?|hwb|oklch|oklab|lab|lch|color)\(|color:)/;
 
@@ -458,8 +469,9 @@ function decide(candidates: string[], prefixes: string[], cls: readonly string[]
  * dark theme may paint its property so, or not.
  */
 export function readEvidence(entry: string): { dark: boolean; utility: string; alpha?: number; state?: string; fromVar?: true } {
-  // A custom property in the chain behind the color, as a class names it.
-  if (entry.startsWith("var:")) return { dark: false, utility: entry.slice(4), fromVar: true };
+  // A custom property in the chain behind the color, as a class names it,
+  // or a rule's color, the dark theme's where `dark:` (snap-browser.ts).
+  if (entry.startsWith("var:")) return { ...readEvidence(entry.slice(4)), fromVar: true };
   const dark = entry.startsWith("dark:");
   const rest = dark ? entry.slice(5) : entry;
   const m = /^(.+?)\/(?:(\d+(?:\.\d+)?)|\[(\d*\.?\d+)(%?)\])$/.exec(rest);
