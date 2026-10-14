@@ -770,31 +770,40 @@ const hit = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + 
 // Once the call's sets are built, moves the sets and components a push
 // built off one another, each at most once and only one that lies on
 // another, taken top first: a set built here moves below each that starts
-// above it and lies on it, and a set one moved, or grew, onto moves below
-// what it lies on, as far as clears it and any it lands on that starts
-// above it or has moved already. So none moves twice, and one that lies on
-// nothing stays. Each move is named once, in the `moved` of the set whose
-// build set it off: the one that grew or moved onto it, or the set itself
-// where it lay on one that starts above it. A designer's layer stays,
-// counted in `overlaps`.
+// above it and lies on it, and a set one moved, or grew, onto
+// moves below what it lies on, as far as clears it and any it lands on
+// that starts above it or has moved already, and any layer of a
+// designer's it would land on, which never moves. So none moves twice,
+// none moves up, and one that lies on nothing stays. Each move is named
+// once, in the `moved` of the set whose build set it off: the one that
+// grew or moved onto it, or the set itself where it lay on one that
+// starts above it. `moves` holds each set moved with the result it is
+// named in.
+const moves = [];
 const settle = (built) => {
   for (const parent of new Set(built.map(([n]) => n.parent))) {
-    const sets = parent.children.filter((m) => /^COMPONENT/.test(m.type) && idOf(m));
+    const ours = (m) => /^COMPONENT/.test(m.type) && idOf(m);
+    const all = parent.children;
+    const sets = all.filter(ours);
     const done = new Map();
     const due = new Map(built.filter(([n]) => n.parent === parent));
     while (due.size) {
       const [n, out] = [...due].reduce((a, b) => (b[0].y < a[0].y ? b : a));
       due.delete(n);
+      const at = (y) => ({ x: n.x, y, width: n.width, height: n.height });
+      // Named in the result of a set it lies on that has moved or grew.
+      const onto = sets.find((m) => done.has(m) && hit(m, n));
+      const by = onto ? done.get(onto) : out;
       let y = n.y;
-      let by = out;
-      for (let on, first = true; (on = sets.filter((m) => m !== n && !due.has(m) && (done.has(m) || m.y < y) && hit(m, { x: n.x, y, width: n.width, height: n.height }))).length; first = false) {
-        const onto = first && on.find((m) => done.has(m));
-        if (onto) by = done.get(onto);
+      // What it lies on at y: a set done, or not due and starting above y,
+      // and, once it moves, a designer's layer.
+      for (let on; (on = all.filter((m) => m !== n && hit(m, at(y)) && (ours(m) ? !due.has(m) && (done.has(m) || m.y < y) : y !== n.y))).length; ) {
         y = Math.max(...on.map((m) => m.y + m.height)) + 100;
       }
       if (y !== n.y) {
         n.y = y;
         (by.moved = by.moved || []).push(n.id);
+        moves.push([n, by]);
       }
       done.set(n, by);
       for (const m of sets) if (!done.has(m) && !due.has(m) && hit(m, n)) due.set(m, by);
@@ -1122,9 +1131,13 @@ for (const set of DATA.sets) {
   built.push([node, out]);
 }
 // No two sets a push built overlap; `overlaps` counts what else each lies
-// on once laid out.
+// on once laid out, any layer of its page or section, and what else a set
+// it moved lies on, though settle moves none onto anything (a set built
+// here that moved counts nothing twice, lying on nothing).
+const lying = (node) => node.parent.children.filter((n) => n !== node && hit(n, node)).length;
 settle(built);
-for (const [node, out] of built) out.overlaps = node.parent.children.filter((n) => n !== node && /^COMPONENT/.test(n.type) && hit(n, node)).length;
+for (const [node, out] of built) out.overlaps = lying(node);
+for (const [node, by] of moves) by.overlaps += lying(node);
 
 const out = { kind: 'build', tpl: 2, tc: TC ? 1 : 0, page: page.name, sets: results, uploads, fonts: FONTS, unbound, fallbacks };
 // use_figma returns at most 20,480 bytes, and refuses a call that would

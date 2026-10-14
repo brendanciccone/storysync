@@ -306,6 +306,76 @@ test("build: each set a push built moves once a call, below what it lies on, top
   assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 0]);
 });
 
+test("build: a set settle moves goes clear of a designer's layers too, which never move, and what any set lies on is counted", async () => {
+  // The review's case: a set an earlier push left on Button moved down onto
+  // a designer's own component below it, and no result counted it.
+  const mock = mockFor([loadTreeFixture("example-button")]);
+  const coded = await codeFor(loadTreeFixture("example-button"));
+  const [first] = await push(mock, coded);
+  const button = sets(first)[0];
+  const b = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+  const ids = (await mock.run(`const parent = (await figma.getNodeByIdAsync(${JSON.stringify(button.id)})).parent;
+    const s = figma.createComponent(); s.name = "upper"; s.resize(${b.width}, 30); s.x = ${b.x}; s.y = ${b.y + 10};
+    s.setSharedPluginData("storysync", "id", "stand-in-upper"); parent.appendChild(s);
+    const d = figma.createComponent(); d.name = "Designer's own"; d.resize(${b.width}, 50); d.x = ${b.x}; d.y = ${b.y + b.height + 110};
+    parent.appendChild(d);
+    const f = figma.createFrame(); f.name = "Notes"; f.resize(${b.width}, 40); f.x = ${b.x}; f.y = ${b.y + b.height + 230};
+    parent.appendChild(f);
+    return { s: s.id, d: d.id, f: f.id };`)).value as Record<string, string>;
+  const box = (id: string) => mock.handle(id) as { y: number; height: number };
+  const [d, f] = [box(ids.d).y, box(ids.f).y];
+  const [then] = await push(mock, coded);
+  assert.deepEqual([sets(then)[0].moved, sets(then)[0].overlaps], [[ids.s], 0]);
+  // Below both of the designer's layers, the second in its way once clear of the first, which stay where they were.
+  assert.deepEqual([box(ids.d).y, box(ids.f).y], [d, f]);
+  assert.equal(box(ids.s).y, f + 40 + 100);
+  // A designer's frame a set built here lies on is counted, as a component is.
+  await mock.run(`const f = await figma.getNodeByIdAsync(${JSON.stringify(ids.f)}); f.y = ${b.y + 5};`);
+  const [again] = await push(mock, coded);
+  assert.deepEqual([sets(again)[0].moved, sets(again)[0].overlaps], [undefined, 1]);
+});
+
+test("build: settle over random layouts moves each set at most once, never up, onto nothing, and never a designer's layer", async () => {
+  let seed = 7;
+  const rand = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  for (let round = 0; round < 12; round++) {
+    const mock = mockFor([loadTreeFixture("example-button")]);
+    const coded = await codeFor(loadTreeFixture("example-button"));
+    const [first] = await push(mock, coded);
+    const button = sets(first)[0];
+    const b = mock.handle(button.id) as { x: number; y: number; width: number; height: number };
+    const layers = Array.from({ length: 6 }, (_, i) => ({
+      ours: rand(3) > 0, x: b.x + rand(3) * 60 - 60, y: b.y + rand(8) * 40 - 40, w: 40 + rand(4) * 60, h: 20 + rand(4) * 30, i,
+    }));
+    const ids = (await mock.run(`const parent = (await figma.getNodeByIdAsync(${JSON.stringify(button.id)})).parent; const out = [];
+      for (const l of ${JSON.stringify(layers)}) {
+        const n = l.ours ? figma.createComponent() : figma.createFrame();
+        n.resize(l.w, l.h); n.x = l.x; n.y = l.y; n.name = "layer " + l.i;
+        if (l.ours) n.setSharedPluginData("storysync", "id", "stand-in-" + l.i);
+        parent.appendChild(n); out.push(n.id);
+      }
+      return out;`)).value as string[];
+    const at = (id: string) => mock.handle(id) as { x: number; y: number; width: number; height: number };
+    const before = new Map([button.id, ...ids].map((id) => [id, at(id).y]));
+    const [then] = await push(mock, coded);
+    const moved = sets(then)[0].moved ?? [];
+    assert.equal(new Set(moved).size, moved.length, `round ${round}: each id once`);
+    for (const id of [button.id, ...ids]) assert.ok(at(id).y >= before.get(id)! - 0.01, `round ${round}: nothing moves up`);
+    ids.forEach((id, i) => {
+      if (!layers[i].ours) assert.equal(at(id).y, before.get(id), `round ${round}: a designer's layer stays`);
+      else if (!moved.includes(id)) assert.equal(at(id).y, before.get(id), `round ${round}: one not named stays`);
+    });
+    const hit = (p: string, q: string) => {
+      const [a, c] = [at(p), at(q)];
+      return a.x < c.x + c.width && c.x < a.x + a.width && a.y < c.y + c.height && c.y < a.y + a.height;
+    };
+    for (const id of moved) for (const other of [button.id, ...ids]) if (other !== id) assert.ok(!hit(id, other), `round ${round}: a moved set lies on nothing`);
+  }
+});
+
 test("build and read: the first call of each kind stores its template in the file, the rest run it from there, refused where the file holds another", async () => {
   const snap = copy(loadTreeFixture("switch"));
   snap.components.push(copy(loadTreeFixture("example-button").components[0]));
