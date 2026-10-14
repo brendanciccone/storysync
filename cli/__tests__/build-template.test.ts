@@ -1603,3 +1603,33 @@ test("bindings: a component snap measured dark binds by the tokens' dark values,
   assert.equal((again.value as { darkened?: string[] }).darkened, undefined);
   assert.deepEqual(fill(), [0x0a]);
 });
+
+test("bindings: a set the label call put in Dark comes back off it once a push measures it light, unless a designer chose a mode since", async () => {
+  const dark = copy(loadTreeFixture("dialog"));
+  (dark.components[0] as { scheme?: string }).scheme = "dark";
+  const tokens = { collections: [{ category: "colors", tokens: [
+    { name: "background", value: "#0a0a0a", hex: "#0a0a0a", dark: { value: "#ffffff", hex: "#ffffff" } },
+    { name: "foreground", value: "#ffffff", hex: "#ffffff", dark: { value: "#0a0a0a", hex: "#0a0a0a" } },
+  ] }] };
+  const darkCode = await codeFor(dark, {}, tokens);
+  const lightCode = await codeFor(copy(loadTreeFixture("dialog")), {}, tokens);
+  const mock = mockFor([dark]);
+  mock.addVariable("background", "COLOR", { Light: "#0a0a0a", Dark: "#ffffff" }, "Colors");
+  mock.addVariable("foreground", "COLOR", { Light: "#ffffff", Dark: "#0a0a0a" }, "Colors");
+  await runPlan(mock, darkCode, ["variables", "build"]);
+  const [label] = await runPlan(mock, darkCode, ["label"]);
+  const setId = (label.value as { darkened: string[] }).darkened[0];
+  const modes = () => (mock.handle(setId) as { explicitVariableModes: Record<string, string> }).explicitVariableModes;
+  assert.equal(Object.keys(modes()).length, 1);
+  // Measured light now: the Dark mode storysync set comes off, once.
+  const [light] = await runPlan(mock, lightCode, ["label"]);
+  assert.deepEqual([(light.value as { lightened?: string[] }).lightened, modes()], [[setId], {}]);
+  const [again] = await runPlan(mock, lightCode, ["label"]);
+  assert.equal((again.value as { lightened?: string[] }).lightened, undefined);
+  // A mode a designer chose after storysync's Dark stays theirs.
+  await runPlan(mock, darkCode, ["label"]);
+  await switchMode(mock, setId, "Light");
+  const chosen = modes();
+  const [kept] = await runPlan(mock, lightCode, ["label"]);
+  assert.deepEqual([(kept.value as { lightened?: string[] }).lightened, modes()], [undefined, chosen]);
+});
