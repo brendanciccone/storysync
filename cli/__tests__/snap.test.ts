@@ -2839,16 +2839,23 @@ test("detectBehaviorProps: where the defaults render nothing, a boolean whose ot
   assert.deepEqual(detectBehaviorProps(props, failed, { closed: new Set(), markups: new Map(), pin: true }), []);
 });
 
-test("detectBehaviorProps: a prop whose markup stayed the same is kept where a story's own args set another of its values", () => {
-  const props: FigmaVariantProperty[] = [{ name: "disabled", type: "BOOLEAN", values: ["true", "false"], defaultValue: "false" }];
-  const v = (disabled: string): SnapVariant => ({ combination: { disabled }, slug: disabled, status: "ok", error: null, delta: {} }) as SnapVariant;
-  const markups = new Map([["false", "m"], ["true", "m"]]);
-  const options = { closed: new Set<string>(), markups };
-  assert.deepEqual(detectBehaviorProps(props, [v("false"), v("true")], options), [{ name: "disabled", reason: "no-op", markup: "same" }]);
-  const stories = [{ id: "x--default", args: {} }, { id: "x--disabled", args: { disabled: true } }];
-  assert.deepEqual(detectBehaviorProps(props, [v("false"), v("true")], { ...options, stories }), []);
-  // A story for the default alone is no such evidence.
-  assert.deepEqual(detectBehaviorProps(props, [v("false"), v("true")], { ...options, stories: [{ id: "x--enabled", args: { disabled: false } }] }).length, 1);
+test("runSnap: a prop its stories set both ways is left out where every value measured and marked up the same", async () => {
+  // shadcn's Accordion: `multiple` changes how it opens, not what it draws,
+  // and its stories set it true and false.
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: () => rawCapture("switch"), markup: () => "markup",
+      csf: { "ui-base-switch--default": { args: { multiple: false } }, "ui-base-switch--disabled": { args: { multiple: true } } },
+    });
+    const multiple = { name: "multiple", type: { name: "boolean" }, defaultValue: false };
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]", variants: "all" }), { storybook: switchDocs([multiple]), launch });
+    const [component] = result.components;
+    assert.deepEqual(component.excludedProps, [{ name: "multiple", reason: "no-op", markup: "same" }]);
+    assert.deepEqual(component.variantProperties, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("runSnap: a prop that changes only what is inside the root is not left out as changing nothing", async () => {

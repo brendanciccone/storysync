@@ -29,7 +29,7 @@ import type { ComponentTree, ImageAsset, TreeDelta, TreeNode } from "./tree-type
 import { imageAssetFile } from "./snap-assets.js";
 import { fnv1a32Bytes } from "./checksum.js";
 import { stylesJsonText } from "./snap-tree.js";
-import { chooseStory, siblingStories, storyAddsContent, storyClaims, storyKeys } from "./snap-stories.js";
+import { chooseStory, siblingStories, storyAddsContent, storyKeys } from "./snap-stories.js";
 import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
 import { resolveProps } from "./props.js";
@@ -596,11 +596,12 @@ export function detectNoOpProperties(properties: FigmaVariantProperty[], variant
  * - `no-op`: one every value of which measured the same
  *   (detectNoOpProperties), root and element tree alike, with whether the
  *   markup changed with it, so the args reached the component (`markups`,
- *   by slug), or didn't. Not one whose markup stayed the same where a
- *   story's own args (`stories`) are for one of its other values, as
- *   ToggleGroup's Disabled story is for `disabled=true`: the story shows
- *   that value, so the args not reaching the page is the story's to fix,
- *   which the warning for variants measuring alike says.
+ *   by slug), or didn't. A story whose own args set one of its values
+ *   doesn't keep it: each variant was measured from the story its values
+ *   pick (chooseStory), so ToggleGroup's `disabled=true`, which dims its
+ *   items, measured differently there, while Accordion's `multiple`,
+ *   which its stories set both ways, measured the same and draws nothing
+ *   new.
  *
  * Props `keep` names are never judged, and only variants Storybook
  * confirmed it gave their values are evidence.
@@ -608,7 +609,7 @@ export function detectNoOpProperties(properties: FigmaVariantProperty[], variant
 export function detectBehaviorProps(
   properties: FigmaVariantProperty[],
   variants: SnapVariant[],
-  options: { closed: ReadonlySet<string>; markups: ReadonlyMap<string, string | null>; keep?: readonly string[]; pin?: boolean; stories?: readonly StoryOwn[] },
+  options: { closed: ReadonlySet<string>; markups: ReadonlyMap<string, string | null>; keep?: readonly string[]; pin?: boolean },
 ): PropExclusion[] {
   const kept = new Set((options.keep ?? []).map((n) => n.toLowerCase()));
   const judged = properties.filter((p) => !kept.has(p.name.toLowerCase()));
@@ -640,9 +641,6 @@ export function detectBehaviorProps(
   }
 
   const noOps = new Set(detectNoOpProperties(judged, measured));
-  // The values the stories' own args set, as `prop=value`.
-  const shown = new Set((options.stories ?? []).flatMap((story) => Object.entries(storyClaims(story, properties)).map(([name, value]) => `${name}=${value}`)));
-  const storyFor = (property: FigmaVariantProperty) => property.values.some((v) => v !== property.defaultValue && shown.has(`${property.name}=${v}`));
   return judged.filter((p) => noOps.has(p.name)).map((property) => {
     // The markup of each value against the same values of the rest.
     const groups = new Map<string, (string | null | undefined)[]>();
@@ -656,7 +654,7 @@ export function detectBehaviorProps(
     const changed = compared.some((g) => new Set(g.filter((m) => typeof m === "string")).size > 1);
     const markup = changed ? "changed" as const : known ? "same" as const : undefined;
     return { name: property.name, reason: "no-op" as const, ...(markup ? { markup } : {}) };
-  }).filter((e) => e.markup !== "same" || !storyFor(judged.find((p) => p.name === e.name)!));
+  });
 }
 
 /** Whether a variant's tree differs from its base's. */
@@ -1840,7 +1838,7 @@ async function snapComponent(
     const [first, ...rest] = trees;
     for (const tree of first ? rest : []) tree.variant.treeDelta = diffTree(first.nodes, tree.nodes);
     const more = detectBehaviorProps(definition.variantProperties, shell.variants, {
-      closed, markups: markupBySlug, keep: flags.keep, pin: pinned.length === 0, stories: owns ?? undefined,
+      closed, markups: markupBySlug, keep: flags.keep, pin: pinned.length === 0,
     });
     // Every prop left out, nothing on the page changed by any: the one
     // failure measurement can't see, a story that drops its args, looks

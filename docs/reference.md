@@ -732,7 +732,7 @@ Dashes in a name become `/`. A `var()` is resolved against the theme, the projec
 
 **Props that only change behavior are left out on their own.** Each is recorded in `styles.json` with why, so `map`, `diff` and the Action leave out the same:
 
-- one every value of which snap measured the same, the outer element and every element inside it alike, such as cmdk's `loop` or input-otp's `textAlign`, unless its markup didn't change either and one of the stories' own args sets another of its values, as ToggleGroup's Disabled story sets `disabled`, which keeps it;
+- one every value of which snap measured the same, the outer element and every element inside it alike, such as cmdk's `loop` or input-otp's `textAlign`, even where the stories' own args set it both ways, as Accordion's stories set `multiple`. A value that draws something inside, as ToggleGroup's `disabled` dims its items, measured differently, so it is kept;
 - one the argTypes mark with `control: false`, a hidden table row, or an event;
 - an `open` that opens what a closed trigger hides, which snap then sets on every variant, so Drawer is measured open, and a boolean whose default renders nothing at all (`element_not_found`) and whose other value renders the component, as a ConfirmDialog whose docs default `open` to false while its story sets it true.
 
