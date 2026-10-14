@@ -382,7 +382,7 @@ test("requestLimit: --request-timeout where given, else five minutes, or --conne
 const CLEAR = "\r\u001b[2K";
 
 for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129], ["SIGINT", 130]] as const) {
-  test(`snap CLI: ${signal} stops the run without writing a styles.json, and clears the status line`, { timeout: 30_000, skip: process.platform === "win32" }, async (t) => {
+  test(`snap CLI: ${signal} stops the run without writing a styles.json, and clears the status line`, { timeout: 60_000, skip: process.platform === "win32" }, async (t) => {
     // Playwright closed the browser on SIGTERM and left snap running: every
     // component left was recorded as a failed browser session, written over
     // the last styles.json, and the run exited 0. SIGHUP, a closed terminal,
@@ -404,8 +404,9 @@ for (const [signal, code] of [["SIGTERM", 143], ["SIGHUP", 129], ["SIGINT", 130]
       child.stderr.on("data", (d) => { output += d; });
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
 
-      // The browser is up once snap asks for a component's docs.
-      const deadline = Date.now() + 15_000;
+      // The browser is up once snap asks for a component's docs. A busy CI
+      // runner can take more than 15 seconds to start Chromium.
+      const deadline = Date.now() + 40_000;
       while (!calls.includes("docs-show") && child.exitCode === null && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
