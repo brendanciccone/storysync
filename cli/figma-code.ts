@@ -18,6 +18,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, wr
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callCode, canonicalJson, fnv1a32Bytes } from "./checksum.js";
+import type { CallWriter } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { Binder } from "./figma-bind.js";
 import { planLayout } from "./figma-layout.js";
@@ -567,9 +568,9 @@ function describeParts(parts: Part[]): string {
 /** A readback call's slices, as plan.json lists them: [storysync id, first i, last i]. */
 type Slice = [string, number, number];
 
-function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string): string {
+function readCode(seq: number, page: string, slices: (Slice | [string, number, number, number])[], limit: number, template: string, writer: CallWriter = "figma code"): string {
   const full = slices.map((s): ReadSlice => (s.length === 4 ? s : [...s, 0]));
-  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit)}`;
+  return `${header(seq, "read back", page)}${readbackCall(template, page, full, limit, writer)}`;
 }
 
 // --- figma code -------------------------------------------------------------
@@ -1010,7 +1011,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const limit = written ? Number(written[1]) : DEFAULT_READ_LIMIT + READ_GUARD_MARGIN;
     const ids = [...new Set((slices as [string][]).map((s) => s[0]))];
     const description = `Continue reading back ${ids.join(", ")} on page "${call.page}" (call ${pad(call.seq)}${suffix})`;
-    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
+    const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next").replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file, "readback", template);
     writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };

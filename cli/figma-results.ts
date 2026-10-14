@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { callCode, callConstants } from "./checksum.js";
+import type { CallWriter } from "./checksum.js";
 import { findToolValue } from "./figma.js";
 import type { FigmaPlan } from "./tree-types.js";
 import { READBACK_SCHEMA_VERSION } from "./verify.js";
@@ -90,9 +91,13 @@ export function readbackHeader(page: string, slices: ReadSlice[], limit = READ_L
 const readbackConstants = (page: string, slices: ReadSlice[], limit: number) =>
   [["PAGE", page], ["SLICES", slices], ["LIMIT", limit], ["TPL", READBACK_TPL]] as const;
 
-/** A read call's code: the header, then the template (readable or minified) as it is, run as checksum.ts's callCode runs it. */
-export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT): string {
-  return callCode(readbackConstants(page, slices, limit), template);
+/**
+ * A read call's code: the header, then the template (readable or minified)
+ * as it is, run as checksum.ts's callCode runs it, refusing a change as one
+ * to the file `writer` wrote: `figma next` writes a continuation.
+ */
+export function readbackCall(template: string, page: string, slices: ReadSlice[], limit = READ_LIMIT, writer: CallWriter = "figma code"): string {
+  return callCode(readbackConstants(page, slices, limit), template, writer);
 }
 
 /**

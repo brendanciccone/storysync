@@ -102,8 +102,8 @@ export function callConstants(constants: readonly (readonly [name: string, value
   return `${lines.join("")}const SUM = ${JSON.stringify(callSum(constants.map(([, value]) => value)))};\n`;
 }
 
-/** The commands that write calls: `figma code` a push's, `figma tokens` the variables'. */
-export type CallWriter = "figma code" | "figma tokens";
+/** The commands that write calls: `figma code` a push's, `figma next` a read's continuation, `figma tokens` the variables'. */
+export type CallWriter = "figma code" | "figma next" | "figma tokens";
 
 /**
  * What a call throws, before it changes or reads anything, when its data or
