@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -554,6 +554,29 @@ test("figma code: a component snap measured no variant of is built as placeholde
   const again = formatElementReport(verify(changed, readback, 0.5, { notRead })).join("\n");
   assert.match(again, /orientation=vertical: not measured \(arg_rejected: Storybook kept orientation at horizontal\), so Figma holds a placeholder for it; snap's warning names the story change it needs/);
   assert.match(again, /orientation=horizontal: not measured \(render_error: [^\n]*placeholder for it\n/);
+});
+
+test("verify --plan: reads saved before a build of their components was sent again are said to score Figma before it", { skip: READBACK ? false : "templates/readback.js (package C) is not in this checkout" }, async () => {
+  const snap = copy(loadTreeFixture("example-button"));
+  const coded = await codeFor(snap, { templates: {} });
+  await sendAll(coded, mockFor([snap]));
+  const at = (call: PlanCall) => join(coded.out, call.result);
+  const build = coded.plan.calls.find((c) => c.kind === "build")!;
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  // Saved in order, within a second, as a copy of the folder leaves them: no problem.
+  const now = Date.now() / 1000;
+  utimesSync(at(build), now, now + 1);
+  utimesSync(at(read), now, now);
+  assert.deepEqual(loadPlanResults(join(coded.out, "plan.json")).problems, []);
+  // The build sent again a minute after the read was saved.
+  utimesSync(at(build), now, now + 60);
+  const { problems } = loadPlanResults(join(coded.out, "plan.json"));
+  assert.deepEqual(problems, [
+    `call ${read.seq}: ${read.result} read Forms/Button before build call ${build.seq} was sent again (its result was saved after it), so what it scores is Figma before that build, not now: send read call ${read.seq} again and save its response`,
+  ]);
+  // Read again after it: nothing to say.
+  utimesSync(at(read), now, now + 120);
+  assert.deepEqual(loadPlanResults(join(coded.out, "plan.json")).problems, []);
 });
 
 test("loadTemplate: the minified build template is what the call carries, and a missing one says so", () => {

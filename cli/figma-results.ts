@@ -9,7 +9,7 @@
 // nothing an agent could fill in. An entry edited on the way still fails its
 // checksum, as it always has.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { callCode, callConstants } from "./checksum.js";
 import type { CallWriter } from "./checksum.js";
@@ -244,6 +244,14 @@ export interface PlanResults {
 }
 
 /**
+ * How much later a build call's result must have been saved than a read
+ * call's for the read to be one from before that build: more than copying
+ * or checking out the results folder spreads its files' times, and less
+ * than sending a call and saving its response takes.
+ */
+const SAVED_AFTER_MS = 2000;
+
+/**
  * Reads every planned read call's saved result, and each continuation's
  * after it, into one readback, writes it beside the plan's directory as
  * figma-readback.json (`.storysync/figma-readback.json` for the default
@@ -265,8 +273,14 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
   const notRead: number[] = [];
   const problems: string[] = [];
   const fellBack: string[] = [];
+  // When each build's result and each read's first was saved: a read saved
+  // before a build of its components was sent again read what that build
+  // replaced.
+  const builds: { seq: number; components: string[]; at: number }[] = [];
+  const reads: { seq: number; components: string[]; at: number; result: string }[] = [];
   for (const call of plan.calls) {
     if (call.kind === "build" && existsSync(join(base, call.result))) {
+      builds.push({ seq: call.seq, components: call.components ?? [], at: statSync(join(base, call.result)).mtimeMs });
       for (const [component, key, what, variants] of alphaFallbacks(readFileSync(join(base, call.result), "utf8"))) {
         fellBack.push(`call ${String(call.seq).padStart(2, "0")}: ${component}${key ? ` › ${key}` : ""}: ${what} (${variants} ${variants === 1 ? "variant" : "variants"})`);
       }
@@ -295,6 +309,7 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
         problems.push(`call ${call.seq}: ${result} was read before ${previous}, which it continues, so it holds Figma as it was: \`storysync figma next\` asks for it again`);
         break;
       }
+      if (result === call.result) reads.push({ seq: call.seq, components: call.components ?? [], at: statSync(path).mtimeMs, result });
       problems.push(...addReadResult(readback, parsed, result));
       const times = readTimes(parsed);
       if (times) latest = Math.max(latest ?? -Infinity, times.last);
@@ -302,6 +317,17 @@ export function loadPlanResults(planPath: string, { out }: { out?: string } = {}
       previous = result;
       result = continuationResult(result);
     }
+  }
+  for (const read of reads) {
+    const later = builds.filter((b) => b.at > read.at + SAVED_AFTER_MS && b.components.some((c) => read.components.includes(c)));
+    if (!later.length) continue;
+    const components = [...new Set(later.flatMap((b) => b.components.filter((c) => read.components.includes(c))))];
+    const seqs = later.map((b) => b.seq).join(", ");
+    const one = later.length === 1;
+    problems.push(
+      `call ${read.seq}: ${read.result} read ${components.join(", ")} before build ${one ? "call" : "calls"} ${seqs} ${one ? "was" : "were"} sent again (${one ? "its result was" : "their results were"} saved after it), ` +
+      `so what it scores is Figma before ${one ? "that build" : "those builds"}, not now: send read call ${read.seq} again and save its response`,
+    );
   }
   const sorted: ReadbackFile = {
     version: readback.version,

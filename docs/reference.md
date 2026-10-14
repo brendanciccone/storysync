@@ -580,7 +580,7 @@ Entries that fail aren't scored and fail `--strict`. Without `--strict` the run 
 Fidelity: 100.0% of verified entries (12/12 properties); 1 entry unverified, not scored
 ```
 
-With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
+With `--plan`, a planned read call that wasn't read whole is named, and fails `--strict`: its response, or a continuation's, isn't saved or holds an error, or a continuation was saved before the call it continues was sent again. The variants it didn't read are counted as not read rather than missing from Figma, and left out of the score. So is a read call whose response was saved before a build call of its components was sent again: it read Figma before that build, so it fails `--strict` until it is sent again. A snap taken again since the plan was made is named too, since the calls built and read what the earlier one measured.
 
 The checksum isn't a signature. See [What Figma can't do](https://github.com/brendanciccone/storysync/blob/main/README.md#what-figma-cant-do).
 
