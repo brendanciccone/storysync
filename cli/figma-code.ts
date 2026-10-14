@@ -298,6 +298,8 @@ function spreadDrawn(nodes: TreeNode[], styleOf: Map<string, FigmaStyle>, notBui
         return nx - reach >= x + l - 0.5 && ny - reach >= y + t - 0.5 && nx + nw + reach <= x + w - r + 0.5 && ny + nh + reach <= y + h - b + 0.5;
       });
       if (!inside) {
+        // Built without it, so the readback reads what Figma draws, and verify scores it.
+        style.e = style.e.map((e) => (e.length > 2 && e[4] !== 0 ? [e[0], e[1], e[2], e[3], 0, ...e.slice(5)] : e)) as typeof style.e;
         notBuilt.push({ key: node.k, what: "a shadow's spread on a frame whose content draws past it", as: "the shadow without its spread, which Figma draws only on a frame that clips" });
         continue;
       }

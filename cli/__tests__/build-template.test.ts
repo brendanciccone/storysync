@@ -964,17 +964,28 @@ test("spike item 1: icons import at their measured size, as Figma scales their s
   assert.deepEqual(await weights({ svgStrokeScales: false }, false), [1.33]);
 });
 
-test("spike item 2: a shadow's spread Figma refuses on a frame that doesn't clip is left out, and said", async () => {
+test("spike item 2: a shadow's spread on a frame something draws past is built without it, and said; one Figma refuses anyway is left out, and said", async () => {
   const fixture = copy(loadTreeFixture("switch"));
   fixture.components[0].base!.styles.boxShadow = [{ offsetX: 0, offsetY: 0, blur: 0, spread: 1, color: "#0a0a0a1a", inset: false }];
   // A thumb whose shadow draws past the root, which figma code then can't clip for the spread (spreadDrawn).
   fixture.components[0].tree.base.find((n) => n.k !== "")!.sh = [[0, 0, 8, 0, "#0000001a"]];
-  const { mock, results } = await buildAll(fixture, { shadowSpread: "refuse" });
-  // Once for the root, in both variants.
-  assert.equal(results[0].fallbacks.length, 1);
-  assert.deepEqual(results[0].fallbacks[0].map((v, i) => (i === 2 ? String(v).replace(/: .*/, "") : v)), ["ui/base/Switch", "", "shadow spread left out", 2]);
-  const root = mock.handle(variantsBySlug(mock).get("size-default")!.id) as { effects: { spread: number }[] };
-  assert.equal(root.effects[0].spread, 0);
+  const coded = await codeFor(fixture);
+  assert.ok(coded.warnings.some((w) => w.includes("(root): a shadow's spread on a frame whose content draws past it is built as the shadow without its spread")), coded.warnings.join("\n"));
+  // Built as said, without the spread Figma wouldn't draw, which the readback then reads and verify scores.
+  const mock = mockFor([fixture], { shadowSpread: "refuse" });
+  const runs = await runPlan(mock, coded, ["build"]);
+  assert.deepEqual(result(runs[0]).fallbacks, []);
+  const root = () => mock.handle(variantsBySlug(mock).get("size-default")!.id) as { effects: { spread: number }[] };
+  assert.equal(root().effects[0].spread, 0);
+  // A call that asks for the spread anyway: Figma refuses it, and the build says so, once for the root in both variants.
+  const code = coded.code(coded.plan.calls.find((c) => c.kind === "build")!);
+  const data = JSON.parse(/\nconst DATA = (.*);\n/.exec(code)![1]) as { S: unknown[] };
+  for (const st of data.S) if (st && typeof st === "object" && "e" in st) (st as { e: unknown[][] }).e = (st as { e: unknown[][] }).e.map((e) => (e.length > 2 && e[4] === 0 && e[3] === 0 ? [...e.slice(0, 4), 1, ...e.slice(5)] : e));
+  const run = await mock.run(withConstant(code, "DATA", data));
+  assert.ok(run.ok, run.text);
+  assert.equal(result(run).fallbacks.length, 1);
+  assert.deepEqual(result(run).fallbacks[0].map((v, i) => (i === 2 ? String(v).replace(/: .*/, "") : v)), ["ui/base/Switch", "", "shadow spread left out", 2]);
+  assert.equal(root().effects[0].spread, 0);
 });
 
 test("spike item 3: truncation Figma refuses is built as a text box of the measured size", async () => {
