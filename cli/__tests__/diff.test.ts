@@ -159,6 +159,17 @@ test("diffTokens: an alpha variable figma tokens made beside a code token is not
   assert.deepEqual(diffs.map((e) => [e.name, e.status]), [["destructive", "match"], ["gone 10%", "missing_from_code"]]);
 });
 
+test("diffTokens: a per-mode variable figma code made, of two code tokens or Tailwind palette colors, is not missing from code; one of a token gone is", () => {
+  const code: TokenCollection[] = [{ category: "colors", tokens: [{ name: "background", value: "#ffffff" }, { name: "input", value: "#e5e5e5" }] }];
+  const color = (name: string, value: string): FigmaVariable => ({ name, value, collection: "Colors", resolvedType: "COLOR", mode: "Light" });
+  const diffs = diffTokens(code, [
+    color("background", "#ffffff"), color("input", "#e5e5e5"),
+    color("background dark input 30%", "#ffffff"), color("input 0% dark 30%", "#e5e5e500"), color("slate-50 dark slate-900", "#f8fafc"), color("background dark slate-900", "#ffffff"),
+    color("gone dark input 30%", "#ffffff"), color("brand dark accent", "#ffffff"),
+  ]);
+  assert.deepEqual(diffs.filter((e) => e.status !== "match").map((e) => [e.name, e.status]), [["gone dark input 30%", "missing_from_code"], ["brand dark accent", "missing_from_code"]]);
+});
+
 test("diffTokens: matching color in different formats", () => {
   const code: TokenCollection[] = [
     { category: "colors", tokens: [{ name: "primary/500", value: "rgb(59, 130, 246)" }] },
