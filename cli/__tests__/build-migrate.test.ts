@@ -58,6 +58,9 @@ test("build: variants an earlier push built are renamed onto a property added si
   const mock = mockFor([loadTreeFixture("example-button")]);
   const [first] = await push(mock, await codeFor(before));
   const old = new Map(children(mock, sets(first)[0].id).map(([id, name]) => [name, id]));
+  // One whose name gives its values in another order is found by its values.
+  const swapped = old.get("variant=danger, size=lg")!;
+  (mock.handle(swapped) as { name: string }).name = "size=lg, variant=danger";
   const [then] = await push(mock, await codeFor(loadTreeFixture("example-button")));
   const [set] = sets(then);
   assert.deepEqual([set.renamed, set.added, set.updated, set.extra, set.variants], [6, 6, 6, 0, 12]);
@@ -216,6 +219,12 @@ test("build: a variant too big for one call is sent in parts, kept on the page u
     await fresh.run(`figma.root.children.find((p) => p.name === "ui/base").setSharedPluginData("storysync", "part ui-base-card ${slug} 1", "");`);
     const missing = await fresh.run(coded.code(builds[last]));
     assert.match(missing.text, new RegExp(`^Error: Variant ${card.components[0].variants[0].slug} of Card is sent in ${parts} calls: send call ${builds.slice(0, last).map((c) => String(c.seq).padStart(2, "0")).join(", ")} first, then this one again$`));
+    // A set refused at its last part keeps none of its parts on the page.
+    const twice = mockFor([card]);
+    await twice.run(`const p = figma.createPage(); p.name = "ui/base"; for (const x of [0, 400]) { const c = figma.createComponent(); c.name = "size=default"; const s = figma.combineAsVariants([c], p); s.name = "Card"; s.x = x; }`);
+    const refused = await runPlan(twice, coded, ["build"]);
+    assert.match(sets(refused[last])[0].refused!, /ask the user which to update$/);
+    assert.deepEqual(twice.pages().flatMap((p: NodeView) => Object.keys(p.data).filter((k) => k.startsWith("storysync.part "))), []);
   }
 });
 

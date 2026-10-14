@@ -582,7 +582,6 @@ const slack = (nodes, recs) => {
 const room = (nodes, recs, i) => {
   const c = nodes[i].clone();
   c.textAutoResize = 'WIDTH_AND_HEIGHT';
-  c.maxLines = null;
   const d = c.width - nodes[i].width;
   c.remove();
   let j = i;
@@ -737,7 +736,7 @@ const boxOf = (n) => ({ x: n.x, y: n.y, width: n.width, height: n.height });
 // didn't lie on at `was`, its box before, nor above it. What moves pushes
 // on in turn. A designer's layer stays, counted in `overlaps`.
 const push = (n, was, moved) => {
-  for (const m of page.children) {
+  for (const m of n.parent.children) {
     if (m === n || !idOf(m) || m.y < n.y || !hit(m, n) || hit(m, was)) continue;
     const before = boxOf(m);
     m.y = n.y + n.height + 100;
@@ -792,11 +791,13 @@ for (const set of DATA.sets) {
     : sets.length > 1 || (node && node.type !== want && !convert) || (node && idOf(node) && idOf(node) !== set.id)
       ? 'The page has ' + sets.map((n) => n.type + ' "' + n.name + '" (' + n.id + ', id "' + idOf(n) + '")').join(', ') + ': '
         + (sets.length > 1 ? 'ask the user which to update'
-          : node.type !== want ? 'this part builds a ' + want + ': ask the user whether to convert it' + (want === 'COMPONENT' ? '' : ' in place (figma code --convert)') + ' or skip it'
-            : 'it is another component: ask the user whether it is ' + set.id)
+          : idOf(node) && idOf(node) !== set.id ? 'it is another component: ask the user whether it is ' + set.id
+            : 'this part builds a ' + want + ': ask the user whether to convert it' + (want === 'COMPONENT' ? '' : ' in place (figma code --convert)') + ' or skip it')
       : kids.length && node.layoutMode !== 'NONE' ? 'The set "' + set.name + '" has auto layout (' + node.layoutMode + '), so x and y do nothing: ask the user whether to turn it off or skip the set'
         : twice ? 'The set "' + set.name + '" has ' + kids.filter((c) => c.name === twice).length + ' variants named "' + twice + '", not one' : '';
   if (why) {
+    // Nor are the parts of its variants kept for it.
+    for (const [, slug, , , , d] of set.v) if (d.p) for (let k = 1; k < d.p[1]; k++) put(page, key(slug, k), '');
     results.push({ component: set.id, name: set.name, refused: why });
     continue;
   }
@@ -823,8 +824,11 @@ for (const set of DATA.sets) {
       if (names.includes(c.name) || !get(c, 'slug')) continue;
       const old = Object.fromEntries(c.name.split(', ').map((s) => s.split('=')));
       if (Object.keys(old).some((k) => set.pin && k in set.pin && set.pin[k] !== old[k] && !set.props.some((p) => p.name === k))) continue;
-      const to = set.props.map((p) => p.name + '=' + (p.name in old ? old[p.name] : p.defaultValue)).join(', ');
-      if (!names.includes(to) || node.children.some((d) => d.name === to)) continue;
+      // This part's name of those values, in whatever order it gives them.
+      const pairs = (name) => name.split(', ').sort().join();
+      const as = pairs(set.props.map((p) => p.name + '=' + (p.name in old ? old[p.name] : p.defaultValue)).join(', '));
+      const to = names.find((name) => pairs(name) === as);
+      if (!to || node.children.some((d) => d.name === to)) continue;
       if (!take[to] || (get(c, 'src') === 'measured' && get(take[to], 'src') !== 'measured')) take[to] = c;
     }
     for (const to in take) {
@@ -929,7 +933,7 @@ for (const set of DATA.sets) {
   const out = {
     id: node.id, component: set.id, name: node.name, variants: want === 'COMPONENT' ? 1 : node.children.length,
     added: created.length, updated: names.length - created.length, migrated, designerLayers,
-    rows: 1, columns: 1, extra: 0, overlaps: 0, absoluteContainers,
+    rows: 1, columns: 1, extra: 0, absoluteContainers,
   };
   if (converted) out.converted = 1;
   if (renamed) out.renamed = renamed;

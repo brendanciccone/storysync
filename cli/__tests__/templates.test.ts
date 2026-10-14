@@ -36,12 +36,12 @@ import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
  *   (checksum.ts, TemplateCarry; probe 9a), so only that one call gives
  *   the template room. Through 0.4.0's eighth fix pass every build call
  *   carried it, at 19,500, which left 24,500 for DATA; a call after the
- *   first now keeps over 43,000. The ninth raised it by 5,000, to 24,500,
+ *   first now keeps over 43,000. The ninth raised it by 5,500, to 25,000,
  *   for what the live re-check found the build must do itself: a variant
  *   continued across calls, a set refused alone, a plain component made a
  *   set, variants renamed onto new properties, a set that grew moving
  *   what it grew onto, and a wider font given room. The first call keeps
- *   19,700 for DATA, over 2.5 times the fourth live push's largest
+ *   19,200 for DATA, over 2.5 times the fourth live push's largest
  *   variant, 7,454 beside the template, and the template 2,500 below it.
  * - A variant too big for a call's room is sent in parts, each in a call
  *   of its own (figma-code.ts), so no variant needs more room than that.
@@ -54,7 +54,7 @@ import { loadTreeFixture, treeFixtureNames } from "./mock-figma.js";
  *   more for per-mode ones made from two colors, a palette's among them,
  *   and the removal of one nothing binds: far under 10,000 still.
  */
-const BUDGETS = { build: 24_500, images: 2_000, label: 3_000, readback: 9_000, variables: 4_500 } as const;
+const BUDGETS = { build: 25_000, images: 2_000, label: 3_000, readback: 9_000, variables: 4_500 } as const;
 
 const AsyncFunction = (async () => {}).constructor as new (...args: string[]) => unknown;
 
@@ -75,7 +75,7 @@ test("templates: the build's budget leaves a call room for its data, packed and 
   const storing = guard({ kind: "build", store: true });
   const loading = guard({ kind: "build", from: "01" });
   assert.ok(storing < 900 && loading < 1_000, `the guard is ${storing} characters storing, ${loading} loading`);
-  assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 19_500, "the first call keeps 19,500 for DATA");
+  assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 19_000, "the first call keeps 19,000 for DATA");
   assert.ok(MAX_CALL_CHARS - BUDGETS.build - storing >= 2.5 * 7_454, "over 2.5 times the room the largest took");
   assert.ok(MAX_CALL_CHARS - loading >= 43_000, "a call after it keeps 43,000 for DATA");
   assert.ok(BUDGETS.build - templateLiteral(loadTemplate("build")).length >= 2_500, "the build template keeps 2,500 below its budget");
