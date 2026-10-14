@@ -426,4 +426,7 @@ test("Binder: a value its tokens hold alike in every mode stays unbound where a 
     assert.equal(shadcn.color("#e4e4e7", "fill", cls).variable, null, cls.join(" "));
   }
   assert.equal(shadcn.color("#e4e4e7", "fill", ["bg-size-[10px]"]).variable, "border/DEFAULT");
+  // A class of a color the project lacks generates no rule, so it sets none: coder's root `border-border-primary`.
+  assert.equal(shadcn.color("#e4e4e7", "stroke", ["border-border-primary"]).variable, "border/DEFAULT");
+  assert.equal(shadcn.color("#e4e4e7", "stroke", ["border-t-zinc-200"]).variable, null);
 });

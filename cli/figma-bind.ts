@@ -204,7 +204,7 @@ export class Binder {
     // in some state to a color no token names.
     const property = DEFAULT_PROPERTY[role];
     const fallback = property && this.defaults.get(property);
-    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.setsOtherColor(role, cls)) {
+    if (fallback && candidates.includes(fallback.token) && nocls?.includes(property!) && !this.unnamedColor(role, cls) && !this.setsOtherColor(role, cls)) {
       return { variable: fallback.token, candidates, from: fallback.from };
     }
     return { variable: null, candidates };
@@ -239,22 +239,25 @@ export class Binder {
   /**
    * Whether the classes or the rules say the role's color is one no token
    * holds, though its value matches tokens: a class that sets it to a
-   * palette or arbitrary color, in any theme or state (unnamedColor, and
-   * a fill's `bg-zinc-200 dark:bg-zinc-700`, `bg-[#e4e4e7]`), or a custom
-   * property or rule's color behind it (`var:` evidence) that names none
-   * of the tokens the classes could not name either: a chain that ends in
-   * a literal, as Sonner's `--normal-bg: #fff` would.
+   * palette or arbitrary color, in any theme or state (`text-neutral-950`,
+   * `bg-zinc-200 dark:bg-zinc-700`, `bg-[#e4e4e7]`), or a rule's color or
+   * custom property behind it (`var:` evidence) that names none of the
+   * tokens the classes could not name either: a chain that ends in a
+   * literal, as Sonner's `--normal-bg: #fff` would. A class of a color
+   * the project lacks (coder's `border-border-primary`) sets none, so it
+   * doesn't count, as the base style's fallback's unnamedColor would.
    */
   private setsOtherColor(role: PaintRole, cls: readonly string[] | undefined): boolean {
-    if (this.unnamedColor(role, cls)) return true;
     return (cls ?? []).map(readEvidence).some(({ utility, fromVar }) => {
       const prefix = PREFIXES[role].find((p) => utility.startsWith(`${p}-`));
       if (!prefix) return false;
       if (fromVar) return true;
+      if (prefix === "ring" || (role !== "fill" && !utilitySetsColor(utility))) return false;
       const rest = utility.slice(prefix.length + 1).toLowerCase();
-      return role === "fill" && !this.tokenByClass.has(rest) && (this.palette.has(rest) || ARBITRARY_COLOR.test(rest));
+      return [rest, rest.replace(SIDE, "")].some((name) => !this.tokenByClass.has(name) && (this.palette.has(name) || ARBITRARY_COLOR.test(name)));
     });
   }
+
 
   /**
    * A class among `cls` that sets the role's color to one no token names:
