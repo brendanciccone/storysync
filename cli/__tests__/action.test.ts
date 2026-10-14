@@ -16,7 +16,9 @@ const ACTION = fileURLToPath(new URL("../../../action/action.yml", import.meta.u
 
 // The action prints its baseline commands with the storysync it builds,
 // package.json's version, which run() passes as the step does.
-const AT_VERSION = `storysync@${VERSION.replace(/\./g, "\\.")}`;
+// Regex-escape a literal, backslashes included.
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const AT_VERSION = escapeRe(`storysync@${VERSION}`);
 
 // The heredoc of the step with this name. The run: block is indented eight
 // spaces in the file, which YAML strips.

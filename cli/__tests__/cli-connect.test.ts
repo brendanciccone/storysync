@@ -19,6 +19,9 @@ import { tmpdir } from "node:os";
 import { DEFAULT_REQUEST_TIMEOUT_MS, connectFailure, requestLimit } from "../mcp-connect.js";
 import { runSnap } from "../snap.js";
 
+// Regex-escape a literal, backslashes included.
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const CLI = fileURLToPath(new URL("../index.js", import.meta.url));
 
 const servers: Server[] = [];
@@ -81,7 +84,7 @@ test("diff CLI: a Figma MCP that needs signing in reports its 401, not the SSE f
     const json = await run("diff", "--figma", url, "--file-key", "x", "--project", project, "--json");
     assert.equal(json.status, 1, json.out);
     const error = (JSON.parse(json.stdout) as { error: string }).error;
-    assert.match(error, new RegExp(`^Error: Failed to connect to Figma MCP at ${url.replace(/[.]/g, "\\.")}: ${url.replace(/[.]/g, "\\.")} answered HTTP 401 Unauthorized \\(\\{"error":"invalid_token"`));
+    assert.match(error, new RegExp(`^Error: Failed to connect to Figma MCP at ${escapeRe(url)}: ${escapeRe(url)} answered HTTP 401 Unauthorized \\(\\{"error":"invalid_token"`));
     assert.match(error, /It needs you signed in to Figma, which the CLI can't do\. Use the skill's audit flow in a client that's signed in \(\/storysync-diff in Claude Code\)/);
     assert.match(error, /\(The SSE fallback failed too: Non-200 status code \(405\)\.\)$/);
 
@@ -99,7 +102,7 @@ test("list and map CLI: a Storybook with no /mcp endpoint reports the 404 and sa
   const url = await listen(noMcpEndpoint);
   const list = await run("list", "--storybook", url);
   assert.equal(list.status, 1, list.out);
-  assert.match(list.out, new RegExp(`${url.replace(/[.]/g, "\\.")}/mcp answered HTTP 404 Not Found\\. There's no MCP endpoint there\\. Is @storybook/addon-mcp installed and registered\\? Run \`storysync init\`, then restart Storybook\\.`));
+  assert.match(list.out, new RegExp(`${escapeRe(url)}/mcp answered HTTP 404 Not Found\\. There's no MCP endpoint there\\. Is @storybook/addon-mcp installed and registered\\? Run \`storysync init\`, then restart Storybook\\.`));
   // The SSE fallback's GET got the same 404, which says nothing more.
   assert.doesNotMatch(list.out, /SSE/);
 
