@@ -161,6 +161,28 @@ function shapePaint(raw: Record<string, string>, flags: string[]): Record<string
 interface Shape { tag: string; geometry: [string, string][]; paint: Record<string, string> }
 
 /**
+ * Markup kept as written, its `fill` and `stroke` in a CSS color function,
+ * as the page writes a `<text>`'s computed paint, as hex, which Figma's SVG
+ * import reads where it may not read `oklch()`: an alpha below 1 goes to
+ * the matching opacity, unless the element sets that already.
+ */
+export function rawPaint(markup: string): string {
+  return markup.replace(/<[^>]+>/g, (tag) => {
+    let out = tag;
+    for (const name of ["fill", "stroke"]) {
+      out = out.replace(new RegExp(`\\s${name}="((?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\([^"]*\\))"`), (whole, value: string) => {
+        const hex = normalizeColor(value);
+        if (!hex) return whole;
+        const alpha = hex.length === 9 ? parseInt(hex.slice(7), 16) / 255 : 1;
+        const own = new RegExp(`\\s${name}-opacity="`).test(tag);
+        return ` ${name}="${hex.slice(0, 7)}"${alpha < 1 && !own ? ` ${name}-opacity="${r2(alpha)}"` : ""}`;
+      });
+    }
+    return out;
+  });
+}
+
+/**
  * An inline SVG as markup snap stores, rebuilt from what the browser drew
  * rather than copied from the page: geometry kept as written, every paint
  * as computed (section 6.6 of the design), sized to the box the browser drew
@@ -182,7 +204,7 @@ export function serializeSvg(root: RawSvgNode, box: Box): { markup: string; flag
     if (SVG_DROPPED_TAGS.includes(node.tag)) return;
     if (node.raw !== undefined) {
       flags.push(node.tag);
-      pieces.push(node.raw);
+      pieces.push(rawPaint(node.raw));
       return;
     }
     if (node.tag === "g") {

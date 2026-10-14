@@ -615,6 +615,10 @@ export interface StoryNode {
   label: string | null;
   /** The computed `position`. */
   position: string;
+  /** Whether it is a toast, as Sonner marks one with `data-sonner-toast`; absent where it isn't, or wasn't read. */
+  toast?: boolean;
+  /** Whether it is Sonner's list of toasts, `data-sonner-toaster`; absent where it isn't, or wasn't read. */
+  toaster?: boolean;
   /** Whether it has a layout box: false for `display: none` and `display: contents`. */
   rendered: boolean;
   /**
@@ -646,6 +650,12 @@ export interface PortalNode {
   rendered: boolean;
   /** Whether it is an open overlay's content: OVERLAY_SELECTOR matches it, and no element around it. */
   overlay?: boolean;
+  /**
+   * Whether it is or holds a select's or combobox's parts, a `combobox` or
+   * a `listbox`, as a combobox's popover holds its search input and its
+   * options: what opened it is then the component's field (see isPicker).
+   */
+  picks?: boolean;
 }
 
 /**
@@ -665,7 +675,8 @@ export const OVERLAY_SELECTOR =
  * openOverlay); a snap from before it opened overlays has none.
  */
 export type MeasurementNote =
-  | { kind: "layout-wrapper"; element: string; children: number }
+  /** `toast`: for a toast's story, why snap couldn't raise one to measure (see chooseMeasuredElement). */
+  | { kind: "layout-wrapper"; element: string; children: number; toast?: string }
   | { kind: "closed-trigger"; element: string; reason?: string };
 
 /** How snap opens an overlay through its trigger, as a user would: see openInteractions. */
@@ -757,7 +768,19 @@ export function describeOpenFailure(attempts: readonly OpenAttempt[]): string {
 export interface OpenableTrigger {
   field: boolean;
   interactions: OpenInteraction[];
+  /**
+   * For a toast's story: the element measured is the story's own, and
+   * this, the button at `at` under the story's container, `opener` as
+   * describeElement names it, raises the toast, which is measured instead.
+   */
+  toast?: { at: number[]; opener: string };
 }
+
+/**
+ * A select's or combobox's field, open, under the story's root: measured
+ * with the content it opened, as one (snap-browser.ts captureStory).
+ */
+export interface OpenField { path: number[]; element: string }
 
 export type MeasuredChoice =
   /**
@@ -765,13 +788,72 @@ export type MeasuredChoice =
    * from the root's container. `content`: what an open trigger beside it
    * controls, rendered inline rather than into a portal.
    */
-  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger; content?: true }
+  | { kind: "tree"; path: number[]; element: string; notes: MeasurementNote[]; trigger?: OpenableTrigger; content?: true; field?: OpenField }
   /** One of the portal candidates, by index. */
-  | { kind: "portal"; index: number; element: string; notes: MeasurementNote[] }
+  | { kind: "portal"; index: number; element: string; notes: MeasurementNote[]; field?: OpenField }
   | { kind: "none"; error: string };
 
 /** How deep snap looks past wrappers that draw nothing, as it always has. */
 const MAX_WRAPPER_DEPTH = 4;
+
+/**
+ * Whether a component is a select or combobox by its slots, `Combobox` or
+ * `SelectFilter`: its trigger is its field however it is marked, as a
+ * combobox built on a popover's trigger (`aria-haspopup="dialog"`) is.
+ */
+export function isPickerComponent(slots: readonly string[]): boolean {
+  return slots.some((slot) => /(?:^|-)(?:select|combobox|combo-box|autocomplete|listbox)(?:$|-)/.test(slot));
+}
+
+/** Whether `node`, or anything in it, is a combobox or a listbox: PortalNode's `picks`, for content rendered inline. */
+function holdsPicks(node: StoryNode): boolean {
+  return node.role === "combobox" || node.role === "listbox" || node.children.some(holdsPicks);
+}
+
+/**
+ * Whether `node` is a toaster, where a toast is raised: Sonner's list, or
+ * the `section` it renders, labeled "Notifications", while no toast is up.
+ */
+function isToaster(node: StoryNode): boolean {
+  return node.toaster === true || (node.tag === "section" && /^Notifications\b/.test(node.label ?? ""));
+}
+
+/**
+ * The first button in `node`, in document order, that raises a toast: one
+ * outside any toast, toaster, status or alert, and outside the component's
+ * own element, so a toast's own close or action button is never taken.
+ */
+function findToastOpener(node: StoryNode, path: number[], slots: readonly string[]): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (!child.rendered) continue;
+    if (child.tag === "button" || child.role === "button") return { path: [...path, index], node: child };
+    const role = (child.role ?? "").toLowerCase();
+    if (child.toast || isToaster(child) || ["status", "alert", "alertdialog", "log"].includes(role) || (child.slot != null && slots.includes(child.slot))) continue;
+    const found = findToastOpener(child, [...path, index], slots);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Whether a component is a toast, by its slots: shadcn/ui's Sonner, whose component is `Toaster`. */
+export function isToastComponent(slots: readonly string[]): boolean {
+  return slots.some((slot) => /(?:^|-)(?:sonner|toasts?|toaster)(?:$|-)/.test(slot));
+}
+
+/** Whether anything under `node`, with a box or not, is what `wanted` takes. */
+function holdsAny(node: StoryNode, wanted: (node: StoryNode) => boolean): boolean {
+  return node.children.some((child) => wanted(child) || holdsAny(child, wanted));
+}
+
+/** The first element at or under `node`, in document order, with a box that `wanted` takes. */
+function findFirst(node: StoryNode, path: number[], wanted: (node: StoryNode) => boolean): { path: number[]; node: StoryNode } | null {
+  for (const [index, child] of node.children.entries()) {
+    if (child.rendered && wanted(child)) return { path: [...path, index], node: child };
+    const found = findFirst(child, [...path, index], wanted);
+    if (found) return found;
+  }
+  return null;
+}
 
 /**
  * The `data-slot` values a component's own root would carry: its name and its
@@ -1054,10 +1136,27 @@ export function chooseMeasuredElement(
     const index = portals.findIndex((candidate) => candidate.rendered && wanted(candidate));
     return index < 0 ? null : { kind: "portal", index, element: describeElement(portals[index]), notes: [] };
   };
+  // A select's or combobox's field, open: what it opened is measured with
+  // it, as the two render, where a dialog's or menu's content is alone. A
+  // field is one by its marks (isField), or a trigger where the component
+  // is a select or combobox by name, or what it opened holds one's parts,
+  // as a combobox built on a popover's trigger.
+  const named = isPickerComponent(slots);
+  const isPicker = (node: StoryNode, picks = false) => isField(node) || (isTrigger(node) && (named || picks));
+  const withField = <T extends MeasuredChoice>(choice: T, picks: boolean, at?: { path: number[]; node: StoryNode }): T => {
+    const found = at ?? (container ? findFirst(container, [], (n) => isOpen(n) && isPicker(n, picks)) : null);
+    return found ? { ...choice, field: { path: found.path, element: describeElement(found.node) } } : choice;
+  };
+  const picksAt = (choice: MeasuredChoice) => choice.kind === "portal" && portals[choice.index].picks === true;
+
   const portaled =
     portal((candidate) => candidate.slot != null && slots.includes(candidate.slot)) ??
     portal((candidate) => candidate.slot != null && contentSlots(slots).includes(candidate.slot));
-  if (portaled) return portaled;
+  if (portaled) return withField(portaled, picksAt(portaled));
+
+  // A toast raised, where the story renders its toaster, as Sonner's does.
+  const toast = container && isToastComponent(slots) ? findFirst(container, [], (node) => node.toast === true) : null;
+  if (toast) return { kind: "tree", path: toast.path, element: describeElement(toast.node), notes: [], content: true };
 
   const overlay = () => portal((candidate) => candidate.overlay === true);
   const shown = container?.children.some(subtreeDraws) ?? false;
@@ -1077,27 +1176,47 @@ export function chooseMeasuredElement(
   }
 
   const controls = (node.controls ?? "").split(/\s+/).filter(Boolean);
+  const at = { path, node };
   const opened = isOpen(node) ? portal((candidate) => candidate.id != null && controls.includes(candidate.id)) : null;
-  if (opened) return opened;
+  if (opened) return isPicker(node, picksAt(opened)) ? withField(opened, true, at) : opened;
   // Or rendered inline, beside the trigger, as Headless UI's menu is.
   const inline = isOpen(node) && container ? findControlled(container, [], controls) : null;
-  if (inline) return { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
+  if (inline) {
+    const content: MeasuredChoice = { kind: "tree", path: inline.path, element: describeElement(inline.node), notes: [], content: true };
+    return isPicker(node, holdsPicks(inline.node)) ? withField(content, true, at) : content;
+  }
   // An open trigger whose aria-controls names nothing, as a tooltip's or a
   // hover card's: what it opened is the overlay showing.
   const shownBy = isOpen(node) && (isTrigger(node) || isField(node)) ? overlay() : null;
-  if (shownBy) return shownBy;
+  if (shownBy) return isPicker(node, picksAt(shownBy)) ? withField(shownBy, true, at) : shownBy;
 
   const element = describeElement(node);
   const notes: MeasurementNote[] = [];
-  if (isClosedTrigger(node)) {
+  // A toast's story, with no toast up, as Sonner's: an empty toaster, or a
+  // layout wrapper, holding the button that raises one. A toast the story
+  // draws itself is measured as it is, its own buttons left alone.
+  const wrapper = (() => {
+    const children = drawnChildren(node).length;
+    return children >= 2 && drawsNothing(node.styles) && !hasComponentRootMarks(node) && !hasOwnSlot(node, slots) ? children : 0;
+  })();
+  const raises = container && isToastComponent(slots) && (wrapper || holdsAny(container, isToaster));
+  const opener = raises && container ? findToastOpener(container, [], slots) : null;
+  if (opener) {
+    if (wrapper) notes.push({ kind: "layout-wrapper", element, children: wrapper });
+    const toast = { at: opener.path, opener: describeElement(opener.node) };
+    return { kind: "tree", path, element, notes, trigger: { field: false, interactions: ["click"], toast } };
+  }
+  // A select's or combobox's trigger by the component's name, closed: its field, as isField's.
+  const namedField = named && !isField(node) && isTrigger(node);
+  if (isClosedTrigger(node) && !namedField) {
     // Opened by something other than its trigger, as a story's `open` arg does.
     const content = overlay();
     if (content) return content;
     notes.push({ kind: "closed-trigger", element });
     return { kind: "tree", path, element, notes, trigger: { field: false, interactions: openInteractions(node, slots) } };
   }
-  if (isField(node) && !isOpen(node)) {
-    return { kind: "tree", path, element, notes, trigger: { field: true, interactions: openInteractions(node, slots) } };
+  if ((isField(node) || namedField) && !isOpen(node)) {
+    return { kind: "tree", path, element, notes, trigger: { field: true, interactions: isField(node) ? openInteractions(node, slots) : ["click"] } };
   }
   {
     const children = drawnChildren(node).length;
@@ -1294,10 +1413,12 @@ export function encodeStoryArgs(
  * `URLSearchParams`, which percent-encodes spaces as `+` — verified to
  * round-trip through Storybook's arg parser.
  */
-export function buildStoryUrl(baseUrl: string, storyId: string, argsParam: string | null): string {
+export function buildStoryUrl(baseUrl: string, storyId: string, argsParam: string | null, globalsParam?: string | null): string {
   const base = baseUrl.replace(/\/+$/, "");
   const query = new URLSearchParams({ id: storyId, viewMode: "story" });
   if (argsParam) query.set("args", argsParam);
+  // Storybook's globals, in the same form: `theme:light`, as snap sets for the light scheme (snap-scheme.ts).
+  if (globalsParam) query.set("globals", globalsParam);
   return `${base}/iframe.html?${query.toString()}`;
 }
 

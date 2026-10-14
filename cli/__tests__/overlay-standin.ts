@@ -80,6 +80,26 @@ export function overlayPage(opts: {
     boundingBox: async () => ({ x: 416, y: 275, width: 448, height: 170 }),
     dispose: async () => {},
   };
+  // The body, around the trigger and content in a portal: what a select's open field and its listbox are read under.
+  const body = {
+    evaluate: async (fn: unknown, arg?: unknown) => {
+      if (fn !== captureTreeInPage) return null;
+      treeArgs.push(arg as { around?: boolean });
+      return {
+        root: {
+          k: "e", tag: "div", box: [0, 0, 448, 245], cs: {}, path: [],
+          kids: [
+            { k: "e", tag: "button", box: [184, 0, 80, 36], cs: {}, path: [0, 0, 0], kids: [] },
+            { k: "e", tag: "div", box: [0, 75, 448, 170], cs: {}, path: [1, 0], kids: [] },
+          ],
+        },
+        fonts: {},
+      };
+    },
+    dispose: async () => {},
+  };
+  // What snap adds to the page for a root that draws nothing.
+  const probe = { evaluate: async () => { done.push("probe removed"); return null; }, dispose: async () => {} };
   const act = (how: string) => async (options?: { button?: string }) => {
     const way = how === "click" && options?.button === "right" ? "contextmenu" : how;
     done.push(way);
@@ -100,8 +120,9 @@ export function overlayPage(opts: {
       }
       return null;
     },
-    evaluateHandle: async () => ({ asElement: () => null, dispose: async () => {} }),
-    boundingBox: async () => ({ x: 600, y: 342, width: 80, height: 36 }),
+    // The element around it and the content: the body.
+    evaluateHandle: async (_fn: unknown, arg?: unknown) => ({ asElement: () => (arg === contentHandle ? body : null), dispose: async () => {} }),
+    boundingBox: async () => ({ x: 600, y: 200, width: 80, height: 36 }),
     dispose: async () => {},
   };
   const container = {
@@ -123,11 +144,13 @@ export function overlayPage(opts: {
     waitForSelector: async () => null,
     addStyleTag: async () => null,
     $: async (selector: string) => (selector === "#storybook-root" ? container : null),
-    evaluateHandle: async () => ({
-      evaluate: async () => shown(),
-      evaluateHandle: async () => ({ asElement: () => contentHandle, dispose: async () => {} }),
-      dispose: async () => {},
-    }),
+    evaluateHandle: async (_fn: unknown, arg?: unknown) => (arg === undefined
+      ? { asElement: () => probe, dispose: async () => {} }
+      : {
+        evaluate: async () => shown(),
+        evaluateHandle: async () => ({ asElement: () => contentHandle, dispose: async () => {} }),
+        dispose: async () => {},
+      }),
     evaluate: async (fn: unknown, arg?: unknown) => {
       if (fn === storybookErrorInPage) return null;
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage) {

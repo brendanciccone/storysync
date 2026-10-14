@@ -32,7 +32,8 @@ import { stylesJsonText } from "./snap-tree.js";
 import { chooseStory, siblingStories, storyAddsContent, storyKeys } from "./snap-stories.js";
 import type { StoryChoice, StoryOwn } from "./snap-stories.js";
 import { canonicalJson } from "./checksum.js";
-import { resolveProps } from "./props.js";
+import { describeExclusions, resolveProps } from "./props.js";
+import { describeDarkScheme, globalsParam, lightGlobals } from "./snap-scheme.js";
 import type { PropExclusion } from "./props.js";
 
 export const SNAP_SCHEMA_VERSION = 1;
@@ -256,6 +257,18 @@ export interface SnapComponent {
    * measured as Figma lays it out (fonts.ts). Absent where none was.
    */
   fontStandIns?: [asked: string, drawn: string][];
+  /**
+   * The color scheme the preview rendered it in when it was measured
+   * (snap-scheme.ts): `light` unless Storybook could only render it dark.
+   * Absent from a snap before it was recorded, which was light, as tokens
+   * are matched by the scheme's values.
+   */
+  scheme?: "light" | "dark";
+  /**
+   * The Storybook globals snap set in its stories' URLs so they rendered
+   * light, where Storybook rendered them dark by default: `{ theme: "light" }`.
+   */
+  globals?: Record<string, string>;
 }
 
 export interface SnapResult {
@@ -303,6 +316,63 @@ export interface SnapResult {
   removedComponents?: string[];
 }
 
+/**
+ * One thing snap says about a run, as its text output says it: `info` an
+ * `i` line, `warning` a `!` line (a component's warning), `error` a `✗`
+ * line (a component it couldn't measure), and `failed` a variant it
+ * didn't measure. Under --json they are the output's `messages`, so an
+ * agent that reads only the JSON still has what a terminal shows.
+ */
+export interface SnapMessage {
+  level: "info" | "warning" | "error" | "failed";
+  /** The component's title, or name; absent for the run's. */
+  component?: string;
+  text: string;
+}
+
+/**
+ * Everything snap's text output says about `result`, in its order; first
+ * `notes`, what its progress said of the run that the result doesn't
+ * record (SnapDeps' onNote), for --json, where progress isn't printed.
+ */
+export function snapMessages(result: SnapResult, notes: readonly string[] = []): SnapMessage[] {
+  const out: SnapMessage[] = notes.map((text) => ({ level: "info", text }));
+  const label = (c: SnapComponent) => c.title ?? c.name;
+  const standIns = describeFontStandIns(result.fontStandIns);
+  if (standIns) out.push({ level: "info", text: standIns });
+  // Said once for the run, not warned: the globals that rendered a dark-by-default Storybook light.
+  const globals = new Set(result.components.filter((c) => c.globals && c.scheme === "light").map((c) => globalsParam(c.globals!)));
+  for (const set of globals) {
+    out.push({ level: "info", text: `snap measured the light color scheme with globals=${set} in each story's URL, as Storybook renders dark by default` });
+  }
+  for (const c of result.components) for (const text of c.warnings) out.push({ level: "warning", component: label(c), text });
+  for (const c of result.components) if (c.error != null) out.push({ level: "error", component: label(c), text: c.error });
+  // Said, not warned: the stories each variant was measured from, where not the component's.
+  for (const c of result.components) {
+    const stories = describeVariantStories(c);
+    if (stories) out.push({ level: "info", component: label(c), text: stories });
+  }
+  // Said, not warned: the overlays snap opened to measure.
+  for (const c of result.components) {
+    const opened = describeOpenedOverlays(c);
+    if (opened) out.push({ level: "info", component: label(c), text: opened });
+  }
+  // Said, not warned: the props the story's argTypes add, and those left out, and why.
+  for (const c of result.components) {
+    const added = (c.argsNotInDocs ?? []).filter((name) => c.variantProperties.some((p) => p.name === name));
+    if (added.length) {
+      const names = added.map((name) => `\`${name}\``).join(", ");
+      out.push({ level: "info", component: label(c), text: `the story's argTypes declare ${names}, which Storybook's docs don't list, so snap made ${added.length === 1 ? "it a variant property" : "them variant properties"}` });
+    }
+    const left = describeExclusions(c.excludedProps ?? []);
+    if (left) out.push({ level: "info", component: label(c), text: left });
+  }
+  for (const c of result.components) {
+    for (const v of c.variants) if (v.status !== "ok") out.push({ level: "failed", component: c.name, text: `${v.slug} [${v.status}] ${v.error ?? ""}`.trimEnd() });
+  }
+  return out;
+}
+
 /** Whether `snap --strict` fails on `result`. */
 export function snapFailsStrict(result: SnapResult): boolean {
   // Measuring nothing is a failure, not a clean run: snap still writes a
@@ -324,6 +394,12 @@ export interface SnapDeps {
   launch: typeof resolveAndLaunch;
   /** Called with human-readable progress; no-op under --json. */
   onProgress?: (message: string) => void;
+  /**
+   * Called with what the run's progress says that is about the run as a
+   * whole, the browser launched again or the components --merge kept, which
+   * nothing in the result records: under --json, snapMessages' `notes`.
+   */
+  onNote?: (message: string) => void;
   /**
    * Called as each component starts, and as each of its variants does, so a
    * terminal can say where a long run is. Given under --json too: it draws
@@ -1029,6 +1105,26 @@ export function describeOpenedOverlays(component: Pick<SnapComponent, "variants"
   return `measured open: snap ${list} to open it, and measured ${element}`;
 }
 
+/**
+ * The warning for variants that failed with an error that is the story's
+ * own, which it throws in Storybook without snap too, with its fix: an
+ * implicit action the story calls while it renders, which Storybook 9 and
+ * later refuse (storybookErrorInPage names the args). Null where none did.
+ */
+export function describeStoryErrors(storyId: string | null, variants: readonly Pick<SnapVariant, "status" | "error">[]): string | null {
+  const implicit = variants.filter((v) => v.status === "render_error" && /implicit action arg/i.test(v.error ?? ""));
+  if (!implicit.length) return null;
+  const args = [...new Set(implicit.flatMap((v) => /\(implicit action: ([^)]*)\)/.exec(v.error ?? "")?.[1].split(/,\s*/) ?? []))];
+  const which = implicit.length === variants.length ? "Every variant" : `${implicit.length} of ${variants.length} variants`;
+  const named = args.length ? `its ${args.map((a) => `\`${a}\``).join(", ")} ${args.length === 1 ? "arg" : "args"}` : "an on* arg";
+  const spy = args.length ? args.map((a) => `${a}: fn()`).join(", ") : "onChange: fn()";
+  return (
+    `${which} failed to render with Storybook's own error, not snap's: ${storyId ?? "the story"} calls ${named} while it ` +
+    `renders, an implicit action the preview's argTypesRegex makes, which Storybook refuses, so it fails in Storybook too. ` +
+    `Give the story an explicit spy, \`args: { ${spy} }\` with \`fn\` from \`storybook/test\`, then measure it again with --components and --merge.`
+  );
+}
+
 /** Warning for properties detectNoOpProperties found. */
 export function describeNoOpProperties(names: string[]): string | null {
   if (!names.length) return null;
@@ -1082,7 +1178,8 @@ export function describeMeasurementNotes(
       `border or shadow), so it may be the story's layout wrapper rather than ${name}${which}. If it is, give ` +
       `${name}'s root element data-slot="${slot}", render ${name} on its own in the story snap renders, or ` +
       `measure it by itself into this snap with --components, --selector and --merge (without --merge, styles.json ` +
-      `would hold ${name} alone). If ${name} is itself a layout container, this is expected.`
+      `would hold ${name} alone). If ${name} is itself a layout container, this is expected.` +
+      (note.toast ? ` It is a toast's story: ${note.toast.replace(/[.\s]+$/, "")}, so no toast was measured.` : "")
     );
   });
 }
@@ -1457,6 +1554,11 @@ const SHARED_KEY_WARNING = /^\d+ components share the key "/;
 
 export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapResult> {
   const progress = deps.onProgress ?? (() => {});
+  // Said as progress, and as a note for --json's messages.
+  const note = (message: string) => {
+    progress(message);
+    deps.onNote?.(message.trim());
+  };
   // A typo'd name throws here rather than filtering to nothing, which would
   // still stamp a fresh `measuredAt` over an empty snap.
   const listed = await deps.storybook.listComponents();
@@ -1473,6 +1575,8 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     }
   }
   let browserVersion: string | undefined;
+  // Whether stories render light, or what to set so they do: snap-scheme.ts.
+  const theme: ThemeState = {};
 
   const components: SnapComponent[] = [];
   const stage = new ScreenshotStage(opts.outDir);
@@ -1530,7 +1634,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
           deps.onComponentStart?.(index + 1, entries.length, entry.title ?? entry.name);
           try {
             checkpoint();
-            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage, stories.get(entry.id));
+            const measured = await snapComponent(entry, opts, deps, browser, progress, checkpoint, stage, stories.get(entry.id), theme);
             // Its failures may have been the browser going.
             checkpoint();
             components.push(measured);
@@ -1538,7 +1642,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
           } catch (err) {
             if (!(err instanceof BrowserLostError) || relaunched) throw err;
             relaunched = true;
-            progress(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
+            note(`  The browser closed part-way through ${entry.title ?? entry.name}; launching it again`);
             // Measured again from the start, so its first attempt's
             // screenshots go: one the second attempt doesn't take would
             // still replace the last run's.
@@ -1560,7 +1664,7 @@ export async function runSnap(opts: SnapOptions, deps: SnapDeps): Promise<SnapRe
     // snap command handles between tasks, comes before any of it is written
     // or after all of it is.
     stage.commit();
-    return writeSnap(opts, deps, listed, components, earlier, progress, browserVersion);
+    return writeSnap(opts, deps, listed, components, earlier, note, browserVersion);
   } finally {
     stage.discard();
   }
@@ -1678,6 +1782,28 @@ function writeSnap(
   return removedKeys.length ? { ...result, removedComponents: removedKeys } : result;
 }
 
+/**
+ * The Storybook globals snap sets in every story's URL for the light
+ * scheme, once one rendered dark and setting them rendered it light; null
+ * once snap concluded none do, with why: the preview has no theme global
+ * to set, or DARK_STORIES_TRIED stories still rendered dark with them.
+ * Undefined until then. One for the run, as a project's theme is its
+ * preview's; but a story that sets its own theme still renders dark with
+ * them, so one story isn't taken for the project (`stillDark`).
+ */
+interface ThemeState {
+  globals?: Record<string, string> | null;
+  why?: string;
+  /** The stories measured again with the light globals that still rendered dark, before any rendered light with them. */
+  stillDark?: Set<string>;
+}
+
+/** How many stories rendering dark with the light globals snap concludes they don't work for the run. */
+export const DARK_STORIES_TRIED = 3;
+
+/** How much longer than --timeout a variant that timed out is given to load once more. */
+export const TIMEOUT_RETRY_FACTOR = 3;
+
 /** A variant's tree as captured, until the component's base is known and its assets are written. */
 interface VariantTree {
   variant: SnapVariant;
@@ -1694,6 +1820,7 @@ async function snapComponent(
   checkpoint: () => void,
   stage: ScreenshotStage,
   storyOverride?: StoryOverride,
+  theme: ThemeState = {},
 ): Promise<SnapComponent> {
   const shell: SnapComponent = {
     id: entry.id,
@@ -1796,6 +1923,18 @@ async function snapComponent(
   const images = new Map<string, CapturedImage>();
   const treeNotes = new Set<string>();
   const climbed: { slug: string; element: string; from: string }[] = [];
+  // The color scheme each measured variant rendered in, where the page said;
+  // for one measured dark, why it wasn't measured light (lightScheme).
+  const schemes: { slug: string; scheme: "light" | "dark"; by?: string; why?: string }[] = [];
+  const darkWhy = new WeakMap<CaptureResult, string>();
+  // Whether a load given TIMEOUT_RETRY_FACTOR times --timeout timed out too:
+  // then the component's later loads are tried once more at --timeout.
+  let longTimedOut = false;
+  // Whether a variant was measured dark because measuring it with the light
+  // globals failed, and whether a later one then rendered light with them:
+  // the component is then measured again, every variant with them.
+  let lightUnsure = false;
+  let lightNow = false;
   // The stories snap measured a variant from as well, by slug, where the
   // component's story drew it past its box (siblingStories).
   const refitTried = new Map<string, SiblingTries>();
@@ -1827,6 +1966,8 @@ async function snapComponent(
     images.clear();
     treeNotes.clear();
     climbed.length = 0;
+    schemes.length = 0;
+    lightUnsure = false;
     refitTried.clear();
     standIns.clear();
     stage.drop(entry);
@@ -1909,10 +2050,10 @@ async function snapComponent(
       const choose = (): StoryChoice => (owns ? chooseStory(combination, owns, definition.variantProperties, storyId) : { storyId });
       let choice = choose();
 
-      const capture = (): Promise<CaptureResult> => {
+      const capture = (timeoutMs: number, globals: Record<string, string> | null | undefined): Promise<CaptureResult> => {
         checkpoint();
-        return captureStory(page, buildStoryUrl(opts.storybookUrl, choice.storyId, param), {
-          timeoutMs: opts.timeoutMs,
+        return captureStory(page, buildStoryUrl(opts.storybookUrl, choice.storyId, param, globals ? globalsParam(globals) : null), {
+          timeoutMs,
           selector: opts.selector,
           screenshot: opts.screenshots,
           component: { name: entry.name, title: entry.title, props: component.props.map((p) => p.name) },
@@ -1924,14 +2065,72 @@ async function snapComponent(
         });
       };
       // Once more on a timeout loading the story: a busy Storybook times out
-      // stories that render a moment later, and a variant left unmeasured
-      // gets built from source instead. Not on one after it loaded, which
-      // would only take as long again.
-      const captureOnce = async (): Promise<CaptureResult> => {
-        const first = await capture();
-        return first.status === "timeout" && first.retryable ? capture() : first;
+      // stories that render a moment later, and a variant left unmeasured is
+      // built as a placeholder. Given TIMEOUT_RETRY_FACTOR times as long, as
+      // a slow story times out at --timeout again, until such a load times
+      // out too; the component's later loads then get --timeout again, so a
+      // Storybook that stays slow costs twice --timeout a variant, not four
+      // times. Not on one after it loaded, which would only take as long again.
+      const loadOnce = async (globals = theme.globals): Promise<CaptureResult> => {
+        const first = await capture(opts.timeoutMs, globals);
+        if (first.status !== "timeout" || !first.retryable) return first;
+        const long = !longTimedOut;
+        const again = await capture(long ? opts.timeoutMs * TIMEOUT_RETRY_FACTOR : opts.timeoutMs, globals);
+        if (long && again.status === "timeout") longTimedOut = true;
+        return again;
+      };
+      const captureOnce = async (): Promise<CaptureResult> => lightScheme(await loadOnce());
+      // A story Storybook rendered dark, measured again with the globals that
+      // render it light (lightGlobals); the first time those do, they go in
+      // every story's URL for the rest of the run. Where they don't, it stays
+      // as measured, with why (darkWhy): a re-measure that failed says
+      // nothing of the globals, so the next dark story tries them again, and
+      // one that still rendered dark may be a story that sets its own theme,
+      // so snap gives up on them only after DARK_STORIES_TRIED such stories.
+      const lightScheme = async (got: CaptureResult): Promise<CaptureResult> => {
+        if (got.status !== "ok" || got.scheme?.scheme !== "dark") return got;
+        const said = (why: string) => {
+          darkWhy.set(got, why);
+          return got;
+        };
+        if (theme.globals) return said(`Storybook rendered it dark with globals=${globalsParam(theme.globals)} in its URL too, as its story or a decorator sets its own theme`);
+        if (theme.globals === null) return said(theme.why ?? "Storybook rendered it dark");
+        const light = got.themeGlobals ? lightGlobals(got.themeGlobals) : null;
+        if (!light) {
+          theme.globals = null;
+          theme.why = "Storybook rendered it dark and its preview has no theme global snap could set to light";
+          return said(theme.why);
+        }
+        const stillDark = `Storybook rendered it dark, and still did with globals=${globalsParam(light)} in the story's URL`;
+        if (theme.stillDark?.has(choice.storyId)) return said(stillDark);
+        const again = await loadOnce(light);
+        if (again.status === "ok" && again.scheme?.scheme !== "dark") {
+          theme.globals = light;
+          lightNow = true;
+          progress(`  Storybook rendered ${entry.title ?? entry.name} dark (${got.scheme.by ?? "dark"}); snap sets globals=${globalsParam(light)} in each story's URL to measure the light scheme`);
+          return again;
+        }
+        if (again.status !== "ok") {
+          lightUnsure = true;
+          return said(`snap couldn't measure it again with globals=${globalsParam(light)} in the story's URL (${again.status.replace(/_/g, " ")})`);
+        }
+        (theme.stillDark ??= new Set()).add(choice.storyId);
+        if (theme.stillDark.size >= DARK_STORIES_TRIED) {
+          theme.globals = null;
+          theme.why = `Storybook rendered ${DARK_STORIES_TRIED} stories dark, and still did with globals=${globalsParam(light)} in their URLs`;
+        }
+        return said(stillDark);
       };
       let captured = await captureOnce();
+      if (lightNow) {
+        lightNow = false;
+        if (lightUnsure) {
+          progress(`  ${entry.title ?? entry.name}: measuring its variants again in the light scheme`);
+          startOver();
+          index = -1;
+          continue;
+        }
+      }
       // The stories' own args, from the preview of the first story that
       // loaded; and this variant measured again where one of them is for it.
       // A read that fails is tried again with the next variants that load,
@@ -2094,6 +2293,7 @@ async function snapComponent(
       for (const note of captured.notes) notes.push({ slug, note });
       if (captured.unopened) unopened.push({ slug, ...captured.unopened });
       if (captured.climbedFrom) climbed.push({ slug, element: captured.element ?? "", from: captured.climbedFrom });
+      if (captured.scheme) schemes.push({ slug, ...captured.scheme, ...(darkWhy.has(captured) ? { why: darkWhy.get(captured) } : {}) });
       for (const pair of captured.standIns ?? []) standIns.add(JSON.stringify(pair));
       markups.push(captured.markup ?? null);
       markupBySlug.set(slug, captured.markup ?? null);
@@ -2151,6 +2351,16 @@ async function snapComponent(
   }
 
   if (source.excluded.length) shell.excludedProps = source.excluded;
+  // Its scheme is its base's: the variant every other's styles are a change to.
+  const baseScheme = schemes.find((s) => s.slug === shell.base?.slug) ?? schemes[0];
+  if (baseScheme) {
+    shell.scheme = baseScheme.scheme;
+    if (theme.globals) shell.globals = theme.globals;
+    const dark = schemes.filter((s) => s.scheme === "dark");
+    if (dark.length) {
+      shell.warnings.push(describeDarkScheme(dark[0].by, dark[0].why ?? theme.why ?? "Storybook rendered it dark", { dark: dark.length, measured: schemes.length }));
+    }
+  }
   if (standIns.size) shell.fontStandIns = [...standIns].sort().map((pair) => JSON.parse(pair) as [string, string]);
   if (ownsError) {
     shell.storiesUnread = ownsError;
@@ -2167,6 +2377,8 @@ async function snapComponent(
     for (const { slug, element, reason } of unopened) notes.push({ slug, note: { kind: "closed-trigger", element, reason } });
   }
   shell.warnings.push(...describeMeasurementNotes(entry.name, notes, measured, entry.title));
+  const storyError = describeStoryErrors(storyId, shell.variants);
+  if (storyError) shell.warnings.push(storyError);
   const climbedWarning = describeClimbed(climbed, measured);
   if (climbedWarning) shell.warnings.push(climbedWarning);
   const label = entry.title ?? entry.name;

@@ -32,6 +32,8 @@ import type { ImageCrop, RawSvgNode } from "./snap-assets.js";
 import type { TreeNode } from "./tree-types.js";
 import { STAND_IN_PREFIX, standInFaces, standInStack } from "./fonts.js";
 import type { StandIn } from "./fonts.js";
+import { colorSchemeInPage, schemeOfGlobals, themeGlobalsInPage } from "./snap-scheme.js";
+import type { SchemeReading, ThemeGlobals } from "./snap-scheme.js";
 
 // --- Browser resolution -----------------------------------------------------
 
@@ -183,6 +185,8 @@ export async function createContext(browser: Browser): Promise<BrowserContext> {
     // Sharper PNGs for human comparison; does not affect computed styles.
     deviceScaleFactor: 2,
     reducedMotion: "reduce",
+    // A stylesheet that follows the system renders light: the scheme tokens are matched by (snap-scheme.ts).
+    colorScheme: "light",
   });
 }
 
@@ -266,6 +270,10 @@ export interface CaptureResult {
    * but snap.ts notes it as a closed trigger where other variants opened.
    */
   unopened?: { element: string; reason: string };
+  /** The color scheme the measured element rendered in (snap-scheme.ts), where the page said. */
+  scheme?: SchemeReading;
+  /** Storybook's globals, read where it rendered dark, from which snap asks for light (lightGlobals). */
+  themeGlobals?: ThemeGlobals;
 }
 
 export interface CaptureOptions {
@@ -347,6 +355,8 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
   let loaded = false;
   // The overlay snap opened, to close once it is measured.
   let shut: { opened: OverlayOpened; content: ElementHandle<Element> } | null = null;
+  // A select's field and its content measured as one: see pairOf.
+  let pair: Pair | null = null;
 
   try {
     // From before the navigation, so a request the story makes as it renders is seen.
@@ -361,7 +371,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     let renderError = await readStorybookError(page);
     if (renderError) return { status: "render_error", error: renderError, ...empty };
 
-    const appeared = await waitForStory(page, opts.selector, slots, opts.timeoutMs);
+    const appeared = await waitForStory(page, opts.selector, slots, opts.timeoutMs, opts.story?.id ?? new URL(url).searchParams.get("id") ?? undefined);
     // Storybook paints a story's error after the page has loaded. The wait
     // ends on it, or times out on a story that threw before rendering
     // anything; either way an error shown now is why nothing is there.
@@ -409,6 +419,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
           memory: opts.openMemory,
           timeoutMs: opts.timeoutMs, waitMs: opts.openWaitMs ?? OPEN_WAIT_MS, images, standIns: opts.standIns !== false,
         });
+      await closed.opener?.dispose().catch(() => { /* gone with a remount */ });
       if ("located" in opening) {
         await closed.target.dispose().catch(() => { /* gone with a remount */ });
         located = opening.located;
@@ -425,28 +436,50 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
         const reason = "reason" in opening ? opening.reason : "";
         if (closed.trigger.field && opts.openOverlays !== false) unopened = { element: closed.element, reason };
         located.notes = located.notes.map((note) => (note.kind === "closed-trigger" ? { ...note, reason } : note));
-        // One an attempt left open, which a remount didn't close, keeps
-        // the note of the trigger as it was found, closed.
-        if (!closed.trigger.field && !located.notes.some((note) => note.kind === "closed-trigger")) {
+        const toast = closed.trigger.toast;
+        if (toast) {
+          // Measured as before, the story's wrapper, saying why no toast;
+          // or its button, where that is all the story draws.
+          const why = `snap clicked ${toast.opener} to raise a toast, and ${reason || "didn't"}`;
+          const wrapper = located.notes.some((note) => note.kind === "layout-wrapper");
+          located.notes = wrapper
+            ? located.notes.map((note) => (note.kind === "layout-wrapper" ? { ...note, toast: why } : note))
+            : [...located.notes, { kind: "closed-trigger", element: toast.opener, reason }];
+        } else if (!closed.trigger.field && !located.notes.some((note) => note.kind === "closed-trigger")) {
+          // One an attempt left open, which a remount didn't close, keeps
+          // the note of the trigger as it was found, closed.
           located.notes = [...located.notes, { kind: "closed-trigger", element: closed.element, reason }];
         }
       }
     }
     // Under a tree, an element that draws nothing and holds nothing that
     // does is no root to build: the nearest one around it that draws is.
-    const climbedFrom = opts.tree === "tree" && !opts.selector ? await climbToDrawing(located) : null;
-    const { target, element, notes, matchedSelector, portal } = located;
+    const climbedFrom = opts.tree === "tree" && !opts.selector && !located.field ? await climbToDrawing(located) : null;
+    const { target, notes, matchedSelector, portal } = located;
 
     // Read before the styles and again after the picture: markup that
     // changes in between, a story that animates, is no evidence either way.
     const markupBefore = await readMarkup(page);
-    const raw = await readComputedStyles(page, target, CAPTURED_PROPERTIES);
-    const holder = await findTextHolder(target);
-    const textRaw = holder ? await readTextStyles(page, holder, target, TEXT_PROPERTIES) : null;
-    const textLayout = holder ? await readTextLayout(holder, target) : null;
-    const fonts = { root: await probeFontStack(target), text: holder ? await probeFontStack(holder) : null };
+    // A select's or combobox's field and the content it opened, as one: a
+    // root that draws nothing around both, its text the field's.
+    pair = located.field && opts.tree !== "count" ? await pairOf(page, located.field.target, target) : null;
+    const element = pair ? `${located.field!.element} + ${located.element}` : located.element;
+    const own = pair ? located.field!.target : target;
+    const raw = await readComputedStyles(page, pair?.probe ?? target, CAPTURED_PROPERTIES);
+    await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    const holder = await findTextHolder(own);
+    const textRaw = holder ? await readTextStyles(page, holder, own, TEXT_PROPERTIES) : null;
+    const textLayout = holder ? await readTextLayout(holder, own) : null;
+    const fonts = { root: await probeFontStack(own), text: holder ? await probeFontStack(holder) : null };
     const fontAvailable = fonts.root ? resolveFontFamily(fonts.root).available : null;
-    const boundingBox = await target.boundingBox();
+    const boundingBox = pair ? pair.box : await target.boundingBox();
+    // Which scheme its colors are: a Storybook may render its dark theme by
+    // default. As the page marks it, else as Storybook's globals say, which a
+    // theme provider that marks nothing on the page follows.
+    const marked = await own.evaluate(colorSchemeInPage).then((r) => (r?.scheme === "dark" || r?.scheme === "light" ? r : undefined), () => undefined);
+    const globalsRead = (await page.evaluate(themeGlobalsInPage).catch(() => null)) ?? undefined;
+    const scheme = marked?.by ? marked : schemeOfGlobals(globalsRead) ?? marked;
+    const themeGlobals = scheme?.scheme === "dark" ? globalsRead : undefined;
 
     // Before the screenshot, which throws on an element with no box.
     if (!boundingBox) {
@@ -459,7 +492,11 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     // had been read. So an empty box is measured without a picture, and a
     // picture otherwise waits no longer than --timeout.
     const drawable = boundingBox.width > 0 && boundingBox.height > 0;
-    const screenshot = opts.screenshot && drawable ? await target.screenshot({ type: "png", timeout: opts.timeoutMs }) : null;
+    const screenshot = !opts.screenshot || !drawable
+      ? null
+      : pair
+        ? await page.screenshot({ type: "png", clip: pair.box, timeout: opts.timeoutMs })
+        : await target.screenshot({ type: "png", timeout: opts.timeoutMs });
     const markupAfter = await readMarkup(page);
     const markup = markupBefore !== null && markupBefore === markupAfter ? markupBefore : null;
     // After the markup is read again: Playwright's screenshots, of an
@@ -469,7 +506,11 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     let innerElements: number | undefined;
     try {
       // An overlay's content, in a portal or opened inline, is placed by what is around it.
-      if (opts.tree === "tree") tree = await captureTree(page, target, responses, opts.timeoutMs, { overlay: !!(portal || opened) });
+      if (opts.tree === "tree") {
+        tree = pair
+          ? await captureTree(page, pair.root, responses, opts.timeoutMs, { focus: [located.field!.target, target] })
+          : await captureTree(page, target, responses, opts.timeoutMs, { overlay: !!(portal || opened) });
+      }
       if (opts.tree === "count") innerElements = await countTree(target);
     } catch (err) {
       // Not measured, rather than measured without its tree: a variant
@@ -482,6 +523,7 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
       ...(standIns.length ? { standIns } : {}),
       ...(tree ? { tree } : {}), ...(innerElements !== undefined ? { innerElements } : {}), ...(climbedFrom ? { climbedFrom } : {}),
       ...(portal ? { portal } : {}), ...(opened ? { opened } : {}), ...(unopened ? { unopened } : {}),
+      ...(scheme ? { scheme } : {}), ...(themeGlobals ? { themeGlobals } : {}),
     };
   } catch (err) {
     // By the error's class, not its text: Playwright puts the story URL in
@@ -491,12 +533,51 @@ export async function captureStory(page: Page, url: string, opts: CaptureOptions
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
     return { status: isTimeout ? "timeout" : "render_error", error: firstLine(err), ...empty, retryable: isTimeout && !loaded };
   } finally {
+    await pair?.probe.evaluate((el) => el.remove()).catch(() => { /* gone */ });
     // Closed again, whatever came of measuring it.
     if (shut) await closeOverlay(page, shut.opened, shut.content, opts.story?.id).catch(() => { /* the page went */ });
     images?.stop();
     responses?.stop();
     warnings?.stop();
   }
+}
+
+/** A select's open field and its content, measured as one: the element around both, a probe that draws nothing, and the box around both. */
+interface Pair {
+  root: ElementHandle<Element>;
+  probe: ElementHandle<Element>;
+  box: { x: number; y: number; width: number; height: number };
+}
+
+/**
+ * A select's or combobox's open `field` and the `content` it opened, as
+ * one root: the nearest element around both, which the tree is read under
+ * (captureTreeInPage's `focus`), the box around both, which the root is,
+ * and an element added to the page, which draws nothing, whose styles the
+ * root's are. Null where either has no box.
+ */
+async function pairOf(page: Page, field: ElementHandle<Element>, content: ElementHandle<Element>): Promise<Pair | null> {
+  const [a, b] = [await field.boundingBox(), await content.boundingBox()];
+  if (!a || !b) return null;
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const box = { x, y, width: Math.max(a.x + a.width, b.x + b.width) - x, height: Math.max(a.y + a.height, b.y + b.height) - y };
+  const root = (await field.evaluateHandle((f, c) => {
+    let at = f.parentElement;
+    while (at && !at.contains(c)) at = at.parentElement;
+    return at ?? document.body;
+  }, content)).asElement() as ElementHandle<Element> | null;
+  const probe = (await page.evaluateHandle(() => {
+    const el = document.createElement("div");
+    el.style.cssText = "position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none";
+    document.body.appendChild(el);
+    return el;
+  })).asElement() as ElementHandle<Element> | null;
+  if (!root || !probe) {
+    await probe?.evaluate((el) => el.remove()).catch(() => { /* gone */ });
+    return null;
+  }
+  return { root, probe, box };
 }
 
 // --- Overlays ---------------------------------------------------------------
@@ -580,7 +661,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrigger }, ctx: OpenContext): Promise<Opening> {
   // The same wait for every way and every variant, so a note that says it is the same for each.
   const waitMs = Math.min(ctx.waitMs, ctx.timeoutMs);
-  const trigger = closed.element;
+  const trigger = closed.trigger.toast?.opener ?? closed.element;
   const attempts: OpenAttempt[] = [];
   // Why it is still open, where a way left it so and a remount didn't close it.
   let stuck = "";
@@ -642,7 +723,7 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
       continue;
     }
     try {
-      await interact(located.target, how, waitMs);
+      await interact(located.opener ?? located.target, how, waitMs);
     } catch (err) {
       attempts.push({ via: how, outcome: "failed", error: firstLine(err) });
       await dismiss(page);
@@ -650,6 +731,7 @@ async function openOverlay(page: Page, closed: Located & { trigger: OpenableTrig
       continue;
     } finally {
       await located.target.dispose().catch(() => { /* gone with a remount */ });
+      await located.opener?.dispose().catch(() => { /* gone with a remount */ });
     }
     const shown = await waitForOverlay(page, ctx.slots, waitMs);
     const open = "located" in shown ? await opened(shown.located, { via: how, trigger }) : null;
@@ -872,8 +954,16 @@ export function storybookErrorInPage(): string | null {
     document.body.classList.contains("sb-show-preparingstory-error");
   if (!shown) return null;
   const node = document.querySelector("#error-message, .sb-errordisplay_code, #error-stack");
-  const text = (node?.textContent ?? document.body.innerText ?? "").trim();
-  return text.slice(0, 300) || "Storybook reported a render error";
+  const text = (node?.textContent ?? document.body.innerText ?? "").trim().slice(0, 300);
+  // Storybook 9 and later refuse an implicit action called while the story
+  // renders, and name the arg it wants a spy for only in the stack: kept, as
+  // describeStoryErrors gives the story's fix with it.
+  if (/implicit action arg/i.test(text)) {
+    const stack = document.querySelector("#error-stack")?.textContent ?? "";
+    const args = [...new Set(Array.from(stack.matchAll(/^\s*([A-Za-z_$][\w$]*): fn\(\)/gm), (m) => m[1]))];
+    if (args.length) return `${text.replace(/\s+$/, "")} (implicit action: ${args.join(", ")})`;
+  }
+  return text || "Storybook reported a render error";
 }
 
 async function readStorybookError(page: Page): Promise<string | null> {
@@ -1034,13 +1124,51 @@ export function storyReadySelector(slots: readonly string[]): string {
   ].join(", ");
 }
 
-async function waitForStory(page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number): Promise<boolean> {
-  try {
-    await page.waitForSelector(selector ?? storyReadySelector(slots), { state: "attached", timeout: timeoutMs });
-    return true;
-  } catch {
-    return false;
-  }
+/**
+ * How long snap still waits for a story to draw once Storybook says it has
+ * rendered it: for an effect, or a portal, that draws a moment after.
+ */
+export const RENDERED_GRACE_MS = 1000;
+
+/**
+ * Waits, at most `timeoutMs`, for what storyReadySelector (or `selector`)
+ * matches. A story Storybook has finished rendering that draws nothing, as
+ * a dialog held closed with no trigger does, is given RENDERED_GRACE_MS
+ * more rather than the whole of --timeout: coder's ConfirmDialog spent 10
+ * seconds on each of 23 such variants.
+ */
+async function waitForStory(page: Page, selector: string | undefined, slots: readonly string[], timeoutMs: number, storyId?: string): Promise<boolean> {
+  const wanted = selector ?? storyReadySelector(slots);
+  const appeared = page.waitForSelector(wanted, { state: "attached", timeout: timeoutMs }).then(() => true, () => false);
+  if (!storyId) return appeared;
+  let done = false;
+  const rendered = (async (): Promise<"rendered" | "waited"> => {
+    const deadline = Date.now() + timeoutMs;
+    while (!done && Date.now() < deadline) {
+      if (await page.evaluate(storyRenderedInPage, storyId).catch(() => false) === true) {
+        await sleep(Math.min(RENDERED_GRACE_MS, Math.max(0, deadline - Date.now())));
+        return "rendered";
+      }
+      await sleep(100);
+    }
+    return "waited";
+  })();
+  const first = await Promise.race([appeared, rendered]);
+  done = true;
+  if (typeof first === "boolean") return first;
+  // Rendered and given its grace: whatever draws has drawn by now.
+  return first === "rendered" ? await page.$(wanted).then((found) => {
+    void found?.dispose();
+    return found != null;
+  }, () => false) : appeared;
+}
+
+/** Runs in the page: whether Storybook has finished rendering `storyId`, as its preview's render says. */
+export function storyRenderedInPage(storyId: string): boolean {
+  const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: PreviewInPage }).__STORYBOOK_PREVIEW__;
+  const phase = preview?.storyRenders?.find((r) => r?.id === storyId)?.phase;
+  // Storybook 8 and later end a render at "finished"; 7 at "completed", or "played" after a play function.
+  return phase === "finished" || phase === "completed" || phase === "played";
 }
 
 /** Image requests in flight on a page, from now until stop(). */
@@ -1124,6 +1252,10 @@ interface Located {
   trigger?: OpenableTrigger;
   /** What an open trigger controls, rendered inline in the story's root. */
   content?: true;
+  /** For a toast's story, the button that raises the toast (OpenableTrigger's `toast`). */
+  opener?: ElementHandle<Element>;
+  /** A select's or combobox's open field, whose content `target` is: the two are measured as one. */
+  field?: { target: ElementHandle<Element>; element: string };
 }
 
 /**
@@ -1161,6 +1293,7 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       rendered: el.getClientRects().length > 0,
       // The content, not something in it matching too: Radix's tooltip holds a hidden copy of its text as role=tooltip.
       overlay: el.matches(overlay) && !el.parentElement?.closest(overlay),
+      ...(el.matches('[role="combobox"], [role="listbox"]') || el.querySelector('[role="combobox"], [role="listbox"]') ? { picks: true } : {}),
     })), OVERLAY_SELECTOR);
     const choice = chooseMeasuredElement(tree, portals, slots);
     if (choice.kind === "none") return { error: choice.error };
@@ -1173,6 +1306,13 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       await handle.dispose();
       return { error: `element vanished after load: ${choice.element}` };
     }
+    const at = choice.kind === "tree" ? choice.trigger?.toast?.at : undefined;
+    const opener = at && container
+      ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), at)).asElement() ?? undefined
+      : undefined;
+    const fieldAt = choice.field && container
+      ? (await container.evaluateHandle((el, path) => path.reduce<Element>((node, index) => node.children[index], el), choice.field.path)).asElement() ?? undefined
+      : undefined;
     return {
       target,
       element: choice.element,
@@ -1181,6 +1321,8 @@ async function locateComponent(page: Page, slots: readonly string[]): Promise<Lo
       ...(choice.kind === "portal" ? { portal: true as const } : {}),
       ...(choice.kind === "tree" && choice.trigger ? { trigger: choice.trigger } : {}),
       ...(choice.kind === "tree" && choice.content ? { content: true as const } : {}),
+      ...(opener ? { opener: opener as ElementHandle<Element> } : {}),
+      ...(fieldAt && choice.field ? { field: { target: fieldAt as ElementHandle<Element>, element: choice.field.element } } : {}),
     };
   } finally {
     await portalsHandle.dispose();
@@ -1215,6 +1357,8 @@ export function readStoryTreeInPage(
       orientation: el.getAttribute("data-orientation") ?? el.getAttribute("aria-orientation"),
       label: el.getAttribute("aria-label") ?? el.getAttribute("aria-labelledby"),
       position: cs.position,
+      ...(el.hasAttribute("data-sonner-toast") ? { toast: true } : {}),
+      ...(el.hasAttribute("data-sonner-toaster") ? { toaster: true } : {}),
       rendered: el.getClientRects().length > 0,
       text: Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? "").trim() !== ""),
       styles,
@@ -1952,6 +2096,12 @@ interface TreeInPageArgs {
   nonRendered: readonly string[];
   /** Whether to read what is around the root too, for an overlay's content: RawTreeCapture's `around`. */
   around?: boolean;
+  /**
+   * Elements under the root read as the root's only children, the root a
+   * box around them that draws nothing: a select's open field and the
+   * content it opened (pairOf), which share no element but the body.
+   */
+  focus?: Element[];
 }
 
 /**
@@ -1968,7 +2118,15 @@ interface TreeInPageArgs {
  * the markup snap compares across variants is as it was.
  */
 export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeCapture {
-  const R = root.getBoundingClientRect();
+  const focus = args.focus ?? [];
+  const R = focus.length
+    ? (() => {
+      const rects = focus.map((el) => el.getBoundingClientRect());
+      const x = Math.min(...rects.map((r) => r.left));
+      const y = Math.min(...rects.map((r) => r.top));
+      return new DOMRect(x, y, Math.max(...rects.map((r) => r.right)) - x, Math.max(...rects.map((r) => r.bottom)) - y);
+    })()
+    : root.getBoundingClientRect();
   const rel = (r: DOMRect): RawBox => [r.left - R.left, r.top - R.top, r.width, r.height];
   const properties = Object.keys(args.defaults);
   const nonRendered = new Set(args.nonRendered);
@@ -2256,6 +2414,106 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     if (!tree) return { svg: { tag: "svg", attrs: {}, kids: [] }, shapes: [] };
     const box = svg.getBoundingClientRect();
     const hidden = "defs, clipPath, mask, symbol, pattern, marker";
+    // The transform the browser draws `el` with, where its CSS gives it one
+    // its attribute doesn't say, as `matrix()`: a spinner may turn each of
+    // its bars with a style's rotate about the icon's center. Its
+    // `translate`, `rotate`, `scale` and `transform`, about its origin, which
+    // is resolved against its transform box, as a percentage in `translate`
+    // is. Null where it is the attribute's, or can't be resolved.
+    type M = [number, number, number, number, number, number];
+    const mul = (m: M, n: M): M => [
+      m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+      m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5],
+    ];
+    const transformOf = (el: Element, cs: CSSStyleDeclaration): string | null => {
+      const px = (v: string | undefined) => parseFloat(v ?? "") || 0;
+      const own = (cs.getPropertyValue("transform") || "none").trim();
+      const turn = (cs.getPropertyValue("rotate") || "none").trim();
+      const scale = (cs.getPropertyValue("scale") || "none").trim();
+      const move = (cs.getPropertyValue("translate") || "none").trim();
+      let m: M = [1, 0, 0, 1, 0, 0];
+      const [ox = 0, oy = 0] = (cs.getPropertyValue("transform-origin") || "").split(/\s+/).map(px);
+      const boxKind = (cs.getPropertyValue("transform-box") || "").trim();
+      const bbox = boxKind === "fill-box" || boxKind === "stroke-box" ? (el as SVGGraphicsElement).getBBox?.() : null;
+      const origin = [ox + (bbox?.x ?? 0), oy + (bbox?.y ?? 0)];
+      m = mul(m, [1, 0, 0, 1, origin[0], origin[1]]);
+      if (move !== "none") {
+        // A percentage is of the transform box: the shape's own for
+        // fill-box, else the nearest viewport's, its viewBox where it has one.
+        const reference = (): { width: number; height: number } | null => {
+          if (bbox) return bbox;
+          const viewport = el.parentElement?.closest("svg");
+          const view = (viewport?.getAttribute("viewBox") ?? "").trim().split(/[\s,]+/).map(Number);
+          if (view.length === 4 && view[2] > 0 && view[3] > 0) return { width: view[2], height: view[3] };
+          const r = viewport?.getBoundingClientRect();
+          return r ? { width: r.width, height: r.height } : null;
+        };
+        const length = (v: string, size: "width" | "height") => {
+          if (!v.endsWith("%")) return px(v);
+          const box = reference();
+          return box ? (parseFloat(v) / 100) * box[size] : NaN;
+        };
+        const [x = "0", y = "0"] = move.split(/\s+/);
+        const [tx, ty] = [length(x, "width"), length(y, "height")];
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) return null;
+        m = mul(m, [1, 0, 0, 1, tx, ty]);
+      }
+      if (turn !== "none") {
+        const angle = /^(-?[\d.]+(?:e-?\d+)?)(deg|rad|grad|turn)?$/.exec(turn);
+        if (!angle) return null;
+        const unit = { deg: Math.PI / 180, rad: 1, grad: Math.PI / 200, turn: 2 * Math.PI }[angle[2] ?? "deg"] ?? 0;
+        const r = Number(angle[1]) * unit;
+        m = mul(m, [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]);
+      }
+      if (scale !== "none") {
+        const [sx, sy] = scale.split(/\s+/).map(Number);
+        m = mul(m, [sx, 0, 0, sy ?? sx, 0, 0]);
+      }
+      if (own !== "none") {
+        const terms = /^matrix\(([^)]*)\)$/.exec(own)?.[1].split(",").map(Number);
+        if (!terms || terms.length !== 6 || terms.some((t) => !Number.isFinite(t))) return null;
+        m = mul(m, terms as M);
+      }
+      m = mul(m, [1, 0, 0, 1, -origin[0], -origin[1]]);
+      // The attribute's own, which an element with no CSS transform computes to.
+      const base = (el as SVGGraphicsElement).transform?.baseVal?.consolidate?.()?.matrix;
+      const attr: M = base ? [base.a, base.b, base.c, base.d, base.e, base.f] : [1, 0, 0, 1, 0, 0];
+      if (m.every((v, i) => Math.abs(v - attr[i]) < 1e-4)) return null;
+      return `matrix(${m.map((v) => String(Math.round(v * 1e4) / 1e4 || 0)).join(" ")})`;
+    };
+    // Paint a `<text>` or `<use>` kept as written draws in, where its CSS
+    // gives it what its attributes don't say, as a `fill-*` class on a
+    // chart's `fill="#666"` tick does where its rule applies. Written on a copy:
+    // fill and stroke as computed (a `url()` paint left as written), where
+    // the element sets one or it differs from the element around it, which
+    // the copy keeps only for the root; opacity and transform where they
+    // aren't the attribute's.
+    const presented = (el: Element): string => {
+      if (typeof el.cloneNode !== "function") return el.outerHTML;
+      const copy = el.cloneNode(true) as Element;
+      const paintOf = (cs: CSSStyleDeclaration, name: string) => {
+        const value = cs.getPropertyValue(name).trim();
+        return /^currentcolor$/i.test(value) ? cs.color : value;
+      };
+      const write = (from: Element, to: Element, around: CSSStyleDeclaration | null) => {
+        const cs = getComputedStyle(from);
+        for (const name of ["fill", "stroke"]) {
+          const value = paintOf(cs, name);
+          if (!value || /^url\(/i.test(value)) continue;
+          if (around && from.getAttribute(name) === null && paintOf(around, name) === value) continue;
+          to.setAttribute(name, value);
+        }
+        const opacity = cs.getPropertyValue("opacity").trim();
+        if (opacity && opacity !== "1" && from.getAttribute("opacity") !== opacity) to.setAttribute("opacity", opacity);
+        const transform = transformOf(from, cs);
+        if (transform) to.setAttribute("transform", transform);
+        Array.from(from.children).forEach((kid, i) => {
+          if (to.children[i]) write(kid, to.children[i], cs);
+        });
+      };
+      write(el, copy, null);
+      return copy.outerHTML;
+    };
     const visit = (el: Element): RawSvgNode | null => {
       const tag = el.tagName;
       if (args.svgDropped.includes(tag)) return null;
@@ -2263,6 +2521,10 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
       for (const a of args.svgGeometry) {
         const v = el.getAttribute(a);
         if (v !== null) attrs[a] = v;
+      }
+      if (tag === "g" || args.svgShapes.includes(tag)) {
+        const transform = transformOf(el, getComputedStyle(el));
+        if (transform) attrs.transform = transform;
       }
       if (tag === "g") {
         // What a group does to its shapes as one, which their own computed style doesn't show.
@@ -2281,7 +2543,8 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
         }
         return { tag, attrs, paint };
       }
-      return { tag, attrs: {}, raw: el.outerHTML.replace(/>\s+</g, "><") };
+      const drawn = (tag === "text" || tag === "use") && !el.closest(hidden);
+      return { tag, attrs: {}, raw: (drawn ? presented(el) : el.outerHTML).replace(/>\s+</g, "><") };
     };
     const attrs: Record<string, string> = {};
     for (const a of ["viewBox", "preserveAspectRatio"]) {
@@ -2472,8 +2735,20 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     return node;
   };
 
+  // The focus elements as the root's children, each by its path from it.
+  const around = (els: Element[]): RawTreeElement => {
+    read++;
+    const node: RawTreeElement = { k: "e", tag: "div", box: [0, 0, R.width, R.height], cs: {}, kids: [], path: [] };
+    for (const el of els) {
+      const path: number[] = [];
+      for (let at: Element | null = el; at && at !== root && at.parentElement; at = at.parentElement) path.unshift(Array.from(at.parentElement.children).indexOf(at));
+      node.kids.push(walk(el, path, 1));
+    }
+    return node;
+  };
+
   try {
-    const out: RawTreeCapture = { root: walk(root, [], 0), fonts };
+    const out: RawTreeCapture = { root: focus.length ? around(focus) : walk(root, [], 0), fonts };
     // The class evidence around the root, up to <html>: a text it holds
     // inherits its color from there where nothing inside sets one, as from
     // a story's wrapper.
@@ -2484,7 +2759,7 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     if (outer.some((cls) => cls.length)) out.outer = outer;
     // What places an overlay's content, from outside it: up to the page's
     // own elements, which place nothing a component draws.
-    if (args.around) {
+    if (args.around && !focus.length) {
       const around: Record<string, string>[] = [];
       for (let at = root.parentElement; at && at !== document.body && at !== document.documentElement; at = at.parentElement) {
         around.push(readCss(getComputedStyle(at), null));
@@ -2496,6 +2771,12 @@ export function captureTreeInPage(root: Element, args: TreeInPageArgs): RawTreeC
     (hider as HTMLStyleElement | null)?.remove();
   }
 }
+
+/**
+ * captureTreeInPage as Playwright takes it: its `focus` elements are
+ * passed as handles, which its types for TreeInPageArgs don't allow.
+ */
+const treeReader = captureTreeInPage as unknown as (root: Element, args: object) => RawTreeCapture | null;
 
 /** A variant's tree as captureStory read it, with what its assets are made from. */
 export interface CapturedTree {
@@ -2649,10 +2930,12 @@ export async function captureTree(
   target: ElementHandle<Element>,
   responses: ImageResponses | null,
   timeoutMs: number,
-  { overlay = false }: { overlay?: boolean } = {},
+  { overlay = false, focus }: { overlay?: boolean; focus?: ElementHandle<Element>[] } = {},
 ): Promise<CapturedTree> {
   const started = Date.now();
-  const raw = await target.evaluate(captureTreeInPage, { ...treeInPageArgs("tree"), ...(overlay ? { around: true } : {}) }) as RawTreeCapture | null;
+  const raw = await target.evaluate(treeReader, {
+    ...treeInPageArgs("tree"), ...(overlay ? { around: true } : {}), ...(focus ? { focus } : {}),
+  }) as RawTreeCapture | null;
   if (!raw?.root) throw new Error("the page returned no tree");
   const built = buildTree(raw);
   const byKey = new Map(built.nodes.map((node) => [node.k, node]));
@@ -2716,7 +2999,7 @@ export async function captureTree(
 
 /** How many elements a tree under `target` would hold, for `--root-only`. */
 export async function countTree(target: ElementHandle<Element>): Promise<number> {
-  const raw = await target.evaluate(captureTreeInPage, treeInPageArgs("count")) as RawTreeCapture | null;
+  const raw = await target.evaluate(treeReader, treeInPageArgs("count")) as RawTreeCapture | null;
   if (!raw?.root) throw new Error("the page returned no tree");
   return countInnerElements(raw);
 }

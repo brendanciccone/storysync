@@ -21,7 +21,7 @@ import {
   applyDelta,
   componentSlots,
   contentSlots,
-  chooseMeasuredElement,
+  chooseMeasuredElement, isToastComponent,
   describeOpenFailure,
   isClosedTrigger,
   openInteractions,
@@ -1134,7 +1134,8 @@ test("chooseMeasuredElement: an open trigger whose aria-controls names nothing m
   // A select's field, open, without slots.
   const field = node("button", { role: "combobox", expanded: "true", controls: "elsewhere", styles: FILLED });
   const listbox = [portal({ role: "listbox", overlay: true })];
-  assert.deepEqual(chooseMeasuredElement(root(field), listbox, []), { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [] });
+  // With the field it opened from, which is measured with it.
+  assert.deepEqual(chooseMeasuredElement(root(field), listbox, []), { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [], field: { path: [0], element: 'button[role="combobox"]' } });
   // An open trigger with nothing showing is measured as it is, with no note: it isn't closed.
   assert.deepEqual(chooseMeasuredElement(root(tooltip), [], []), { kind: "tree", path: [0], element: "button", notes: [] });
   // Something open that is no trigger doesn't take an overlay in its place.
@@ -1249,4 +1250,64 @@ test("normalizeStyles: a text's layout is written only where there is one, so ol
   assert.equal("layout" in plain.text!, false);
   const cut = normalizeStyles(PRIMARY_SM, BOX, text, null, undefined, { width: 102, lines: 1, overflowsX: true, overflowsY: false, textOverflow: "ellipsis", lineClamp: null });
   assert.deepEqual(cut.text!.layout, { width: 102, lines: 1, truncation: "ellipsis" });
+});
+
+test("chooseMeasuredElement: a toast's story has its button raise a toast, and a toast up is what is measured", () => {
+  // shadcn's Sonner story: a "Show Toast" button and the toaster, which draws nothing until a toast is up.
+  const button = node("button", { styles: FILLED });
+  const toaster = node("section", { label: "Notifications alt+T" });
+  const wrapper = node("div", { styles: { display: "flex" } }, [button, node("p", { styles: FILLED }), toaster]);
+  const slots = componentSlots("Toaster", "ui/radix/Sonner");
+  assert.equal(isToastComponent(slots), true);
+  const closed = chooseMeasuredElement(root(wrapper), [], slots);
+  assert.equal(closed.kind, "tree");
+  if (closed.kind !== "tree") return;
+  assert.deepEqual(closed.path, [0]);
+  assert.deepEqual(closed.trigger, { field: false, interactions: ["click"], toast: { at: [0, 0], opener: "button" } });
+  assert.deepEqual(closed.notes, [{ kind: "layout-wrapper", element: "div", children: 3 }]);
+  // Raised: the toast, inside the toaster in the story's root.
+  const toast = node("li", { toast: true, styles: FILLED });
+  const raised = chooseMeasuredElement(root(node("div", { styles: { display: "flex" } }, [button, node("section", {}, [node("ol", {}, [toast])])])), [], slots);
+  assert.deepEqual(raised, { kind: "tree", path: [0, 1, 0, 0], element: "li", notes: [], content: true });
+  // Any other component's button is no toast's opener.
+  assert.equal(chooseMeasuredElement(root(wrapper), [], ["card"]).kind === "tree" && (chooseMeasuredElement(root(wrapper), [], ["card"]) as { trigger?: unknown }).trigger, undefined);
+});
+
+test("chooseMeasuredElement: a select's open field comes with the content it opened; a dialog's trigger doesn't", () => {
+  const select = node("button", { role: "combobox", expanded: "true", controls: "lb", styles: FILLED });
+  const choice = chooseMeasuredElement(root(select), [portal({ role: "listbox", id: "lb", overlay: true })], ["select"]);
+  assert.deepEqual(choice, { kind: "portal", index: 0, element: 'div[role="listbox"]', notes: [], field: { path: [0], element: 'button[role="combobox"]' } });
+  // shadcn's, by its content's slot.
+  const slotted = chooseMeasuredElement(root(node("div", {}, [select])), [portal({ slot: "select-content", overlay: true })], ["select"]);
+  assert.deepEqual(slotted.kind === "portal" && slotted.field, { path: [0, 0], element: 'button[role="combobox"]' });
+  // A dialog's content is measured alone.
+  const dialog = node("button", { slot: "dialog-trigger", hasPopup: "dialog", expanded: "true", controls: "d", state: "open", styles: FILLED });
+  const content = chooseMeasuredElement(root(dialog), [portal({ role: "dialog", id: "d", overlay: true })], ["dialog"]);
+  assert.equal(content.kind === "portal" && content.field, undefined);
+});
+
+test("chooseMeasuredElement: a combobox on a popover's trigger is a field, by its name or by the parts its content holds", () => {
+  // A Combobox whose trigger is a plain popover trigger, its content a dialog holding a cmdk input and list.
+  const open = node("button", { hasPopup: "dialog", expanded: "true", controls: "pc", state: "open", styles: FILLED });
+  const slots = componentSlots("Combobox", "components/Combobox");
+  const content = [portal({ role: "dialog", id: "pc", overlay: true, picks: true })];
+  assert.deepEqual(chooseMeasuredElement(root(open), content, slots), { kind: "portal", index: 0, element: 'div[role="dialog"]', notes: [], field: { path: [0], element: "button" } });
+  // By its content alone, whatever the component's name.
+  const byContent = chooseMeasuredElement(root(open), content, ["filter-menu"]);
+  assert.deepEqual(byContent.kind === "portal" && byContent.field, { path: [0], element: "button" });
+  // A popover's content that holds none is measured alone.
+  const popover = chooseMeasuredElement(root(open), [portal({ role: "dialog", id: "pc", overlay: true })], componentSlots("Popover", "components/Popover"));
+  assert.equal(popover.kind === "portal" && popover.field, undefined);
+  // Closed, a combobox by its name is its field: measured as it is where it doesn't open, with no closed-trigger note.
+  const closed = node("button", { hasPopup: "dialog", expanded: "false", controls: "pc", state: "closed", styles: FILLED });
+  assert.deepEqual(chooseMeasuredElement(root(closed), [], slots), { kind: "tree", path: [0], element: "button", notes: [], trigger: { field: true, interactions: ["click"] } });
+});
+
+test("chooseMeasuredElement: a toast the story draws itself is measured as it is, its own buttons never clicked", () => {
+  const slots = componentSlots("Toast", "ui/Toast");
+  const toast = () => node("div", { role: "status" }, [node("p", { styles: FILLED }), node("button", { styles: FILLED })]);
+  assert.deepEqual(chooseMeasuredElement(root(toast()), [], slots), { kind: "tree", path: [0], element: 'div[role="status"]', notes: [] });
+  // Two in a wrapper, with no toaster: the wrapper, as any story's, and no opener.
+  const both = chooseMeasuredElement(root(node("div", {}, [toast(), toast()])), [], slots);
+  assert.deepEqual(both, { kind: "tree", path: [0], element: "div", notes: [{ kind: "layout-wrapper", element: "div", children: 2 }] });
 });

@@ -14,11 +14,13 @@ import {
   parseMeasurementWarning, snapFailsStrict, resolveStoryOverrides, detectIdenticalValues, describeIdenticalValues,
   describeTruncatedTrees, describeClimbed, describeFontStandIns, parseSnapWarning,
   contentOverflow, describeOverflow, describeVariantStories,
-  detectBehaviorProps, withoutUnset,
+  detectBehaviorProps, withoutUnset, TIMEOUT_RETRY_FACTOR, describeStoryErrors, snapMessages,
 } from "../snap.js";
 import { describeArgRejections, describeUncheckedArgs } from "../snap-args.js";
 import { VERSION } from "../version.js";
 import type { SnapOptions, SnapVariant } from "../snap.js";
+import { colorSchemeInPage, themeGlobalsInPage } from "../snap-scheme.js";
+import type { SchemeReading, ThemeGlobals } from "../snap-scheme.js";
 import type { FigmaVariantProperty, StorybookComponent } from "../mapper.js";
 import { storyArgsInPage, applyStoryArgsInPage, captureTreeInPage, storiesOwnInPage, thumbnailInPage } from "../snap-browser.js";
 import type { RawTreeCapture } from "../snap-tree.js";
@@ -337,6 +339,7 @@ test("detectFontSubstitution: names an unavailable base font", () => {
 
 // A variant that switches family carries its own availability in its delta;
 // inspecting only the base would record the substitution without reporting it.
+
 test("detectFontSubstitution: catches a variant-only substitution", () => {
   const warning = detectFontSubstitution(
     componentWithFonts(true, [{ fontAvailable: false, fontFamily: "Helvetica" }]),
@@ -412,6 +415,7 @@ async function snapEntries(dir: string, entries: object[]) {
 // Components are keyed by `title ?? id` in the readback and during
 // verification, so two components sharing that key silently collapse into one
 // downstream — a measured component vanishing from the score with no signal.
+
 test("runSnap: warns when two components share an identity key", async () => {
   const dir = tempDir();
   try {
@@ -460,6 +464,7 @@ test("runSnap: untitled components of one name are told apart by their IDs", asy
 // The formatter is unit-tested above; this pins the wiring — that a collision
 // detected while assigning names actually reaches the component's warnings, and
 // so the `--strict-warnings` gate, rather than being computed and dropped.
+
 test("runSnap: a variant name collision reaches the warnings and the strict gate", async () => {
   const dir = tempDir();
   try {
@@ -668,6 +673,7 @@ test("runSnap: a component within the limit is not capped", async () => {
 
 // vaul's Drawer maps 15 booleans, 131072 combinations, and was capped with no
 // way to leave its behavioral props out.
+
 test("runSnap: --exclude-props leaves the named props out of every component's variants", async () => {
   const dir = tempDir();
   try {
@@ -1047,6 +1053,7 @@ test("runSnap: a story that times out is tried once more before it is recorded",
   const dir = tempDir();
   try {
     let navigations = 0;
+    const waits: number[] = [];
     const timeout = Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
     const result = await runSnap(options(dir), {
       storybook: {
@@ -1057,7 +1064,7 @@ test("runSnap: a story that times out is tried once more before it is recorded",
         via: "stub",
         browser: {
           newContext: async () => ({
-            newPage: async () => ({ on: () => {}, off: () => {}, goto: async () => { navigations++; throw timeout; } }),
+            newPage: async () => ({ on: () => {}, off: () => {}, goto: async (_url: string, o: { timeout: number }) => { navigations++; waits.push(o.timeout); throw timeout; } }),
             close: async () => {},
           }),
           close: async () => {},
@@ -1065,6 +1072,8 @@ test("runSnap: a story that times out is tried once more before it is recorded",
       }) as never,
     });
     assert.equal(navigations, 2);
+    // The second time with longer to load: a slow story times out at --timeout again.
+    assert.deepEqual(waits, [1000, 1000 * TIMEOUT_RETRY_FACTOR]);
     assert.equal(result.components[0].variants[0].status, "timeout");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -1704,17 +1713,27 @@ function treeBrowser(opts: {
   storiesReadFails?: number;
   /** Stories whose every load times out. */
   timesOut?: (storyId: string) => boolean;
+  /** The color scheme the story renders in, given its URL's `globals`; unread by default. */
+  scheme?: (globals: string | null, storyId: string) => SchemeReading;
+  /** The loads, counted from 1, that time out. */
+  loadsTimeOut?: number[];
+  /** Storybook's globals, as themeGlobalsInPage reads them, or as it would given the URL's `globals`. */
+  themeGlobals?: ThemeGlobals | ((globals: string | null) => ThemeGlobals);
 }) {
   const drawn: unknown[] = [];
   let timeouts = opts.timeouts ?? 0;
   let readFails = opts.storiesReadFails ?? 0;
   let storyId = opts.storyId;
+  let globals: string | null = null;
+  // Each load: its URL's `globals`, and how long it was given.
+  const loads: { globals: string | null; timeout?: number }[] = [];
   let fake = fakePreview({ argTypes: {}, initial: {}, url: {}, storyId, csf: opts.csf });
   let described = false;
   const given = () => fake.preview.storyStoreValue.getStoryContext().args;
   const target = {
     evaluate: async (fn: unknown) => {
       if (fn === captureTreeInPage) return opts.capture(given(), storyId);
+      if (fn === colorSchemeInPage) return opts.scheme?.(globals, storyId) ?? null;
       if (described) return null;
       described = true;
       return { tag: "span", slot: "switch", role: null };
@@ -1728,12 +1747,14 @@ function treeBrowser(opts: {
   };
   const page = {
     on: () => {}, off: () => {},
-    goto: async (url: string) => {
-      if (timeouts-- > 0 || opts.timesOut?.(new URL(url).searchParams.get("id") ?? "")) {
+    goto: async (url: string, o?: { timeout?: number }) => {
+      loads.push({ globals: new URL(url).searchParams.get("globals"), timeout: o?.timeout });
+      if (timeouts-- > 0 || opts.timesOut?.(new URL(url).searchParams.get("id") ?? "") || opts.loadsTimeOut?.includes(loads.length)) {
         throw Object.assign(new Error("page.goto: Timeout 1000ms exceeded."), { name: "TimeoutError" });
       }
       described = false;
       storyId = new URL(url).searchParams.get("id") ?? opts.storyId;
+      globals = new URL(url).searchParams.get("globals");
       fake = fakePreview({ storyId, url: urlArgs(url), argTypes: opts.argTypes ?? {}, initial: {}, csf: opts.csf });
       return null;
     },
@@ -1742,6 +1763,7 @@ function treeBrowser(opts: {
     $: async () => target,
     evaluate: async (fn: unknown, arg?: unknown) => {
       if (fn === storiesOwnInPage && readFails-- > 0) throw new Error("page.evaluate: Execution context was destroyed, most likely because of a navigation");
+      if (fn === themeGlobalsInPage) return (typeof opts.themeGlobals === "function" ? opts.themeGlobals(globals) : opts.themeGlobals) ?? null;
       if (fn === storyArgsInPage || fn === applyStoryArgsInPage || fn === storiesOwnInPage) return inPage(fake.preview, () => (fn as (a: unknown) => Promise<unknown>)(arg));
       if (fn === thumbnailInPage) {
         drawn.push(arg);
@@ -1758,7 +1780,7 @@ function treeBrowser(opts: {
     via: "stub",
     browser: { version: () => opts.version ?? "154.0.0.0", newContext: async () => ({ newPage: async () => page, close: async () => {} }), close: async () => {} },
   }) as never;
-  return { launch, drawn };
+  return { launch, drawn, loads };
 }
 
 const SWITCH_SIZE = { name: "size", type: { name: "union", raw: '"default" | "sm"' }, defaultValue: "default" };
@@ -2792,7 +2814,7 @@ test("runSnap: a select whose field one variant couldn't open, where others open
     const [component] = result.components;
     const bySlug = new Map(component.variants.map((v) => [v.slug, v]));
     const [shut, open] = [bySlug.get("disabled-true")!, bySlug.get("disabled-false")!];
-    assert.deepEqual([open.element, open.opened?.via], ['div[data-slot="select-content"]', "click"]);
+    assert.deepEqual([open.element, open.opened?.via], ['button[data-slot="select-trigger"] + div[data-slot="select-content"]', "click"]);
     assert.deepEqual([shut.element, shut.opened], ['button[data-slot="select-trigger"]', undefined]);
     const warning = component.warnings.find((w) => /closed trigger/.test(w));
     assert.ok(warning?.startsWith(
@@ -2822,6 +2844,190 @@ test("runSnap: a component's later variants open its overlay the way an earlier 
   }
 });
 
+test("runSnap: a story Storybook renders dark is measured again with the globals that render it light, and those go in every URL after", async () => {
+  const dir = tempDir();
+  try {
+    const urls: string[] = [];
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } },
+      // As coder's preview: addon-themes' theme global, empty, which its decorator reads as dark.
+      scheme: (globals) => {
+        urls.push(globals ?? "");
+        return globals === "theme:light" ? { scheme: "light", by: "html.light" } : { scheme: "dark", by: "html.dark" };
+      },
+      themeGlobals: { globals: { theme: "", viewport: "" }, allowed: ["theme", "viewport"], options: {} },
+    });
+    const progress: string[] = [];
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch, onProgress: (m) => progress.push(m) });
+    const [component] = result.components;
+    assert.equal(component.scheme, "light");
+    assert.deepEqual(component.globals, { theme: "light" });
+    // The first load rendered dark; every load after it asked for light.
+    assert.equal(urls[0], "");
+    assert.ok(urls.slice(1).every((g) => g === "theme:light"), urls.join(","));
+    assert.equal(component.warnings.some((w) => /dark color scheme/.test(w)), false);
+    assert.ok(progress.some((m) => /snap sets globals=theme:light/.test(m)));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a story that renders dark whatever snap sets is recorded as dark, with a warning", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture,
+      scheme: () => ({ scheme: "dark", by: "html.dark" }),
+      themeGlobals: { globals: { theme: "dark" }, allowed: ["theme"], options: {} },
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const [component] = result.components;
+    assert.equal(component.scheme, "dark");
+    assert.equal(component.globals, undefined);
+    const warning = component.warnings.find((w) => /dark color scheme/.test(w));
+    assert.match(warning ?? "", /^It was measured in its dark color scheme \(html\.dark\), as Storybook rendered it dark, and still did with globals=theme:light/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a page that marks no scheme, where addon-themes' default theme is dark, is measured light with the globals", async () => {
+  const dir = tempDir();
+  try {
+    const { launch, loads } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture,
+      // A JSX provider's theme: nothing on the page says which.
+      scheme: () => ({ scheme: "light" }),
+      themeGlobals: (globals): ThemeGlobals => (globals === "theme:light"
+        ? { globals: { theme: "light" }, allowed: ["theme"], options: {} }
+        : { globals: { theme: "dark" }, allowed: ["theme"], options: { theme: ["light", "dark"] }, defaulted: ["theme"] }),
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const [component] = result.components;
+    assert.equal(component.scheme, "light");
+    assert.deepEqual(component.globals, { theme: "light" });
+    assert.deepEqual(loads.map((l) => l.globals ?? ""), ["", "theme:light"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a light re-measure that fails leaves the globals to the next dark variant, and the component is measured again once they work", async () => {
+  const dir = tempDir();
+  try {
+    const { launch, loads } = treeBrowser({
+      storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } },
+      scheme: (globals) => (globals === "theme:light" ? { scheme: "light", by: "html.light" } : { scheme: "dark", by: "html.dark" }),
+      themeGlobals: { globals: { theme: "" }, allowed: ["theme"], options: {} },
+      // The first variant's re-measure with the light globals, and its retry, time out.
+      loadsTimeOut: [2, 3],
+    });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    const [component] = result.components;
+    assert.equal(component.scheme, "light");
+    assert.deepEqual(component.globals, { theme: "light" });
+    assert.equal(component.warnings.some((w) => /dark color scheme/.test(w)), false);
+    // The second variant tried them again; then both were measured with them.
+    assert.deepEqual(loads.map((l) => l.globals ?? ""), ["", "theme:light", "theme:light", "", "theme:light", "theme:light", "theme:light"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: one story that sets its own dark theme doesn't keep the light globals from the stories after it", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({
+      storyId: "ui-base-button--default", capture: buttonCapture, argTypes: { size: { options: ["default", "icon"] } }, csf: BUTTON_CSF,
+      // Default renders dark whatever the globals; Icon follows them.
+      scheme: (globals, storyId) => (globals === "theme:light" && storyId.endsWith("--icon") ? { scheme: "light", by: "html.light" } : { scheme: "dark", by: "html.dark" }),
+      themeGlobals: { globals: { theme: "" }, allowed: ["theme"], options: {} },
+    });
+    const result = await runSnap(options(dir, { selector: "button" }), { storybook: buttonDocs(), launch });
+    const [button] = result.components;
+    assert.deepEqual(button.globals, { theme: "light" });
+    const icon = button.variants.find((v) => v.storyId === "ui-base-button--icon");
+    assert.equal(icon?.status, "ok");
+    const warning = button.warnings.find((w) => /dark color scheme/.test(w));
+    assert.match(warning ?? "", /\(1 of 2 measured variants\), as Storybook rendered it dark, and still did with globals=theme:light in the story's URL/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runSnap: a load given longer that times out too gives the component's later loads --timeout again", async () => {
+  const dir = tempDir();
+  try {
+    const { launch, loads } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture, argTypes: { size: { options: ["default", "sm"] } }, timesOut: () => true });
+    const result = await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs(), launch });
+    assert.deepEqual(result.components[0].variants.map((v) => v.status), ["timeout", "timeout"]);
+    assert.deepEqual(loads.map((l) => l.timeout), [1000, 1000 * TIMEOUT_RETRY_FACTOR, 1000, 1000]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("describeStoryErrors: a story that calls an implicit action while it renders gets its fix, and other errors none", () => {
+  const error = "We detected that you use an implicit action arg while rendering of your story. (implicit action: onLayoutChanged)";
+  const failed = [{ status: "render_error" as const, error }, { status: "render_error" as const, error }];
+  const warning = describeStoryErrors("ui-radix-resizablepanelgroup--default", failed);
+  assert.match(warning ?? "", /^Every variant failed to render with Storybook's own error, not snap's: ui-radix-resizablepanelgroup--default calls its `onLayoutChanged` arg while it renders/);
+  assert.match(warning ?? "", /`args: \{ onLayoutChanged: fn\(\) \}` with `fn` from `storybook\/test`/);
+  assert.match(describeStoryErrors("x--default", [...failed, { status: "ok", error: null }]) ?? "", /^2 of 3 variants failed/);
+  assert.equal(describeStoryErrors("x--default", [{ status: "render_error", error: "boom" }]), null);
+});
+
+test("snapMessages: what the text output says, i, ! and ✗ lines and each variant not measured, for --json's messages", () => {
+  const click = { via: "click" as const, trigger: 'button[data-slot="popover-trigger"]' };
+  const result = {
+    fontStandIns: [["system-ui", "Inter"]],
+    components: [
+      {
+        name: "Popover", title: "ui/base/Popover", variantProperties: [], warnings: ["a warning"], error: null,
+        variants: [
+          { combination: {}, slug: "default", status: "ok", error: null, opened: click, element: 'div[data-slot="popover-content"]' },
+          { combination: {}, slug: "other", status: "render_error", error: "boom" },
+        ],
+      },
+      { name: "Card", variantProperties: [], warnings: [], error: "no stories found for this component", variants: [], scheme: "light", globals: { theme: "light" } },
+      { name: "Badge", variantProperties: [], warnings: [], error: null, variants: [], scheme: "light", globals: { theme: "light" }, storyId: "ui-badge--default", storiesUnread: "no preview" },
+    ],
+  } as never;
+  const kept = "Measured 2 components again and kept 5 from the earlier snap";
+  assert.deepEqual(snapMessages(result, [kept]), [
+    // What progress said of the run, which --json doesn't print.
+    { level: "info", text: kept },
+    { level: "info", text: describeFontStandIns([["system-ui", "Inter"]])! },
+    // The globals once, for the run.
+    { level: "info", text: "snap measured the light color scheme with globals=theme:light in each story's URL, as Storybook renders dark by default" },
+    { level: "warning", component: "ui/base/Popover", text: "a warning" },
+    { level: "error", component: "Card", text: "no stories found for this component" },
+    { level: "info", component: "Badge", text: "snap couldn't read its stories' args (no preview), so it measured every variant from ui-badge--default, choosing no story for any" },
+    { level: "info", component: "ui/base/Popover", text: 'measured open: snap clicked button[data-slot="popover-trigger"] in 1 of 1 variants to open it, and measured div[data-slot="popover-content"]'.replace(" in 1 of 1 variants", "") },
+    { level: "failed", component: "Popover", text: "other [render_error] boom" },
+  ]);
+});
+
+test("runSnap: what progress says of the run, a relaunched browser and the components --merge kept, is a note for --json", async () => {
+  const dir = tempDir();
+  try {
+    const { launch } = treeBrowser({ storyId: "ui-base-switch--default", capture: switchCapture });
+    await runSnap(options(dir, { selector: "[data-slot=switch]" }), { storybook: switchDocs([]), launch });
+    const notes: string[] = [];
+    await runSnap(options(dir, { selector: "[data-slot=switch]", components: ["Switch"], merge: true }), { storybook: switchDocs([]), launch, onNote: (m) => notes.push(m) });
+    assert.deepEqual(notes, ["Measured 1 component again and kept 0 from the earlier snap"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("describeMeasurementNotes: a toast's story snap couldn't raise one from says why, after the layout wrapper's warning", () => {
+  const note = { kind: "layout-wrapper" as const, element: "div", children: 3, toast: "snap clicked button to raise a toast, and clicking it opened nothing within 3000ms" };
+  const [warning] = describeMeasurementNotes("Toaster", [{ slug: "default", note }], 1, "ui/radix/Sonner");
+  assert.match(warning, /^snap measured div, which holds 3 elements and draws nothing itself/);
+  assert.match(warning, / It is a toast's story: snap clicked button to raise a toast, and clicking it opened nothing within 3000ms, so no toast was measured\.$/);
+  assert.deepEqual(parseMeasurementWarning(warning), { kind: "layout-wrapper", element: "div", children: 3 });
+});
 
 test("detectBehaviorProps: where the defaults render nothing, a boolean whose other value renders it is pinned to that value", () => {
   // coder's ConfirmDialog: its story sets open: true, its docs default open to false.

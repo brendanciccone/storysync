@@ -12,10 +12,10 @@ import type { FakeArgType } from "./preview-standin.js";
 import {
   captureStory, browserInstallCommand, storybookErrorInPage, storyReadySelector, storyArgsInPage, applyStoryArgsInPage,
   captureTree, captureTreeInPage, drawingElementInPage, readStoryTreeInPage, thumbnailInPage, textFontStacksInPage, standInFontsInPage, standInsLoadedInPage, standInsMeasured,
-  storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage,
+  storiesOwnInPage, readStoriesOwn, overlaySettledInPage, triggerOpenInPage, storyRenderedInPage, RENDERED_GRACE_MS,
 } from "../snap-browser.js";
 import type { OpenMemory } from "../snap-browser.js";
-import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId } from "../snap-assets.js";
+import { SVG_DROPPED_TAGS, SVG_GEOMETRY, SVG_GROUP_PROPERTIES, SVG_PAINT_PROPERTIES, SVG_SHAPE_TAGS, THUMBNAIL_ENCODING, imageAssetId, rawPaint, serializeSvg } from "../snap-assets.js";
 import { RAW_TREE_LIMITS, TEXT_TREE_PROPERTIES, TREE_PROPERTY_DEFAULTS } from "../snap-tree.js";
 import type { RawTreeElement, RawTreePseudo, RawTreeText } from "../snap-tree.js";
 import { NON_RENDERED_TAGS, OVERLAY_SELECTOR, WRAPPER_PROPERTIES } from "../snap-normalize.js";
@@ -166,6 +166,23 @@ test("captureStory: a story that never renders costs one --timeout, not one per 
   assert.deepEqual(waits.map((w) => w.timeout), [OPTS.timeoutMs]);
   const selected = await captureStory(storyPage({ appears: false }).page, "http://localhost:6006/iframe.html?id=x--default", { ...OPTS, selector: ".card" });
   assert.equal(selected.error, "no element matched .card");
+});
+
+test("captureStory: a story Storybook has rendered that draws nothing waits RENDERED_GRACE_MS, not the whole --timeout", async () => {
+  // coder's ConfirmDialog held closed renders nothing, and each of 23 such variants waited 10 seconds.
+  const page = {
+    ...LISTENS,
+    goto: async () => null,
+    $: async () => null,
+    evaluate: async (fn: unknown, arg?: unknown) => (fn === storyRenderedInPage ? arg === "x--default" : null),
+    waitForSelector: (_selector: string, options?: { timeout?: number }) =>
+      new Promise((_resolve, reject) => setTimeout(() => reject(new TimeoutError("page.waitForSelector: Timeout")), options?.timeout)),
+  };
+  const started = Date.now();
+  const result = await captureStory(page as unknown as Page, "http://localhost:6006/iframe.html?id=x--default", { ...OPTS, timeoutMs: 8000 });
+  assert.equal(result.status, "element_not_found");
+  const took = Date.now() - started;
+  assert.ok(took >= RENDERED_GRACE_MS && took < 4000, `took ${took}ms`);
 });
 
 test("storyReadySelector: waits for an element that can draw, the component's slots, or an error, in one selector", () => {
@@ -865,6 +882,45 @@ test("captureTreeInPage: an SVG as structure and computed paint, its painted sha
   assert.equal((big.root.kids[0] as RawTreeElement).svgElements, 5);
 });
 
+test("captureTreeInPage: an SVG shape's CSS transform about its origin, which its attributes don't say, as a matrix", () => {
+  // A spinner: eight bars at one place, each turned by a style's rotate about the icon's center.
+  const bar = (deg: number): FakeElementSpec => {
+    const r = (deg * Math.PI) / 180;
+    const [c, s] = [Math.cos(r), Math.sin(r)];
+    return { tag: "rect", svg: true, attrs: { x: "10.9", y: "2", width: "2", height: "5.5", rx: "1" }, rect: [10, 10, 2, 6], style: { transform: `matrix(${c}, ${s}, ${-s}, ${c}, 0, 0)`, "transform-origin": "12px 12px" } };
+  };
+  const svg: FakeElementSpec = { tag: "svg", svg: true, attrs: { viewBox: "0 0 24 24" }, rect: [0, 0, 24, 24], kids: [bar(0), bar(90), bar(45)] };
+  const icon = readTree({ tag: "div", rect: [0, 0, 24, 24], kids: [svg] }).root.kids[0] as RawTreeElement;
+  const transforms = icon.svg!.kids!.map((k) => k.attrs.transform);
+  // None where it draws as its attributes say; else turned about (12, 12).
+  assert.deepEqual(transforms, [undefined, "matrix(0 1 -1 0 24 0)", "matrix(0.7071 0.7071 -0.7071 0.7071 12 -4.9706)"]);
+  const { markup } = serializeSvg(icon.svg!, [0, 0, 24, 24]);
+  assert.match(markup, /<rect x="10\.9" y="2" width="2" height="5\.5" rx="1" transform="matrix\(0 1 -1 0 24 0\)"\/>/);
+});
+
+test("captureTreeInPage: a percentage in an SVG shape's CSS translate is of its viewport's viewBox, not pixels", () => {
+  const shape = (translate: string): FakeElementSpec => ({ tag: "rect", svg: true, attrs: { width: "2", height: "2" }, rect: [0, 0, 2, 2], style: { translate } });
+  const svg: FakeElementSpec = { tag: "svg", svg: true, attrs: { viewBox: "0 0 24 12" }, rect: [0, 0, 48, 24], kids: [shape("50% 0px"), shape("1px 25%")] };
+  const icon = readTree({ tag: "div", rect: [0, 0, 48, 24], kids: [svg] }).root.kids[0] as RawTreeElement;
+  assert.deepEqual(icon.svg!.kids!.map((k) => k.attrs.transform), ["matrix(1 0 0 1 12 0)", "matrix(1 0 0 1 1 3)"]);
+});
+
+test("captureTreeInPage: a <text> kept as written draws in its CSS paint, which serializeSvg writes as hex", () => {
+  // A chart tick: fill="#666" as written, drawn in a fill-muted-foreground rule that applies.
+  const tick: FakeElementSpec = {
+    tag: "text", svg: true, attrs: { x: "4", y: "10", fill: "#666", class: "fill-muted-foreground" }, rect: [0, 0, 20, 10],
+    style: { fill: "oklch(0.556 0 0)", stroke: "none" },
+    kids: [{ tag: "tspan", svg: true, attrs: { x: "4" }, rect: [0, 0, 20, 10], style: { fill: "oklch(0.556 0 0)", stroke: "none" }, kids: [{ text: "Jan", rects: [[0, 0, 20, 10]] }] }],
+  };
+  const svg: FakeElementSpec = { tag: "svg", svg: true, attrs: { viewBox: "0 0 40 20" }, rect: [0, 0, 40, 20], kids: [tick] };
+  const chart = readTree({ tag: "div", rect: [0, 0, 40, 20], kids: [svg] }).root.kids[0] as RawTreeElement;
+  const raw = chart.svg!.kids![0].raw!;
+  assert.equal(raw, '<text x="4" y="10" fill="oklch(0.556 0 0)" class="fill-muted-foreground" stroke="none"><tspan x="4">Jan</tspan></text>');
+  const { markup } = serializeSvg(chart.svg!, [0, 0, 40, 20]);
+  assert.match(markup, /<text x="4" y="10" fill="#737373" class="fill-muted-foreground" stroke="none">/);
+  assert.equal(rawPaint('<text fill="rgba(255, 0, 0, 0.5)"/>'), '<text fill="#ff0000" fill-opacity="0.5"/>');
+});
+
 test("captureTreeInPage: an input's value or placeholder, with how wide it draws; an image's source", () => {
   const raw = readTree({
     tag: "div", rect: [0, 0, 300, 40],
@@ -1311,8 +1367,12 @@ test("captureStory: with --no-open-overlays, a closed trigger is measured untouc
 test("captureStory: a select's field is clicked open and its listbox measured; one that opens nothing is measured as the field, with no note but why", async () => {
   const field = { role: "combobox", expanded: "false", state: "closed", slot: "select-trigger" };
   const select = overlayPage({ marks: field, opensOn: ["click"], content: { slot: "select-content", role: "listbox" } });
-  const opened = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
-  assert.deepEqual([opened.element, opened.opened], ['div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+  const opened = await captureStory(select.page, URL_OF, { ...OVERLAY_OPTS, tree: "tree", component: { name: "Select", title: "ui/radix/Select" } });
+  // The field and the listbox it opened, as one root around both: Figma gets the field too.
+  assert.deepEqual([opened.element, opened.opened], ['button[data-slot="select-trigger"] + div[data-slot="select-content"]', { via: "click", trigger: 'button[data-slot="select-trigger"]' }]);
+  assert.deepEqual(opened.boundingBox, { x: 416, y: 200, width: 448, height: 245 });
+  assert.deepEqual(opened.tree?.nodes.map((n) => n.k), ["", "button", "div"]);
+  assert.ok(select.done.includes("probe removed"));
 
   const shut = overlayPage({ marks: field, opensOn: [] });
   const asIs = await captureStory(shut.page, URL_OF, { ...OVERLAY_OPTS, component: { name: "Select", title: "ui/radix/Select" } });
@@ -1395,6 +1455,38 @@ test("overlaySettledInPage: waits out the animations that end, not one that repe
   } finally {
     delete scope.requestAnimationFrame;
   }
+});
+
+test("storybookErrorInPage: an implicit action error names the args Storybook wants a spy for, from its stack", () => {
+  // As shadcn's ResizablePanelGroup story shows it in plain Storybook, without snap.
+  const scope = globalThis as Record<string, unknown>;
+  const saved = scope.document;
+  const nodes: Record<string, { textContent: string }> = {
+    "#error-message, .sb-errordisplay_code, #error-stack": { textContent: "We detected that you use an implicit action arg while rendering of your story.  " },
+    "#error-stack": { textContent: "Please provide an explicit spy to your args like this:\n  import { fn } from 'storybook/test';\n  ... \n  args: {\n   onLayoutChanged: fn()\n  }\n" },
+  };
+  scope.document = { body: { classList: { contains: (c: string) => c === "sb-show-errordisplay" }, innerText: "" }, querySelector: (selector: string) => nodes[selector] ?? null };
+  try {
+    assert.equal(storybookErrorInPage(), "We detected that you use an implicit action arg while rendering of your story. (implicit action: onLayoutChanged)");
+  } finally {
+    scope.document = saved;
+  }
+});
+
+test("captureTreeInPage: a select's open field and its listbox, in a portal, read as one root around both that draws nothing", () => {
+  const field: FakeElementSpec = { tag: "button", attrs: { role: "combobox" }, rect: [16, 16, 180, 36], style: { "background-color": "rgb(255, 255, 255)" }, kids: [{ text: "Apple", rects: [[28, 26, 40, 16]] }] };
+  const listbox: FakeElementSpec = { tag: "div", attrs: { role: "listbox" }, rect: [16, 56, 180, 120], style: { "background-color": "rgb(250, 250, 250)" } };
+  const body: FakeElementSpec = {
+    tag: "body", rect: [0, 0, 1280, 720],
+    kids: [{ tag: "div", attrs: { id: "storybook-root" }, rect: [0, 0, 1280, 68], kids: [field] }, { tag: "div", rect: [0, 0, 0, 0], style: { position: "fixed" }, kids: [listbox] }],
+  };
+  const raw = inFakePage(body, (el) => captureTreeInPage(el, { ...TREE_ARGS, focus: [el.children[0].children[0], el.children[1].children[0]] }));
+  assert.deepEqual(raw.root.box, [0, 0, 180, 160]);
+  assert.deepEqual(raw.root.cs, {});
+  const [button, list] = raw.root.kids as RawTreeElement[];
+  assert.deepEqual([button.tag, button.path, button.box], ["button", [0, 0], [0, 0, 180, 36]]);
+  assert.deepEqual([list.role, list.path, list.box], ["listbox", [1, 0], [0, 40, 180, 120]]);
+  assert.equal(raw.around, undefined);
 });
 
 test("captureTreeInPage: says which of an element's dark: classes with a state apply to it, by the page's own style sheets", () => {
