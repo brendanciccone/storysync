@@ -1,6 +1,8 @@
 // Design token extraction from project source files.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { colorToHex } from "./color.js";
 
@@ -641,8 +643,31 @@ function extractFromTailwind(configPath: string, projectRoot?: string, darkFiles
     warnings.push(`${configPath} builds its config with ${wrapper}, which storysync can't read statically, so the tokens it adds are missing`);
   }
   // The own theme's warnings were given as it was read.
-  const collections = withLayers(layers, own, themeLayer(themeBlocks, []));
-  if (!collections.length && warnings.length === unread) {
+  let collections = withLayers(layers, own, themeLayer(themeBlocks, []));
+  const root = projectRoot ?? join(configPath, "..");
+  // What the text left unread, a package's preset, a function's config, a
+  // value it interpolates, Tailwind knows by running the config, the
+  // project's own code: so does storysync then, and takes the theme
+  // Tailwind resolves, less Tailwind's defaults, as it reads a config.
+  const skipped = warnings.slice(0, unread).filter((w) => w.startsWith("Skipped dynamic value"));
+  // Whether the theme was read whole, so an empty one is worth saying.
+  let whole = warnings.length === unread;
+  if (warnings.length > unread || skipped.length) {
+    const loaded = loadTailwindTheme(configPath, root);
+    if ("theme" in loaded) {
+      const fromRun: string[] = [];
+      collections = themeCollections(extractThemeBlocks(`module.exports = { theme: ${configText(loaded.theme)} }`), fromRun);
+      warnings.length = 0;
+      warnings.push(
+        `Loaded ${configPath} as Tailwind does, by running it, since reading it as text left some of it unread: its tokens are the theme Tailwind resolves, less Tailwind's defaults`,
+        ...fromRun,
+      );
+      whole = true;
+    } else {
+      warnings.push(`Could not load ${configPath} as Tailwind does either: ${loaded.error}`);
+    }
+  }
+  if (!collections.length && whole) {
     const plugins = /\bplugins\s*:\s*\[\s*[^\]\s]/.test(content) ? ", nor what a plugin adds" : "";
     warnings.push(`Read no colors, spacing, borderRadius, fontSize or boxShadow from the theme of ${configPath}. Tailwind's default theme isn't read${plugins}`);
   }
@@ -650,7 +675,6 @@ function extractFromTailwind(configPath: string, projectRoot?: string, darkFiles
   // Resolve any `var(--name)` refs in token values against the project's :root CSS vars.
   // Common in shadcn/ui: `colors: { background: "hsl(var(--background))" }` with the actual
   // value defined in globals.css as `:root { --background: 0 0% 100%; }`.
-  const root = projectRoot ?? join(configPath, "..");
   const cssFiles = findCSSWithCustomProperties(root);
   let vars: Map<string, string> | undefined;
   let written: Map<string, string> | undefined;
@@ -670,6 +694,81 @@ function extractFromTailwind(configPath: string, projectRoot?: string, darkFiles
   }
 
   return { source: "tailwind", sourcePath: configPath, collections, warnings, vars, written };
+}
+
+/** How long loading a Tailwind config may take, as a build would. */
+const LOAD_CONFIG_TIMEOUT_MS = 30_000;
+
+/**
+ * Runs in a child Node, given the config and the project's own Tailwind
+ * loadConfig and resolveConfig: prints, as JSON, the theme Tailwind
+ * resolves from the config, presets, plugins' themes and functions
+ * included, less each value Tailwind's own default theme has the same.
+ */
+const LOAD_THEME = `
+const [config, loadPath, resolvePath] = process.argv.slice(1);
+const pick = (m) => (m && m.__esModule ? m.default : m.default || m);
+const loadConfig = pick(require(loadPath));
+const resolveConfig = pick(require(resolvePath));
+const theme = resolveConfig(loadConfig(config)).theme || {};
+const base = resolveConfig({ content: ["-"] }).theme || {};
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const own = {};
+for (const [key, value] of Object.entries(theme)) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+  const kept = {};
+  for (const [name, v] of Object.entries(value)) if (!same(v, (base[key] || {})[name])) kept[name] = v;
+  if (Object.keys(kept).length) own[key] = kept;
+}
+process.stdout.write(JSON.stringify(own, (k, v) => (typeof v === "function" ? undefined : v)));
+`;
+
+/**
+ * Loads the Tailwind config at `configPath` as Tailwind does, with the
+ * project's own tailwindcss (3.3 or later has loadConfig, which takes
+ * TypeScript and ESM configs too), in a child process, so the user's code
+ * runs as their build runs it and never in storysync's own. The theme it
+ * resolves, less Tailwind's defaults; or why it couldn't.
+ */
+export function loadTailwindTheme(configPath: string, projectRoot: string): { theme: Record<string, unknown> } | { error: string } {
+  let loadPath: string;
+  let resolvePath: string;
+  try {
+    const projectRequire = createRequire(join(resolve(projectRoot), "package.json"));
+    loadPath = projectRequire.resolve("tailwindcss/loadConfig");
+    resolvePath = projectRequire.resolve("tailwindcss/resolveConfig");
+  } catch {
+    return { error: "the project has no tailwindcss with loadConfig and resolveConfig (Tailwind 3.3 or later) to load it with" };
+  }
+  try {
+    const out = execFileSync(process.execPath, ["-e", LOAD_THEME, resolve(configPath), loadPath, resolvePath], {
+      cwd: resolve(projectRoot), encoding: "utf8", timeout: LOAD_CONFIG_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+    });
+    const theme = JSON.parse(out) as unknown;
+    if (!theme || typeof theme !== "object" || Array.isArray(theme)) return { error: "it resolved no theme" };
+    return { theme: theme as Record<string, unknown> };
+  } catch (err) {
+    const e = err as { stderr?: string; message?: string; code?: string };
+    if (e.code === "ETIMEDOUT") return { error: `it took longer than ${LOAD_CONFIG_TIMEOUT_MS / 1000} seconds` };
+    const lines = (e.stderr || e.message || String(err)).split("\n").map((l) => l.trim()).filter(Boolean);
+    // Node prints the line that threw, a caret, then `Error: ...`.
+    return { error: lines.find((l) => /^(?:[A-Z]\w*)?Error\b/.test(l)) ?? lines[0] ?? "it failed" };
+  }
+}
+
+/**
+ * `value` as a Tailwind config writes it, which the text reader reads: a
+ * key bare where it can be, quoted where it can't (`"2xl"`), one per line.
+ */
+export function configText(value: unknown, indent = ""): string {
+  if (Array.isArray(value)) return `[${value.map((v) => configText(v, indent)).join(", ")}]`;
+  if (value && typeof value === "object") {
+    const inner = `${indent}  `;
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([key, v]) => `${inner}${/^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key)}: ${configText(v, inner)},`);
+    return entries.length ? `{\n${entries.join("\n")}\n${indent}}` : "{}";
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 function collectionsHaveCssVarRefs(collections: TokenCollection[]): boolean {

@@ -700,13 +700,13 @@ A `var()` that doesn't resolve stays as written, with a warning starting `Unreso
 
 ### Tailwind configs
 
-Storysync reads a Tailwind config as text and never runs it.
+Storysync reads a Tailwind config as text first, which runs none of it:
 
 - A preset in a relative file, as in `presets: [require("./tailwind.preset.js")]` or an imported `brandPreset` from `"./theme/preset"`, or in an object the config file declares, is read the same way, one level deep. They merge as in Tailwind: a key set in `theme` itself replaces a preset's, one in `theme.extend` adds to it, and the config's own tokens win over a preset's of the same name, as a later preset's do over an earlier one's.
 - A config that re-exports another relative file, or spreads one in at the top of the object it exports, as `{ ...require("./base"), content }` does, is read through it. A `theme` key after the spread replaces the spread's theme, as in JavaScript.
-- Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is skipped with a warning starting `Skipped dynamic value:`, since its value is known only when the config runs.
+- Values in template literals are read as strings, so `` `calc(var(--radius) - 2px)` `` works like the quoted form. One that interpolates, like `` `${base}px` ``, is known only when the config runs, so the config is loaded as below; where it can't be, the value is skipped with a warning starting `Skipped dynamic value:`.
 
-What it can't read without running the config is named in a warning, and its tokens are missing from the output: a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, or anything spread in at the top of `theme` or `theme.extend`, such as `...buildTheme(tokens)`. A config with no theme Storysync reads says so too. If the tokens you need come from one of these, the CSS variables they point at may still be read with `--source css`.
+Where the text leaves something unread (a preset from a package, a preset built by a function call such as `preset()`, a config passed through a function such as `withMT({ ... })`, a re-export or top-level spread from a package, anything spread in at the top of `theme` or `theme.extend` such as `...buildTheme(tokens)`, or a value that interpolates), Storysync loads the config as Tailwind does, by running it with the project's own `tailwindcss` (3.3 or later, whose `loadConfig` takes TypeScript and ESM configs too) in a separate Node process, as the project's build runs it. Its tokens are then the theme Tailwind resolves, presets and functions included, less each value Tailwind's default theme has the same, and the first warning says the config was loaded this way. A config the text reads whole is never run. Where the project has no such `tailwindcss`, or the config throws, the text's warnings stay, naming what is missing, with a warning that says why it couldn't be loaded. A config with no theme Storysync reads says so too. The CSS variables a theme points at can also be read with `--source css`.
 
 ### Tailwind v4 `@theme`
 
