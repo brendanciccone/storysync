@@ -1599,6 +1599,81 @@ test("build: a variant copied from one with auto layout and strokes included, bu
   }
 });
 
+test("build: labels Figma rounds up to a whole pixel keep their measured widths where the rounding would wrap a line (Item) or run past a fixed frame (Breadcrumb), and hug elsewhere", async () => {
+  type Text = { width: number; height: number; x: number; textAutoResize: string };
+  // Item: "Action" is 43.13 measured and 44 in Figma, which narrows the
+  // description's column by 0.87, its own width, short of one line.
+  const item = finalFixture("item");
+  const built = await buildAll(item);
+  for (const variant of fixtureVariants(item)) {
+    const root = variantsBySlug(built.mock).get(variant.slug)!;
+    const text = (k: string) => built.mock.handle(keyed(root, k)!.id) as Text;
+    const measured = (k: string) => variant.nodes.find((n) => n.k === k)!.box;
+    assert.equal(text("item-content/item-description/#text").height, Math.ceil(measured("item-content/item-description/#text")[3]), `${variant.slug}: the description on one line`);
+    assert.deepEqual([text("button/#text").width, text("button/#text").textAutoResize], [measured("button/#text")[2], "HEIGHT"], variant.slug);
+    // As tall as measured, but for its title's line, which Figma rounds up to a whole pixel.
+    assert.ok(root.height < variant.nodes[0].box[3] + 1, `${variant.slug}: ${root.height}`);
+    assert.deepEqual(result(built.runs[0]).fallbacks, []);
+  }
+  // Breadcrumb: three labels, each up to a pixel wider, end 1.71px past
+  // the list's fixed 272.29; at their own widths each lands where measured.
+  const crumbs = finalFixture("breadcrumb");
+  const { mock } = await buildAll(crumbs);
+  const [variant] = fixtureVariants(crumbs);
+  const root = variantsBySlug(mock).get(variant.slug)!;
+  for (const k of ["breadcrumb-list/breadcrumb-link", "breadcrumb-list/breadcrumb-link:2", "breadcrumb-list/breadcrumb-page"]) {
+    const text = mock.handle(keyed(root, k)!.id) as Text;
+    const [x, , w] = variant.nodes.find((n) => n.k === k)!.box;
+    // Within the 0.01s snap rounds each box to.
+    assert.ok(Math.abs(text.x - x) <= 0.02 && text.width === w, `${k}: ${text.x}, ${text.width}`);
+  }
+  assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)), []);
+  // A button whose label rounds up and changes nothing else keeps it hugging.
+  const button = loadTreeFixture("example-button");
+  const plain = await buildAll(button);
+  const label = (view: NodeView): NodeView => (view.type === "TEXT" ? view : (view.children ?? []).map(label).find(Boolean)!);
+  const own = plain.mock.handle(label(variantsBySlug(plain.mock).values().next().value!).id) as Text;
+  assert.equal(own.textAutoResize, "WIDTH_AND_HEIGHT");
+});
+
+test("build: a balanced text's lines break where the browser broke them, at its measured box, and read back as its characters", async () => {
+  // Empty's description, text-wrap: balance: "Upload files to your cloud
+  // storage / to access them anywhere.", lines 223.36 wide at most in a
+  // 384px box, where Figma, filling each line first, would break after "them".
+  const empty = finalFixture("empty");
+  const { coded, mock } = await buildAll(empty, { measure: figmaFonts() });
+  const [variant] = fixtureVariants(empty);
+  const root = variantsBySlug(mock).get(variant.slug)!;
+  const k = "empty-header/empty-description";
+  const text = mock.handle(keyed(root, k)!.id) as { characters: string; width: number; height: number };
+  assert.equal(text.characters, "Upload files to your cloud storage to access them anywhere.");
+  assert.deepEqual([text.width, text.height], [384, 46]);
+  assert.equal(keyed(root, k)!.data["storysync.br"], "Upload files to your cloud storage to access them anywhere.");
+  // Built again, the same; nothing else gets a break: the title is one line.
+  await runPlan(mock, coded, ["build"]);
+  assert.equal((mock.handle(keyed(variantsBySlug(mock).get(variant.slug)!, k)!.id) as { characters: string }).characters, text.characters);
+  assert.equal(keyed(root, "empty-header/empty-title")!.data["storysync.br"] ?? "", "");
+  // The readback reads the characters snap measured.
+  const [read] = await readBack(mock, [[empty.components[0].id!, 0, 1, 0]], { page: result((await runPlan(mock, coded, ["build"]))[0]).page });
+  const json = String(JSON.stringify(read));
+  assert.ok(json.includes('"Upload files to your cloud storage to access them anywhere."'));
+  assert.ok(!json.includes("\\u2028"));
+});
+
+test("build: an input's value keeps its control's content box, its line at the middle, so the input is as tall as the browser drew it", async () => {
+  // Questionnaire's input, h-9: 36 tall, its placeholder's line 20 in a
+  // 26px content box, where a text grown to its line made the input 30.
+  const fixture = finalFixture("questionnaire");
+  const { mock } = await buildAll(fixture);
+  const [variant] = fixtureVariants(fixture);
+  const root = variantsBySlug(mock).get(variant.slug)!;
+  const input = "questionnaire-item/questionnaire-choices/questionnaire-input";
+  const value = mock.handle(keyed(root, `${input}/#value`)!.id) as { width: number; height: number; textAutoResize: string; textAlignVertical: string };
+  assert.deepEqual([value.width, value.height, value.textAutoResize, value.textAlignVertical], [475.47, 26, "NONE", "CENTER"]);
+  assert.equal((mock.handle(keyed(root, input)!.id) as { height: number }).height, 36);
+  assert.deepEqual(boxDrift(mock, root, variant.nodes, absoluteBoxes(variant.nodes)).filter((d) => String(d).includes(input)), []);
+});
+
 test("build: a ring on a frame without a fill clips the frame and gives it a fill that draws nothing, so Figma draws it; the readback reads the frame as measured", async () => {
   // coder's ConfirmDialog Cancel button: a 1px border, no background, and
   // a focus ring (box-shadow 0 0 0 2px #61a6fa), which Figma drew nowhere:

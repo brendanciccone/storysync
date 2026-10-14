@@ -233,7 +233,7 @@ function prepareVariant(component: SnapComponentWithTree, variant: SnapVariantWi
   for (const node of full) {
     const parent = node.k === "" ? undefined : byKey.get(parentKey(node.k)!);
     const around = { children: kids.get(node.k)?.length ?? 0, transformed: transformedAround(node.k, (k) => byKey.get(k)) };
-    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, parentCls: parent?.cls, spike, around };
+    const ctx: MapContext = { binder, notBuilt: findings.notBuilt, unbound: findings.unbound, byDefault: findings.byDefault, alphas: findings.alphas, darkAlpha: tree.darkAlpha === 1, parentCls: parent?.cls, parentEl: parent?.el, spike, around };
     const markup = node.svg ? tree.assets.svg[node.svg] : undefined;
     styleOf.set(node.k, nodeStyle(node, ctx, markup));
   }
@@ -335,7 +335,8 @@ function compileVariant(
   const records: Record_[] = [];
   const images: string[] = [];
   const own = (node: TreeNode, axis: 0 | 1): string => {
-    if (node.t === "T") return textSizesItself(node) || axis === 1 ? "H" : "X";
+    // A control's value keeps the box measured: its control is as tall as the browser drew it (FigmaText `v`).
+    if (node.t === "T") return node.el === "#value" ? "X" : textSizesItself(node) || axis === 1 ? "H" : "X";
     const plan = plans.get(node.k);
     return plan && plan.mode !== "NONE" && plan.hug[axis] ? "H" : "X";
   };

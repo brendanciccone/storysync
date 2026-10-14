@@ -1,0 +1,1081 @@
+{
+  "about": "shadcn/ui registry (MIT) ui/radix/Questionnaire as snap measured it in the final live test of 0.4.0 (session s3, 2026-10-13): its input is 36px tall (h-9), its placeholder in a 26px content box at line height 20.",
+  "component": {
+    "id": "ui-radix-questionnaire",
+    "name": "Questionnaire",
+    "title": "ui/radix/Questionnaire",
+    "category": "ui/radix",
+    "storyId": "ui-radix-questionnaire--default",
+    "variantProperties": [],
+    "base": {
+      "combination": {},
+      "slug": "default",
+      "styles": {
+        "display": "flex",
+        "flexDirection": "column",
+        "alignItems": "normal",
+        "justifyContent": "normal",
+        "gap": {
+          "row": 24,
+          "column": 24
+        },
+        "width": 497.47,
+        "height": 408.5,
+        "backgroundColor": null,
+        "color": "#0a0a0a",
+        "border": null,
+        "borderUniform": null,
+        "borderRadius": {
+          "topLeft": 0,
+          "topRight": 0,
+          "bottomRight": 0,
+          "bottomLeft": 0
+        },
+        "borderRadiusUniform": 0,
+        "padding": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        },
+        "fontFamily": "Inter",
+        "fontSize": 16,
+        "fontWeight": 400,
+        "lineHeight": 24,
+        "letterSpacing": 0,
+        "boxShadow": [],
+        "opacity": 1,
+        "boxSizing": "border-box",
+        "fontAvailable": true,
+        "text": {
+          "color": "#737373",
+          "fontFamily": "Inter",
+          "fontSize": 12,
+          "fontWeight": 500
+        }
+      }
+    },
+    "variants": [
+      {
+        "combination": {},
+        "slug": "default",
+        "status": "ok",
+        "error": null,
+        "boundingBox": {
+          "width": 497.47,
+          "height": 408.5
+        },
+        "element": "form[data-slot=\"questionnaire\"]",
+        "delta": {}
+      }
+    ],
+    "warnings": [],
+    "error": null,
+    "argTypes": {
+      "className": {
+        "control": false
+      },
+      "defaultItem": {
+        "type": "string",
+        "control": "text"
+      },
+      "item": {
+        "type": "string",
+        "control": "text"
+      },
+      "items": {
+        "type": "other",
+        "control": false
+      },
+      "onAnswersSubmit": {
+        "type": "function",
+        "hidden": true
+      },
+      "onItemChange": {
+        "type": "function"
+      },
+      "onSubmit": {
+        "control": false
+      },
+      "shortcuts": {
+        "type": "enum",
+        "control": "inline-radio",
+        "options": [
+          "letters",
+          "numbers"
+        ],
+        "initial": "letters"
+      }
+    },
+    "storyFile": "./registry/ui/questionnaire-story/questionnaire-radix.stories.tsx",
+    "capture": "tree",
+    "tree": {
+      "version": 1,
+      "base": [
+        {
+          "L": {
+            "d": "flex",
+            "dir": "column",
+            "gap": [
+              24,
+              24
+            ]
+          },
+          "box": [
+            0,
+            0,
+            497.47,
+            408.5
+          ],
+          "el": "form[data-slot=questionnaire]",
+          "k": "",
+          "t": "F"
+        },
+        {
+          "box": [
+            0,
+            0,
+            108.44,
+            16
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "div[data-slot=questionnaire-progress]",
+          "k": "questionnaire-progress",
+          "t": "T",
+          "tx": {
+            "c": "Question 1 of 3",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              0,
+              88.7,
+              15
+            ],
+            "lh": 16,
+            "n": 1,
+            "sz": 12,
+            "wt": 500
+          }
+        },
+        {
+          "L": {
+            "d": "flex",
+            "dir": "column",
+            "gap": [
+              20,
+              20
+            ]
+          },
+          "box": [
+            0,
+            40,
+            497.47,
+            308.5
+          ],
+          "el": "fieldset[data-slot=questionnaire-item]",
+          "k": "questionnaire-item",
+          "t": "F"
+        },
+        {
+          "box": [
+            0,
+            0,
+            297.91,
+            24
+          ],
+          "el": "legend[data-slot=questionnaire-title]",
+          "k": "questionnaire-item/questionnaire-title",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "How should we approach this change?",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              2,
+              297.91,
+              20
+            ],
+            "lh": 24,
+            "n": 1,
+            "sz": 16,
+            "wt": 600
+          }
+        },
+        {
+          "box": [
+            0,
+            24,
+            497.47,
+            20
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "p[data-slot=questionnaire-description]",
+          "k": "questionnaire-item/questionnaire-description",
+          "t": "T",
+          "tx": {
+            "c": "Choose a strategy or describe a more specific approach.",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              374.89,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "L": {
+            "d": "grid",
+            "gap": [
+              12,
+              12
+            ],
+            "tracks": [
+              1,
+              4
+            ]
+          },
+          "box": [
+            0,
+            64,
+            497.47,
+            244.5
+          ],
+          "el": "div[data-slot=questionnaire-choices]",
+          "k": "questionnaire-item/questionnaire-choices",
+          "t": "F"
+        },
+        {
+          "L": {
+            "ai": "flex-start",
+            "d": "flex",
+            "gap": [
+              12,
+              12
+            ],
+            "pad": [
+              14,
+              16,
+              14,
+              16
+            ]
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            0,
+            0,
+            497.47,
+            72.5
+          ],
+          "cls": [
+            "bg-muted",
+            "bg-transparent",
+            "border-destructive",
+            "border-input",
+            "border-primary",
+            "border-ring",
+            "dark:bg-input/20",
+            "outline-none",
+            "ring-ring",
+            "rounded-md",
+            "shadow-xs"
+          ],
+          "el": "label[data-slot=questionnaire-choice]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "L": {
+            "d": "flex",
+            "dir": "column",
+            "gap": [
+              4,
+              4
+            ]
+          },
+          "S": {
+            "basis": "0%",
+            "grow": 1
+          },
+          "box": [
+            45,
+            15,
+            403.47,
+            42.5
+          ],
+          "el": "span[data-slot=questionnaire-choice-label]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice/questionnaire-choice-label",
+          "t": "F"
+        },
+        {
+          "box": [
+            0,
+            0,
+            403.47,
+            19.25
+          ],
+          "el": "span",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice/questionnaire-choice-label/span",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "Make the smallest safe change",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              206.94,
+              17
+            ],
+            "lh": 19.25,
+            "n": 1,
+            "sz": 14,
+            "wt": 500
+          }
+        },
+        {
+          "box": [
+            0,
+            23.25,
+            403.47,
+            19.25
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-description]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice/questionnaire-choice-label/questionnaire-choice-description",
+          "t": "T",
+          "tx": {
+            "c": "Keep the implementation focused on the requested behavior.",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              403.47,
+              17
+            ],
+            "lh": 19.25,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "jc": "center"
+          },
+          "S": {
+            "shrink": 0
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "bg": "#ffffff",
+          "box": [
+            460.47,
+            17,
+            20,
+            20
+          ],
+          "cls": [
+            "bg-background",
+            "border-input",
+            "rounded-md",
+            "shadow-xs",
+            "text-muted-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-shortcut]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice/questionnaire-choice-shortcut",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "box": [
+            7,
+            4.5,
+            6,
+            10
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "#text",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice/questionnaire-choice-shortcut/#text",
+          "t": "T",
+          "tx": {
+            "c": "A",
+            "col": "#737373",
+            "f": "Geist Mono",
+            "ink": [
+              0,
+              -1.5,
+              6,
+              13
+            ],
+            "lh": 10,
+            "n": 1,
+            "sz": 10,
+            "wt": 500
+          }
+        },
+        {
+          "S": {
+            "shrink": 0
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            17,
+            17,
+            16,
+            16
+          ],
+          "cls": [
+            "bg-primary",
+            "border-input",
+            "border-primary",
+            "dark:bg-input/30",
+            "rounded-full",
+            "text-primary-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-indicator]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice/questionnaire-choice-indicator",
+          "r": 8,
+          "t": "F"
+        },
+        {
+          "L": {
+            "ai": "flex-start",
+            "d": "flex",
+            "gap": [
+              12,
+              12
+            ],
+            "pad": [
+              14,
+              16,
+              14,
+              16
+            ]
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            0,
+            84.5,
+            497.47,
+            50
+          ],
+          "cls": [
+            "bg-muted",
+            "bg-transparent",
+            "border-destructive",
+            "border-input",
+            "border-primary",
+            "border-ring",
+            "dark:bg-input/20",
+            "outline-none",
+            "ring-ring",
+            "rounded-md",
+            "shadow-xs"
+          ],
+          "el": "label[data-slot=questionnaire-choice]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:2",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "S": {
+            "basis": "0%",
+            "grow": 1
+          },
+          "box": [
+            45,
+            15,
+            403.47,
+            19.25
+          ],
+          "el": "span[data-slot=questionnaire-choice-label]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:2/questionnaire-choice-label",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "Refactor one module at a time",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              198.92,
+              17
+            ],
+            "lh": 19.25,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "jc": "center"
+          },
+          "S": {
+            "shrink": 0
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "bg": "#ffffff",
+          "box": [
+            460.47,
+            16.8,
+            20,
+            20
+          ],
+          "cls": [
+            "bg-background",
+            "border-input",
+            "rounded-md",
+            "shadow-xs",
+            "text-muted-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-shortcut]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:2/questionnaire-choice-shortcut",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "box": [
+            7,
+            4.5,
+            6,
+            10
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "#text",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:2/questionnaire-choice-shortcut/#text",
+          "t": "T",
+          "tx": {
+            "c": "B",
+            "col": "#737373",
+            "f": "Geist Mono",
+            "ink": [
+              0,
+              -1.5,
+              6,
+              13
+            ],
+            "lh": 10,
+            "n": 1,
+            "sz": 10,
+            "wt": 500
+          }
+        },
+        {
+          "S": {
+            "shrink": 0
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            17,
+            16.8,
+            16,
+            16
+          ],
+          "cls": [
+            "bg-primary",
+            "border-input",
+            "border-primary",
+            "dark:bg-input/30",
+            "rounded-full",
+            "text-primary-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-indicator]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:2/questionnaire-choice-indicator",
+          "r": 8,
+          "t": "F"
+        },
+        {
+          "L": {
+            "ai": "flex-start",
+            "d": "flex",
+            "gap": [
+              12,
+              12
+            ],
+            "pad": [
+              14,
+              16,
+              14,
+              16
+            ]
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            0,
+            146.5,
+            497.47,
+            50
+          ],
+          "cls": [
+            "bg-muted",
+            "bg-transparent",
+            "border-destructive",
+            "border-input",
+            "border-primary",
+            "border-ring",
+            "dark:bg-input/20",
+            "outline-none",
+            "ring-ring",
+            "rounded-md",
+            "shadow-xs"
+          ],
+          "el": "label[data-slot=questionnaire-choice]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:3",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "S": {
+            "basis": "0%",
+            "grow": 1
+          },
+          "box": [
+            45,
+            15,
+            403.47,
+            19.25
+          ],
+          "el": "span[data-slot=questionnaire-choice-label]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:3/questionnaire-choice-label",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "Replace the implementation completely",
+            "col": "#0a0a0a",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1,
+              260.75,
+              17
+            ],
+            "lh": 19.25,
+            "n": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "jc": "center"
+          },
+          "S": {
+            "shrink": 0
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "bg": "#ffffff",
+          "box": [
+            460.47,
+            16.8,
+            20,
+            20
+          ],
+          "cls": [
+            "bg-background",
+            "border-input",
+            "rounded-md",
+            "shadow-xs",
+            "text-muted-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-shortcut]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:3/questionnaire-choice-shortcut",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "box": [
+            7,
+            4.5,
+            6,
+            10
+          ],
+          "cls": [
+            "text-muted-foreground"
+          ],
+          "el": "#text",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:3/questionnaire-choice-shortcut/#text",
+          "t": "T",
+          "tx": {
+            "c": "C",
+            "col": "#737373",
+            "f": "Geist Mono",
+            "ink": [
+              0,
+              -1.5,
+              6,
+              13
+            ],
+            "lh": 10,
+            "n": 1,
+            "sz": 10,
+            "wt": 500
+          }
+        },
+        {
+          "S": {
+            "shrink": 0
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            17,
+            16.8,
+            16,
+            16
+          ],
+          "cls": [
+            "bg-primary",
+            "border-input",
+            "border-primary",
+            "dark:bg-input/30",
+            "rounded-full",
+            "text-primary-foreground"
+          ],
+          "el": "span[data-slot=questionnaire-choice-indicator]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-choice:3/questionnaire-choice-indicator",
+          "r": 8,
+          "t": "F"
+        },
+        {
+          "L": {
+            "d": "inline-block",
+            "pad": [
+              4,
+              10,
+              4,
+              10
+            ]
+          },
+          "bd": {
+            "c": "#e5e5e5",
+            "s": "solid",
+            "w": 1
+          },
+          "box": [
+            0,
+            208.5,
+            497.47,
+            36
+          ],
+          "clip": 1,
+          "cls": [
+            "bg-primary",
+            "bg-transparent",
+            "border-destructive",
+            "border-input",
+            "border-ring",
+            "dark:bg-input/30",
+            "outline-none",
+            "ring-destructive",
+            "ring-ring",
+            "rounded-md",
+            "shadow-xs",
+            "text-muted-foreground",
+            "text-primary-foreground",
+            "text-sm"
+          ],
+          "el": "input[data-slot=questionnaire-input]",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-input",
+          "r": 8,
+          "sh": [
+            [
+              0,
+              1,
+              2,
+              0,
+              "#0000000d"
+            ]
+          ],
+          "t": "F"
+        },
+        {
+          "box": [
+            11,
+            5,
+            475.47,
+            26
+          ],
+          "cls": [
+            "text-muted-foreground",
+            "text-primary-foreground"
+          ],
+          "el": "#value",
+          "k": "questionnaire-item/questionnaire-choices/questionnaire-input/#value",
+          "nocls": [
+            "color"
+          ],
+          "t": "T",
+          "tx": {
+            "c": "Describe another approach…",
+            "col": "#737373",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              0,
+              191.67,
+              26
+            ],
+            "lh": 20,
+            "n": 1,
+            "ph": 1,
+            "sz": 14,
+            "wt": 400
+          }
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "grid",
+            "gap": [
+              8,
+              8
+            ],
+            "tracks": [
+              3,
+              1
+            ]
+          },
+          "box": [
+            0,
+            372.5,
+            497.47,
+            36
+          ],
+          "el": "div[data-slot=questionnaire-actions]",
+          "k": "questionnaire-actions",
+          "t": "F"
+        },
+        {
+          "L": {
+            "ai": "center",
+            "d": "flex",
+            "gap": [
+              6,
+              6
+            ],
+            "jc": "center",
+            "pad": [
+              0,
+              10,
+              0,
+              10
+            ]
+          },
+          "bd": {
+            "c": null,
+            "s": "solid",
+            "w": 1
+          },
+          "bg": "#171717",
+          "bgc": "padding-box",
+          "box": [
+            444.05,
+            0,
+            53.43,
+            36
+          ],
+          "cls": [
+            "bg-clip-padding",
+            "bg-primary",
+            "border-destructive",
+            "border-ring",
+            "border-transparent",
+            "outline-none",
+            "ring-destructive",
+            "ring-ring",
+            "rounded-md",
+            "text-primary-foreground"
+          ],
+          "el": "button[data-slot=questionnaire-next]",
+          "k": "questionnaire-actions/questionnaire-next",
+          "r": 8,
+          "t": "F"
+        },
+        {
+          "box": [
+            11,
+            7.5,
+            31.43,
+            20
+          ],
+          "cls": [
+            "text-primary-foreground"
+          ],
+          "el": "#text",
+          "k": "questionnaire-actions/questionnaire-next/#text",
+          "t": "T",
+          "tx": {
+            "c": "Next",
+            "col": "#fafafa",
+            "f": "Inter",
+            "fs": "system-ui",
+            "ink": [
+              0,
+              1.5,
+              31.42,
+              17
+            ],
+            "lh": 20,
+            "n": 1,
+            "sz": 14,
+            "ta": "center",
+            "ws": "nowrap",
+            "wt": 500
+          }
+        }
+      ],
+      "assets": {
+        "svg": {},
+        "img": {}
+      },
+      "darkAlpha": 1
+    },
+    "excludedProps": [
+      {
+        "name": "shortcuts",
+        "reason": "no-op",
+        "markup": "changed"
+      }
+    ],
+    "fontStandIns": [
+      [
+        "system-ui",
+        "Inter"
+      ]
+    ]
+  }
+}

@@ -231,7 +231,10 @@ const record = async (n, k, around, root) => {
     const size = typeof n.fontSize === 'number' ? n.fontSize : null;
     const lh = typeof n.lineHeight === 'object' ? n.lineHeight : null;
     const ls = typeof n.letterSpacing === 'object' ? n.letterSpacing : null;
-    const chars = n.characters;
+    // The build breaks a balanced text's lines where the browser did, with
+    // line separators where it had spaces, and keeps its characters in
+    // `br`: read as those while they are all it changed.
+    const chars = get(n, 'br') && n.characters.replace(/\u2028/g, ' ') === get(n, 'br') ? get(n, 'br') : n.characters;
     const fills = await paints(n.fills, n);
     return [...head,
       chars.length > 300 ? 'fnv:' + fnv(chars) + ':' + chars.length + ':' + chars.slice(0, 60) : chars,

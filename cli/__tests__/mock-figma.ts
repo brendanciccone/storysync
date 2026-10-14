@@ -1024,10 +1024,13 @@ function lineHeightOf(n: Node): number {
  * written, before textCase: a width learned from snap is of the text as the
  * browser drew it, its case included.
  */
+/** Where Figma breaks a line whatever its width: a new paragraph, and U+2028, a line separator, as probe 8a saw. */
+const BREAKS = /[\n\u2028]/;
+
 function textWidth(n: Node): number {
   const { measure } = n.doc.options;
   const font = fontOf(n);
-  return Math.max(0, ...n.characters.split("\n").map((line) => measure.advance(line, font)));
+  return Math.max(0, ...n.characters.split(BREAKS).map((line) => measure.advance(line, font)));
 }
 
 /**
@@ -1050,7 +1053,7 @@ function textLines(n: Node, width: number): number {
   const { measure } = n.doc.options;
   const font = fontOf(n);
   let lines = 0;
-  for (const line of n.characters.split("\n")) {
+  for (const line of n.characters.split(BREAKS)) {
     const known = measure.lines?.(line, font, width);
     if (known !== undefined) {
       lines += known;
@@ -1105,7 +1108,7 @@ function sizeText(n: Node): void {
   const tall = (lines: number) => (lines > limit ? r2(lh * limit) : ceilPx(lh * lines));
   if (n.textAutoResize === "WIDTH_AND_HEIGHT") {
     n.w = Math.max(ceilPx(textWidth(n)), 0.01);
-    n.h = tall(n.characters.split("\n").length);
+    n.h = tall(n.characters.split(BREAKS).length);
   } else if (n.textAutoResize === "HEIGHT") {
     n.h = tall(textLines(n, n.w));
   }

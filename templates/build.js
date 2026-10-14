@@ -265,7 +265,7 @@ const setLines = (n, t, w, h) => {
   if (t.ar === 'W') n.textAutoResize = 'WIDTH_AND_HEIGHT';
   else {
     n.resize(w, h);
-    n.textAutoResize = 'HEIGHT';
+    n.textAutoResize = t.v ? 'NONE' : 'HEIGHT';
   }
   n.textTruncation = t.tr ? 'ENDING' : 'DISABLED';
   n.maxLines = t.tr || null;
@@ -303,12 +303,16 @@ const style = async (n, rec, parent, root) => {
     await loadFonts([n]);
     n.fontName = font;
     n.characters = t.c;
+    if (get(n, 'br')) put(n, 'br', '');
     n.fontSize = t.z;
     n.lineHeight = t.l ? { unit: 'PIXELS', value: t.l } : { unit: 'AUTO' };
     n.letterSpacing = { unit: 'PIXELS', value: t.s || 0 };
     n.textCase = t.tc || 'ORIGINAL';
     n.textDecoration = t.td || 'NONE';
     n.textAlignHorizontal = t.ta || 'LEFT';
+    // A control's value (`v`): at its box's middle, or top.
+    n.textAlignVertical = t.v === 'C' ? 'CENTER' : 'TOP';
+    if (t.b && !t.tr) balance(n, t, w);
     await setPaints(n, 'fills', st.f || [], 'color');
     try {
       setLines(n, t, w, h);
@@ -488,6 +492,76 @@ const converge = async (root, recs) => {
   return { nodes, designer };
 };
 
+// Whether a text wraps in Figma: taller than a line and a half, of its
+// line height or Figma's for the font (1.21em to 1.36em), not of the box
+// measured, which a row that stretches its items makes taller. Without its
+// line limit, as a truncated text wraps where it would be cut.
+const wraps = (n, t) => {
+  n.maxLines = null;
+  const out = n.height > 1.5 * (t.l || 1.27 * t.z);
+  n.maxLines = t.tr || null;
+  return out;
+};
+
+// Breaks a balanced text's lines (`b`: the widest line's width, the line
+// count) where the browser did: Chrome balances by filling each line at the
+// narrowest width that keeps their count, Figma fills them at the box's.
+// Where those differ, a line separator, which Figma keeps (probe 8a), ends
+// each line; `br` keeps the characters for the readback. Figma tells a
+// break only by height, so the text tries a word more at a time, before
+// setLines sizes it.
+const balance = (n, t, w) => {
+  const words = t.c.split(' ');
+  n.textAutoResize = 'HEIGHT';
+  const fits = (s, width) => {
+    n.resize(width, n.height);
+    n.characters = s;
+    return n.height <= 1.5 * (t.l || 1.27 * t.z);
+  };
+  const lines = [words[0]];
+  for (const word of words.slice(1)) {
+    const longer = lines[lines.length - 1] + ' ' + word;
+    if (fits(longer, t.b[0] + 0.5)) lines[lines.length - 1] = longer;
+    else lines.push(word);
+  }
+  const breaks = lines.length === t.b[1] && lines.slice(0, -1).some((l, j) => fits(l + ' ' + lines[j + 1].split(' ')[0], w));
+  n.characters = breaks ? lines.join('\u2028') : t.c;
+  if (breaks) put(n, 'br', t.c);
+};
+
+// Figma rounds a hugging label's width up to a pixel (probe 8a: Item's
+// "Action", 43.13, is 44). Where that wraps a label measured on one line
+// (Item's description, 0.87px short) or runs a row past its frame
+// (Breadcrumb's last item), each such label takes its measured width, at
+// which Figma keeps it on one line, else hugs again. Elsewhere it hugs.
+const trueWidths = (nodes, recs) => {
+  const rounded = [];
+  for (let i = 1; i < recs.length; i++) {
+    const t = S[recs[i][7]].t;
+    const n = nodes[i];
+    if (t && t.ar === 'W' && n.textAutoResize === 'WIDTH_AND_HEIGHT' && n.width > recs[i][5] + 0.001 && n.width < recs[i][5] + 1) rounded.push(i);
+  }
+  if (!rounded.length) return;
+  let changed = false;
+  for (let i = 1; i < recs.length && !changed; i++) {
+    const n = nodes[i];
+    const st = S[recs[i][7]];
+    if (st.t && st.t.o && n.type === 'TEXT') changed = wraps(n, st.t);
+    const p = nodes[recs[i][1]];
+    if (changed || st.v === 0 || n.rotation || !('layoutMode' in p) || p.layoutMode === 'NONE' || n.layoutPositioning === 'ABSOLUTE') continue;
+    const rp = recs[recs[i][1]];
+    changed = (n.x + n.width > p.width + 0.01 && recs[i][3] + recs[i][5] <= rp[5] + 0.01) || (n.y + n.height > p.height + 0.01 && recs[i][4] + recs[i][6] <= rp[6] + 0.01);
+  }
+  if (!changed) return;
+  for (const i of rounded) {
+    const n = nodes[i];
+    const t = S[recs[i][7]].t;
+    n.resize(recs[i][5], n.height);
+    n.textAutoResize = 'HEIGHT';
+    if (wraps(n, t)) n.textAutoResize = 'WIDTH_AND_HEIGHT';
+  }
+};
+
 // Keeps each text the browser drew whole on one line (`o`) so in Figma,
 // once the variant is laid out. Figma's font can set it wider than the box
 // it was measured in: Inter is wider than the system-ui a snap from before
@@ -503,15 +577,7 @@ const keepLines = (nodes, recs) => {
     const t = st.t;
     if (!t || !t.o) continue;
     const n = nodes[i];
-    // Without its line limit a truncated text wraps where it would be cut.
-    // It wraps where it is taller than a line and a half in Figma: its line
-    // height, or Figma's own for the font, 1.21em for Inter to 1.36em for
-    // Noto Serif, whole lines rounded up to a pixel. Not the box measured,
-    // which a row that stretches its items makes taller than the text.
-    n.maxLines = null;
-    const wraps = n.height > 1.5 * (t.l || 1.27 * t.z);
-    n.maxLines = t.tr || null;
-    if (!wraps) continue;
+    if (!wraps(n, t)) continue;
     at[2] = S[recs[i][0]];
     const fills = (st.z || [])[0] === 'L';
     if (fills && !t.tr) continue;
@@ -709,6 +775,7 @@ for (const [s, set] of DATA.sets.entries()) {
       }
       if (want === 'COMPONENT_SET') variant.name = name;
       const { nodes, designer } = await converge(variant, recs);
+      trueWidths(nodes, recs);
       keepLines(nodes, recs);
       designerLayers += designer;
       if (src) checkLayout(nodes, recs, slug, absoluteContainers);

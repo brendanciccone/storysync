@@ -71,6 +71,19 @@ export interface FigmaText {
    * (H): the build keeps it so where Figma's font sets it wider (textOf).
    */
   o?: 1;
+  /**
+   * Its lines' widest width and their count, for a wrapped text whose lines
+   * are narrower than its box, as `text-wrap: balance` draws them: the build
+   * breaks the lines there where Figma would break them elsewhere.
+   */
+  b?: [number, number];
+  /**
+   * A form control's value: built at the box measured, its line at the
+   * box's middle, as an input and a select draw it (C), or at its top, as a
+   * textarea does (T), where a text that grows to its lines would shrink
+   * the control around it.
+   */
+  v?: "C" | "T";
 }
 
 /** Everything the template sets on one node besides its place and size. */
@@ -152,6 +165,8 @@ export interface MapContext {
    * paints nothing; a run without any reads its parent's.
    */
   parentCls?: string[];
+  /** The parent's element, which says how a `#value` sits in its control: `input…`, `select…` or `textarea…`. */
+  parentEl?: string;
   /** The spike's answers; SPIKE's when absent. */
   spike?: Pick<Spike, "svgStrokesScale">;
   /** Where the node sits, which decides whether the build turns it (builtTurn); a childless node with nothing transformed around it when absent. */
@@ -482,6 +497,8 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   // measured width, or show an ellipsis the browser didn't: the build checks
   // each such one once laid out (templates/build.js, keepLines).
   if (out.ar === "H" && textWhole(node)) out.o = 1;
+  if (node.el === "#value") Object.assign(out, { ar: "H", v: ctx.parentEl?.startsWith("textarea") ? "T" : "C" });
+  else if (tx.n > 1 && !tx.el && !tx.cl && tx.ink[2] < node.box[2] - 1) out.b = [round2(tx.ink[2]), tx.n];
   if (tx.it) out.i = 1;
   if (tx.ls) out.s = tx.ls;
   if (tx.tt) out.tc = CASES[tx.tt];
@@ -489,7 +506,6 @@ function textOf(node: TreeNode, ctx: MapContext): FigmaText {
   if (tx.ta && ALIGNS[tx.ta]) out.ta = ALIGNS[tx.ta];
   if (tx.el) out.tr = 1;
   else if (tx.cl) out.tr = tx.cl;
-  void ctx;
   return out;
 }
 
