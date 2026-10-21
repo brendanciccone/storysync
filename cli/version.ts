@@ -5,4 +5,4 @@
 // walking out of the tarball's own layout, and the `with { type: "json" }`
 // import form does not compile under this repo's module target. The test is
 // what makes the literal safe.
-export const VERSION = "0.4.1";
+export const VERSION = "0.4.2";
