@@ -12,7 +12,7 @@
   },
   "devDependencies": {
     "@fontsource/inter": "^5.0.0",
-    "@storybook/addon-mcp": "^10.6.0",
+    "@storybook/addon-mcp": "^10.6.2",
     "@storybook/react-vite": "^10.6.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
