@@ -9,8 +9,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadTreeFixture } from "./mock-figma.js";
 import { assemble, buildFixture, newFigma, readBack } from "./tree-harness.js";
-import { continuationResult, loadPlanResults, parseReadResult } from "../figma-results.js";
+import { addReadResult, continuationResult, loadPlanResults, parseReadResult } from "../figma-results.js";
 import type { ReadResult } from "../figma-results.js";
+import type { ReadbackFile } from "../verify.js";
 import type { FigmaPlan, PlanCall } from "../tree-types.js";
 import { verify } from "../verify.js";
 
@@ -35,6 +36,17 @@ test("results: the read result is found in what use_figma's text can be", () => 
   assert.deepEqual(parseReadResult(JSON.stringify({ content: [{ type: "text", text: json }] })), result, "inside the MCP result");
   assert.equal(parseReadResult("Error: Found 0 sets with storysync id x"), null, "a failed call's error");
   assert.equal(parseReadResult(JSON.stringify({ kind: "build", sets: [] })), null, "another call's result");
+});
+
+test("results: a set titled __proto__ is a component, and one without its node id is left out, so neither writes to Object.prototype", () => {
+  const set = (id: unknown) => ({ id, component: "x", title: "__proto__", name: "X", total: 3, unbuilt: ["Old"], absent: [], entries: {} });
+  const result = { kind: "read", tpl: 2, page: "p", sets: [set(undefined), set("1:2")] } as unknown as ReadResult;
+  // As JSON.parse reads a saved result: __proto__ an own key.
+  result.sets[1].entries = JSON.parse('{"__proto__": {"checksum": "c"}}');
+  const readback = { version: 2, components: {} } as unknown as ReadbackFile;
+  assert.deepEqual(addReadResult(readback, result), ["a result reads a set without its node id"]);
+  assert.equal(({} as { total?: unknown }).total, undefined);
+  assert.equal(JSON.stringify(readback.components), '{"__proto__":{"nodeId":"1:2","variants":{"__proto__":{"checksum":"c"}},"total":3,"unbuilt":["Old"]}}');
 });
 
 test("results: a continuation's result follows its call's, b, c and on", () => {

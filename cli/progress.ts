@@ -81,6 +81,9 @@ export class StatusLine {
 
   show(text: string): void {
     if (this.mode === "off") return;
+    // One line, whatever a component's title holds: in a CI log, a line of
+    // one starting with :: would run as a workflow command.
+    text = text.replace(/[\r\n\u2028\u2029]+/g, " ");
     if (this.mode === "lines") {
       this.stream.write(`${text}\n`);
       return;

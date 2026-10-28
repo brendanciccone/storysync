@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -160,11 +160,25 @@ test("figma code: a build call lists at most 60 images to upload, as many URLs a
   assert.deepEqual(images, [60, 1]);
 });
 
+test("figma next: a continuation of slices the call didn't read, or no slices of indexes at all, is refused", async () => {
+  const coded = await codeFor(loadTreeFixture("card"));
+  const read = coded.plan.calls.find((c) => c.kind === "read")!;
+  const [id, first, last] = read.slices![0];
+  const opts = { plan: join(coded.out, "plan.json"), seq: read.seq, templates: { readback: STUB_READBACK } };
+  // 0 to 1e15 had the call it wrote count through every index in Figma.
+  for (const slice of [[id, first, 1e15, 0], [id, first, last + 1, 0], ["other", first, last, 0], [id, last, first - 1, 0], [id, first, last, -1], [id, "0", last, 0], [id, first, last, 0.5]]) {
+    writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [slice] } }));
+    await assert.rejects(runFigmaNext(opts), /has a "more" whose slices aren't within the ones call \d+ read/, JSON.stringify(slice));
+  }
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [[id, last, last, 3]] } }));
+  assert.ok(await runFigmaNext(opts));
+});
+
 test("figma next: a continuation reads with the limit its call was written with", async () => {
   const coded = await codeFor(loadTreeFixture("card"), { readLimit: 4_000 });
   const read = coded.plan.calls.find((c) => c.kind === "read")!;
   assert.match(coded.code(read), /\nconst LIMIT = 5000;\n/);
-  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [[...read.slices![0], 12]] } }));
   const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq, templates: { readback: STUB_READBACK } });
   assert.match(readFileSync(next!.file, "utf8"), /\nconst LIMIT = 5000;\n/);
 });
@@ -214,6 +228,39 @@ test("figma next: a continuation after storysync was upgraded carries the templa
   assert.ok(continued.includes(loadTemplate("readback").slice(0, 200)));
 });
 
+test("figma code: a category with a line break in it stays in the header's comment, out of the call's code", async () => {
+  // Storybook's index gives the category, from a title: a line break in it
+  // ended the comment, and what followed ran in Figma, or in the acceptance
+  // harness's Node.
+  const snap = copy(loadTreeFixture("card"));
+  snap.components[0].category = "UI\nglobalThis.ran = 1;\u2028globalThis.ran = 2;\r";
+  const coded = await codeFor(snap);
+  for (const call of coded.plan.calls) {
+    const lines = coded.code(call).split(/\r\n|[\n\r\u2028\u2029]/);
+    assert.match(lines[0], /^\/\/ storysync figma code, call \d+: /, call.file);
+    assert.ok(!lines.some((l) => l.startsWith("globalThis.ran")), call.file);
+  }
+});
+
+test("figma code: writes no part of its plan through a symbolic link under --out", async () => {
+  const coded = await codeFor(loadTreeFixture("card"));
+  const again = () => runFigmaCode({ snap: coded.snapPath, out: coded.out, templates: { readback: STUB_READBACK } });
+  // A link committed as plan.json, or as calls/, had the plan written where it led.
+  const kept = join(coded.dir, "kept.txt");
+  writeFileSync(kept, "kept");
+  rmSync(join(coded.out, "plan.json"));
+  symlinkSync(kept, join(coded.out, "plan.json"));
+  await assert.rejects(again(), /plan\.json is a symbolic link, and storysync writes its plan only to files of its own under /);
+  assert.equal(readFileSync(kept, "utf8"), "kept");
+  rmSync(join(coded.out, "plan.json"));
+  const away = join(coded.dir, "away");
+  mkdirSync(away);
+  rmSync(join(coded.out, "calls"), { recursive: true });
+  symlinkSync(away, join(coded.out, "calls"));
+  await assert.rejects(again(), /calls is a symbolic link/);
+  assert.deepEqual(readdirSync(away), []);
+});
+
 /** A call's constants, in order, each line's value parsed, SUM's as written. */
 function constantsOf(code: string): { names: string[]; values: unknown[]; sum: unknown } {
   // The constants, as JSON, a line each; T, the template, is a string of code.
@@ -231,10 +278,11 @@ test("figma code: every call, and a read's continuation, ends its constants with
     assert.equal(sum, callSum(values), call.file);
   }
   const read = coded.plan.calls.find((c) => c.kind === "read")!;
-  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [["ui-base-card", 1, 1, 12]] } }));
+  const slice = [...read.slices![0], 12];
+  writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [slice] } }));
   const next = await runFigmaNext({ plan: join(coded.out, "plan.json"), seq: read.seq });
   const { values, sum } = constantsOf(readFileSync(next!.file, "utf8"));
-  assert.deepEqual(values.slice(1, 3), [[["ui-base-card", 1, 1, 12]], DEFAULT_READ_LIMIT + 1000]);
+  assert.deepEqual(values.slice(1, 3), [[slice], DEFAULT_READ_LIMIT + 1000]);
   assert.equal(sum, callSum(values));
 });
 

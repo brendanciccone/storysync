@@ -417,6 +417,19 @@ test("StorybookClient: MDX docs pages in the docs list are not components", asyn
   assert.deepEqual(selectComponents(entries, ["Button"]).map((e) => e.id), ["forms-button"]);
 });
 
+test("StorybookClient: a docs list line of thousands of spaces is read at once, not in seconds", async () => {
+  // Each took time growing as its length cubed, or squared for a story's
+  // line: 2,000 spaces took 3 seconds, 20,000 would have taken an hour.
+  const spaces = " ".repeat(20_000);
+  const started = Date.now();
+  const entries = await listed([
+    "- Button (forms-button)", "  - Default (forms-button--default)",
+    `-${spaces}!`, `- a${spaces}!`, `  -${spaces}!`, `-${spaces}(x)`,
+  ].join("\n"));
+  assert.ok(Date.now() - started < 1000, `${Date.now() - started}ms`);
+  assert.deepEqual(entries.map((e) => [e.id, e.name, e.storyIds]), [["forms-button", "Button", ["forms-button--default"]]]);
+});
+
 test("StorybookClient: docs pages are left out of each source's part of a composed docs list", async () => {
   const entries = await listed([
     "# Design System", "id: design-system", "",

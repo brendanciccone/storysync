@@ -201,8 +201,14 @@ export function alphaFallbacks(text: string): Fallback[] {
 export function addReadResult(readback: ReadbackFile, result: ReadResult, from = "a result"): string[] {
   const problems: string[] = [];
   for (const set of result.sets) {
+    if (typeof set?.id !== "string" || !set.id) {
+      problems.push(`${from} reads a set without its node id`);
+      continue;
+    }
+    // Keys and slugs are the response's: own properties only, so a title
+    // of __proto__ is a component, not Object.prototype to write to.
     const key = set.title || set.component;
-    const component = (readback.components[key] ??= { nodeId: set.id, variants: {} });
+    const component = Object.hasOwn(readback.components, key) ? readback.components[key] : setOwn(readback.components, key, { nodeId: set.id, variants: {} });
     if (component.nodeId !== set.id) {
       problems.push(`${from} reads ${key} from the set ${set.id}, another call from ${component.nodeId}: two sets carry its id`);
       continue;
@@ -213,14 +219,20 @@ export function addReadResult(readback: ReadbackFile, result: ReadResult, from =
     if (Number.isInteger(set.total)) component.total = Math.max(component.total ?? 0, set.total);
     if (Array.isArray(set.unbuilt) && set.unbuilt.length >= (component.unbuilt?.length ?? 0)) component.unbuilt = set.unbuilt.map(String).sort();
     for (const [slug, entry] of Object.entries(set.entries ?? {})) {
-      if (component.variants[slug] !== undefined) {
+      if (Object.hasOwn(component.variants, slug)) {
         problems.push(`${from} reads ${key} ${slug} again; the first reading is kept`);
         continue;
       }
-      component.variants[slug] = entry;
+      setOwn(component.variants, slug, entry);
     }
   }
   return problems;
+}
+
+/** `value` as `object`'s own property `key`, as assignment would make it for any key but __proto__. */
+function setOwn<T>(object: Record<string, T>, key: string, value: T): T {
+  Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });
+  return value;
 }
 
 export interface PlanResults {

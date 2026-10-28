@@ -555,6 +555,17 @@ test("mapComponent: a component with no mappable props yields one empty combinat
   assert.equal(def.wasCapped, false);
 });
 
+test("mapComponent: a prop the docs declare twice is one property, the first, not a product to walk", () => {
+  // Thirty copies of a two-valued prop were 2^30 combinations to walk, for
+  // two distinct ones, which the cap never counted to.
+  const copies = Array.from({ length: 30 }, (_, i) => prop({ name: "size", control: { options: i ? ["x", "y"] : ["sm", "lg"] } }));
+  const started = Date.now();
+  const def = mapComponent(component([...copies, prop({ name: "tone", control: { options: ["a", "b"] } })]));
+  assert.ok(Date.now() - started < 1000, `${Date.now() - started}ms`);
+  assert.deepEqual(def.variantProperties.map((p) => [p.name, p.values]), [["size", ["sm", "lg"]], ["tone", ["a", "b"]]]);
+  assert.equal(def.variantCombinations.length, 4);
+});
+
 test("mapComponent: surfaces cap info when the product is truncated", () => {
   const def = mapComponent(component([
     prop({ name: "a", control: { options: Array.from({ length: 20 }, (_, i) => `a${i}`) } }),

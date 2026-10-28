@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseUploadResponse, runFigmaUpload } from "../figma-upload.js";
@@ -56,6 +56,23 @@ test("figma upload: posts each thumbnail's exact bytes with its type, in the ord
     ]);
     assert.deepEqual(server.posts.map((p) => [p.path, p.type]), [["/a", "image/jpeg"], ["/b", "image/png"]]);
     for (const post of server.posts) assert.ok(post.bytes.equals(bytes));
+  } finally {
+    await server.close();
+  }
+});
+
+test("figma upload: posts no file from outside the snap's assets, a link out of them included", async () => {
+  const { coded, plan } = await builtAvatar();
+  const server = await uploadServer();
+  try {
+    writeFileSync(join(coded.out, "results", "01.upload.json"), JSON.stringify({ uploads: [{ submitUrl: `${server.url}/a` }, { submitUrl: `${server.url}/b` }] }));
+    const image = join(coded.dir, "snaps", JPEG);
+    const secret = join(coded.dir, "secret.jpg");
+    writeFileSync(secret, treeFixtureAsset(JPEG));
+    rmSync(image);
+    symlinkSync(secret, image);
+    await assert.rejects(runFigmaUpload({ plan, seq: 1 }), /the snap's image img:513d06f54269-262b is .*, which is not in .*assets, where snap saves image thumbnails/);
+    assert.deepEqual(server.posts, []);
   } finally {
     await server.close();
   }

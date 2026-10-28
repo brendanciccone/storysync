@@ -8,8 +8,8 @@
 // both files and posts each thumbnail snap saved to its URL, which puts it on
 // its layer. The images call then copies it to every other layer showing it.
 
-import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { fnv1a32Bytes } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
 import { readCallResult, readPlan } from "./figma-code.js";
@@ -121,17 +121,33 @@ export async function runFigmaUpload(opts: { plan: string; seq: number; fetch?: 
     throw new Error(`${snapPath} has changed since this plan was made from it: run figma code again, and send its calls`);
   }
   const assets = assetsOf(snapPath);
+  const assetsDir = join(dirname(snapPath), "assets");
   const files = pairs.map(({ assetId }) => {
     const asset = assets.get(assetId);
     if (!asset) throw new Error(`the snap has no image ${assetId}`);
+    if (asset.mime !== "image/png" && asset.mime !== "image/jpeg") throw new Error(`the snap's image ${assetId} is a ${String(asset.mime)}, not the PNG or JPEG snap saves`);
     const path = resolve(dirname(snapPath), asset.file);
+    const missing = () => new Error(`${path} is missing: snap saves image thumbnails beside styles.json, under assets/`);
+    let real: string;
+    let root: string;
+    try {
+      real = realpathSync(path);
+      root = realpathSync(assetsDir);
+    } catch {
+      throw missing();
+    }
+    // Each is posted to a URL the saved response gives, so an image whose
+    // file was another, `../../.ssh/id_rsa` or a link to it, would post it.
+    if (!real.startsWith(root + sep)) {
+      throw new Error(`the snap's image ${assetId} is ${path}, which is not in ${assetsDir}, where snap saves image thumbnails: take the snap again`);
+    }
     let bytes: Uint8Array<ArrayBuffer>;
     try {
-      const file = readFileSync(path);
+      const file = readFileSync(real);
       bytes = new Uint8Array(new ArrayBuffer(file.length));
       bytes.set(file);
     } catch {
-      throw new Error(`${path} is missing: snap saves image thumbnails beside styles.json, under assets/`);
+      throw missing();
     }
     return { bytes, mime: asset.mime };
   });

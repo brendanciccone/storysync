@@ -1074,10 +1074,15 @@ export function checkReadback(readback: ReadbackFile, { measuredAt, componentsMe
   const byNodeId = new Map<string, string[]>();
   for (const [component, entry] of Object.entries(readback.components ?? {})) {
     const setId = entry?.nodeId;
-    if (typeof setId === "string" && setId !== "") byNodeId.set(setId, [...(byNodeId.get(setId) ?? []), component]);
+    if (typeof setId !== "string" || setId === "") continue;
+    const group = byNodeId.get(setId);
+    if (group) group.push(component);
+    else byNodeId.set(setId, [component]);
   }
   for (const [component, entry] of Object.entries(readback.components ?? {})) {
     const setId = entry?.nodeId;
+    // One list for all of the component's variants, not a copy each.
+    const sharedWith = typeof setId === "string" ? (byNodeId.get(setId) ?? []).filter((other) => other !== component) : [];
     const own = componentsMeasuredAt?.[component];
     const measured = Date.parse(own ?? measuredAt ?? "");
     for (const [slug, variant] of Object.entries(entry?.variants ?? {})) {
@@ -1093,7 +1098,6 @@ export function checkReadback(readback: ReadbackFile, { measuredAt, componentsMe
         issues.push({ component, slug, problem: "no_node_id" });
         continue;
       }
-      const sharedWith = (byNodeId.get(setId) ?? []).filter((other) => other !== component);
       if (sharedWith.length > 0) {
         issues.push({ component, slug, problem: "duplicate_node_id", sharedWith });
         continue;

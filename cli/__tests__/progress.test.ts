@@ -77,6 +77,13 @@ test("StatusLine: with STORYSYNC_PROGRESS and no terminal, writes a plain line e
   assert.deepEqual(stream.writes, ["map 1/2 Forms/Button\n", "printed\n", "map 2/2 Forms/Card\n"]);
 });
 
+test("StatusLine: a title with a line break in it is still one line, so a CI log reads no workflow command from it", () => {
+  const stream = terminal(false);
+  const line = new StatusLine(stream, { STORYSYNC_PROGRESS: "1" });
+  line.show("map 1/1 Forms/Button\n::error::forged\r\n\u2028x");
+  assert.deepEqual(stream.writes, ["map 1/1 Forms/Button ::error::forged x\n"]);
+});
+
 /** A stand-in for the process's events, recording the signals it is sent. */
 function processEvents() {
   const events = Object.assign(new EventEmitter(), { pid: 4242, sent: [] as string[] });
