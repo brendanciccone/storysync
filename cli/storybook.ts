@@ -380,10 +380,11 @@ export function toolResultText(tool: string, result: unknown): string {
 // a line of a summary that runs onto several lines from being read as a
 // component: addon-mcp prints a component's description as written, so a
 // JSDoc line `- Use (sparingly) next to titles` arrives as a line of its own.
-// The name starts and ends with what isn't whitespace: as `.+?`, it could
-// take the spaces around it as `\s+` and `\s*` could, so a line of 2,000
-// spaces from the server took 3 seconds to fail, growing as its length cubed.
-const COMPONENT_LINE = /^[-*]\s+(?:\*\*)?(\S(?:.*?\S)?)(?:\*\*)?\s*\((?:id:\s*)?[`"']?([^\s()`"']+)[`"']?\)(?::.*)?\s*$/;
+// The name starts and ends with what isn't whitespace, inside any bold's
+// spaces: as `.+?`, it could take the spaces around it as `\s+` and `\s*`
+// could, so a line of 2,000 spaces from the server took 3 seconds to fail,
+// growing as its length cubed.
+const COMPONENT_LINE = /^[-*]\s+(?:\*\*\s*)?(\S(?:.*?\S)?)(?:\s*\*\*)?\s*\((?:id:\s*)?[`"']?([^\s()`"']+)[`"']?\)(?::.*)?\s*$/;
 
 // A story's line, indented under its component: `  - Name (id)`. A story's
 // name may hold parentheses of its own (`Playground (all tones)`), so the ID

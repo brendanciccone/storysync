@@ -424,10 +424,13 @@ test("StorybookClient: a docs list line of thousands of spaces is read at once, 
   const started = Date.now();
   const entries = await listed([
     "- Button (forms-button)", "  - Default (forms-button--default)",
-    `-${spaces}!`, `- a${spaces}!`, `  -${spaces}!`, `-${spaces}(x)`,
+    `-${spaces}!`, `- a${spaces}!`, `  -${spaces}!`, `-${spaces}(x)`, `- **${spaces}!`,
+    // Bold with spaces inside its stars is still the name alone.
+    "- **Card **(forms-card)", "- ** Chip**(forms-chip)",
   ].join("\n"));
   assert.ok(Date.now() - started < 1000, `${Date.now() - started}ms`);
-  assert.deepEqual(entries.map((e) => [e.id, e.name, e.storyIds]), [["forms-button", "Button", ["forms-button--default"]]]);
+  assert.deepEqual(entries.map((e) => [e.id, e.name]), [["forms-button", "Button"], ["forms-card", "Card"], ["forms-chip", "Chip"]]);
+  assert.deepEqual(entries[0].storyIds, ["forms-button--default"]);
 });
 
 test("StorybookClient: docs pages are left out of each source's part of a composed docs list", async () => {
