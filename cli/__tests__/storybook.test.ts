@@ -424,7 +424,7 @@ test("StorybookClient: a docs list line of thousands of spaces is read at once, 
   const started = Date.now();
   const entries = await listed([
     "- Button (forms-button)", "  - Default (forms-button--default)",
-    `-${spaces}!`, `- a${spaces}!`, `  -${spaces}!`, `-${spaces}(x)`, `- **${spaces}!`,
+    `-${spaces}!`, `- a${spaces}!`, `  -${spaces}!`, `-${spaces}(x)`, `- **${spaces}!`, `  - Story (${"-".repeat(80_000)}!`,
     // Bold with spaces inside its stars is still the name alone.
     "- **Card **(forms-card)", "- ** Chip**(forms-chip)",
   ].join("\n"));

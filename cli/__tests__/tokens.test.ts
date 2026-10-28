@@ -506,6 +506,17 @@ test("detectTokenSource: a directory linked to from inside itself is walked once
   } finally { cleanup(dir); }
 });
 
+test("detectTokenSource: a directory a deep link reaches first is still walked from its own place", () => {
+  // src is walked before styles, and reaches styles/z through
+  // src/a/b/c/link at depth 4, too deep for its files: skipped as seen
+  // when styles was walked, the project's one stylesheet would be missed.
+  const dir = makeProject({ "styles/z/one/two/three/four/vars.css": `:root { --color-primary: #3b82f6; }`, "src/a/b/c/.keep": "" });
+  try {
+    symlinkSync(join(dir, "styles", "z"), join(dir, "src", "a", "b", "c", "link"));
+    assert.equal(detectTokenSource(dir)?.path, join(dir, "styles/z/one/two/three/four/vars.css"));
+  } finally { cleanup(dir); }
+});
+
 test("detectTokenSource: returns null when nothing found", () => {
   const dir = makeProject({ "README.md": "# nothing here" });
   try {
@@ -1442,6 +1453,11 @@ test("resolveTailwindCssRefs: a variable that names itself several times stops g
   const value = resolveTailwindCssRefs("var(--a)", loop);
   assert.ok(Date.now() - started < 1000, `${Date.now() - started}ms`);
   assert.ok(value.length <= 10_000 && value.includes("var(--a)"), value.slice(0, 100));
+  // Nor is one pass built whole past it: a thousand copies of a 1MB variable
+  // were a string longer than Node allows, and threw.
+  const big = new Map([["--big", "x".repeat(1_000_000)]]);
+  const many = Array(1000).fill("var(--big)").join(" ");
+  assert.equal(resolveTailwindCssRefs(many, big), many);
 });
 
 test("Tailwind: a var() with an empty fallback and nothing set stays as written, with its warning", () => {

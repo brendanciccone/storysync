@@ -1586,7 +1586,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     // so each is one of the call's own: a saved result that gave 0 to 1e15
     // had the next call loop in Figma until it was closed.
     const index = (n: unknown) => Number.isSafeInteger(n) && (n as number) >= 0;
-    const asked = (s: unknown[]) => !call.slices || call.slices.some(([id, first, last]) => id === s[0] && first <= (s[1] as number) && (s[2] as number) <= last);
+    const asked = (s: unknown[]) => (call.slices ?? []).some(([id, first, last]) => id === s[0] && first <= (s[1] as number) && (s[2] as number) <= last);
     if (slices.some((s: unknown[]) => !index(s[1]) || !index(s[2]) || (s.length === 4 && !index(s[3])) || (s[1] as number) > (s[2] as number) || !asked(s))) {
       throw new Error(`${read} has a "more" whose slices aren't within the ones call ${pad(call.seq)} read: send call ${pad(call.seq)} again and save its response unchanged`);
     }

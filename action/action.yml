@@ -438,10 +438,11 @@ runs:
         const collections = current.collections || [];
         // What tokens warned about, a var() that didn't resolve or a variable
         // it couldn't categorize, is logged whether or not anything drifted.
-        // One line each: a CSS value can span lines, and a line of it
-        // starting with :: would be read as a workflow command.
+        // One line each, logged with workflow commands off: a CSS value can
+        // span lines, and the runner reads a command from a line starting
+        // with ::, or from ##[ anywhere in one.
         const warnings = (Array.isArray(current.warnings) ? current.warnings : []).map(w => String(w).replace(/\s+/g, " ").trim());
-        for (const w of warnings) console.log("storysync tokens: " + w);
+        if (warnings.length) logReport(warnings.map(w => "storysync tokens: " + w).join("\n"));
 
         // The command that writes the baseline, as the action extracts tokens,
         // with the storysync it runs.

@@ -172,6 +172,11 @@ test("figma next: a continuation of slices the call didn't read, or no slices of
   }
   writeFileSync(join(coded.out, read.result), JSON.stringify({ kind: "read", more: { slices: [[id, last, last, 3]] } }));
   assert.ok(await runFigmaNext(opts));
+  // A plan whose read lists no slices has none a continuation can be within.
+  const plan = JSON.parse(readFileSync(opts.plan, "utf8")) as FigmaPlan;
+  delete plan.calls.find((c) => c.seq === read.seq)!.slices;
+  writeFileSync(opts.plan, JSON.stringify(plan));
+  await assert.rejects(runFigmaNext(opts), /has a "more" whose slices aren't within the ones call \d+ read/);
 });
 
 test("figma next: a continuation reads with the limit its call was written with", async () => {

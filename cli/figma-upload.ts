@@ -8,7 +8,7 @@
 // both files and posts each thumbnail snap saved to its URL, which puts it on
 // its layer. The images call then copies it to every other layer showing it.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fnv1a32Bytes } from "./checksum.js";
 import { extractFirstBalancedObject } from "./figma.js";
@@ -122,6 +122,10 @@ export async function runFigmaUpload(opts: { plan: string; seq: number; fetch?: 
   }
   const assets = assetsOf(snapPath);
   const assetsDir = join(dirname(snapPath), "assets");
+  // A link there would make wherever it leads the directory images may come from.
+  if (lstatSync(assetsDir, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    throw new Error(`${assetsDir} is a symbolic link, where snap saves image thumbnails in a directory of its own: take the snap again`);
+  }
   const files = pairs.map(({ assetId }) => {
     const asset = assets.get(assetId);
     if (!asset) throw new Error(`the snap has no image ${assetId}`);

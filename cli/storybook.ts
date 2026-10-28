@@ -391,8 +391,10 @@ const COMPONENT_LINE = /^[-*]\s+(?:\*\*\s*)?(\S(?:.*?\S)?)(?:\s*\*\*)?\s*\((?:id
 // is the parenthesized token that ends the line, and it holds the `--` every
 // story ID has. Reading the first one took "all tones" as the story ID, and
 // every variant snap rendered from it failed. The name, if any, starts with
-// what isn't whitespace, for the reason COMPONENT_LINE's does.
-const STORY_LINE = /^\s+[-*]\s+(?:\S.*)?\((?:id:\s*)?[`"']?([^\s()`"']+--[^\s()`"']+)[`"']?\)\s*$/;
+// what isn't whitespace, for the reason COMPONENT_LINE's does, and the `--`
+// is looked for in the token once it is read: as two runs of one character
+// class around it, the pattern took a run of dashes the square of its length.
+const STORY_LINE = /^\s+[-*]\s+(?:\S.*)?\((?:id:\s*)?[`"']?([^\s()`"']+)[`"']?\)\s*$/;
 
 /**
  * The part of a docs-show response about the component's own props.
@@ -716,7 +718,7 @@ export class StorybookClient {
         entries.push(current);
       } else if (current && /^\s{2,}/.test(line)) {
         const s = line.match(STORY_LINE);
-        if (s) current.storyIds?.push(s[1].trim());
+        if (s?.[1].includes("--")) current.storyIds?.push(s[1].trim());
       }
     }
     return entries;
