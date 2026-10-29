@@ -81,6 +81,10 @@ export class StatusLine {
 
   show(text: string): void {
     if (this.mode === "off") return;
+    // One line, whatever a component's title holds, and no workflow command
+    // in a CI log: GitHub's runner reads one from a line starting with ::,
+    // and from ##[ anywhere in a line.
+    text = text.replace(/[\r\n\u2028\u2029]+/g, " ").replace(/##\[/g, "## [").replace(/^(\s*)::/, "$1: :");
     if (this.mode === "lines") {
       this.stream.write(`${text}\n`);
       return;

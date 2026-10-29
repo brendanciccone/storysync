@@ -769,8 +769,14 @@ function deltaOf(base: Interned[], records: Interned[]): unknown {
   return out;
 }
 
+/**
+ * A call's first line, a comment. The page is a Storybook category, which a
+ * title in index.json can give a line break: one left in would end the
+ * comment, and what followed it would run as the call's code.
+ */
 function header(seq: number, kind: string, page: string): string {
-  return `// storysync figma code, call ${pad(seq)}: ${kind}${page ? ` on page "${page}"` : ""}. Send this file unchanged as use_figma's code.\n`;
+  const name = page.replace(/[\r\n\u2028\u2029]+/g, " ");
+  return `// storysync figma code, call ${pad(seq)}: ${kind}${name ? ` on page "${name}"` : ""}. Send this file unchanged as use_figma's code.\n`;
 }
 
 /**
@@ -858,6 +864,26 @@ function clearPlanFiles(out: string): void {
     for (const name of readdirSync(at)) {
       if (pattern.test(name) && lstatSync(join(at, name)).isFile()) rmSync(join(at, name));
     }
+  }
+}
+
+/**
+ * Refuses `rel` under `out` where a symbolic link is on its way or in its
+ * place. A plan's files have fixed names there, so a link committed as one
+ * of them, `calls` to another directory or `plan.json` to `~/.bashrc`, had
+ * them written, or moved, wherever it led.
+ */
+export function assertNoLinks(out: string, rel: string): void {
+  let at = out;
+  for (const part of rel.split("/")) {
+    at = join(at, part);
+    let link: boolean;
+    try {
+      link = lstatSync(at).isSymbolicLink();
+    } catch {
+      return;
+    }
+    if (link) throw new Error(`${at} is a symbolic link, and storysync writes its plan only to files of its own under ${out}: remove the link, or pass another --out`);
   }
 }
 
@@ -1314,6 +1340,7 @@ export async function runFigmaCode(opts: FigmaCodeOptions): Promise<{ plan: Figm
   }
 
   const out = resolve(opts.out);
+  for (const rel of ["plan.json", "calls", "results", EARLIER_PLANS_DIR, ...calls.map((c) => c.file)]) assertNoLinks(out, rel);
   const earlier = keepEarlierPlan(out);
   clearPlanFiles(out);
   mkdirSync(join(out, "calls"), { recursive: true });
@@ -1555,6 +1582,14 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     if (!Array.isArray(slices) || !slices.length || slices.some((s) => !Array.isArray(s) || s.length < 3 || s.length > 4 || typeof s[0] !== "string")) {
       throw new Error(`${read} has a "more" without the slices to continue from`);
     }
+    // The read goes on through each index from a slice's first to its last,
+    // so each is one of the call's own: a saved result that gave 0 to 1e15
+    // had the next call loop in Figma until it was closed.
+    const index = (n: unknown) => Number.isSafeInteger(n) && (n as number) >= 0;
+    const asked = (s: unknown[]) => (call.slices ?? []).some(([id, first, last]) => id === s[0] && first <= (s[1] as number) && (s[2] as number) <= last);
+    if (slices.some((s: unknown[]) => !index(s[1]) || !index(s[2]) || (s.length === 4 && !index(s[3])) || (s[1] as number) > (s[2] as number) || !asked(s))) {
+      throw new Error(`${read} has a "more" whose slices aren't within the ones call ${pad(call.seq)} read: send call ${pad(call.seq)} again and save its response unchanged`);
+    }
     suffix = suffix ? String.fromCharCode(suffix.charCodeAt(0) + 1) : "b";
     if (suffix > "z") throw new Error(`call ${pad(opts.seq)} has continued more than 25 times`);
     const file = `calls/${pad(call.seq)}${suffix}-read-${pageSlug(call.page)}.js`;
@@ -1594,6 +1629,7 @@ export async function runFigmaNext(opts: { plan: string; seq: number; minify?: b
     const code = readCode(call.seq, call.page, slices as [string, number, number, number][], limit, template, "figma next", carry).replace(`call ${pad(call.seq)}:`, `call ${pad(call.seq)}${suffix}:`);
     assertCompiles(code, file, "readback", template);
     assertWithinLimit(code, file);
+    assertNoLinks(dir, file);
     writeFileSync(join(dir, file), code);
     return { file: join(dir, file), result: join(dir, resultFile), description, ...(again ? { again: true as const } : {}) };
   }

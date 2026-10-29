@@ -568,7 +568,13 @@ export function mapComponent(
   component: StorybookComponent,
   maxCombinations: number = DEFAULT_MAX_COMBINATIONS,
 ): FigmaComponentDefinition {
-  const variantProperties = component.props.map(mapProp).filter((v): v is FigmaVariantProperty => v != null);
+  // A prop the docs declare twice is one property, the first: each copy set
+  // the same key of every combination, so twenty copies of a two-valued prop
+  // made a million combinations to walk for two distinct ones, and the cap,
+  // which counts distinct ones, never stopped it.
+  const byName = new Map<string, FigmaVariantProperty>();
+  for (const v of component.props.map(mapProp)) if (v && !byName.has(v.name)) byName.set(v.name, v);
+  const variantProperties = [...byName.values()];
   const { combinations, wasCapped, cap } = cartesian(variantProperties, maxCombinations);
   return {
     name: component.name,

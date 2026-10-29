@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -334,6 +334,17 @@ test("figma tokens: --remove names a variable of a collection the plan makes, an
   assert.throws(() => readFileSync(join(out, "results", "01.json")));
   assert.equal(readFileSync(join(out, "results", "notes.txt"), "utf8"), "mine");
   assert.throws(() => runFigmaTokens({ tokens: join(planned.dir, "missing.json"), out }), /no tokens at .*missing\.json: save them first/);
+});
+
+test("figma tokens: writes no part of its plan through a symbolic link under --out", () => {
+  const planned = planFor(TOKENS);
+  const out = join(planned.dir, "figma", "tokens");
+  const kept = join(planned.dir, "kept.txt");
+  writeFileSync(kept, "kept");
+  rmSync(join(out, "plan.json"));
+  symlinkSync(kept, join(out, "plan.json"));
+  assert.throws(() => runFigmaTokens({ tokens: join(planned.dir, "tokens.json"), out }), /plan\.json is a symbolic link, and storysync writes its plan only to files of its own under /);
+  assert.equal(readFileSync(kept, "utf8"), "kept");
 });
 
 /** The alpha variables a plan binds, as figma code lists them: background and border at 10% and 50%, and a token the tokens lack. */

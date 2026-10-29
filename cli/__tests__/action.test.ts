@@ -194,6 +194,40 @@ function withId(c: Component, id = (c.title ?? c.name).toLowerCase().replace(/[^
   return { id, ...c };
 }
 
+/**
+ * The workflow commands a runner reads from a step's log, as it does: each
+ * line starting, after its indentation, with ::, except those between
+ * ::stop-commands::<token> and ::<token>::.
+ */
+function workflowCommands(stdout: string): string[] {
+  const commands: string[] = [];
+  let stopped: string | null = null;
+  for (const line of stdout.split(/\r?\n/).map((l) => l.trimStart())) {
+    if (stopped) {
+      if (line === `::${stopped}::`) stopped = null;
+      continue;
+    }
+    const stop = /^::stop-commands::(.+)$/.exec(line);
+    if (stop) stopped = stop[1];
+    else if (line.startsWith("::")) commands.push(line);
+  }
+  return commands;
+}
+
+test("action Detect drift: a title with a line of :: in it is logged in the report, not run as a workflow command", () => {
+  // A story file's title is the PR's to write, and a line of the report
+  // starting with :: was read as a command to the runner.
+  const forged = withId(component("Forms/Button\n::error::forged", 1), "forms-forged");
+  const r = detectDrift(mapJson([formsButton]), [formsButton, forged]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /\n::error::forged\*\*/);
+  assert.deepEqual(workflowCommands(r.stdout).filter((c) => c.includes("forged")), []);
+  // Two reports' tokens aren't the same, so none can be guessed from another.
+  const again = detectDrift(mapJson([formsButton]), [formsButton, forged]);
+  const token = (out: string) => /::stop-commands::(.+)/.exec(out)?.[1];
+  assert.ok(token(r.stdout) && token(again.stdout) && token(r.stdout) !== token(again.stdout));
+});
+
 test("action Detect drift: two components of one name and no title are told apart by their IDs", () => {
   // A shadcn registry's Sonner stories document Toaster, under both
   // ui/base/Sonner and ui/radix/Sonner. Keyed by title, then name, both were
@@ -447,6 +481,14 @@ test("action Detect token drift: every collection of a category is compared, not
   // Moved from one collection of the category to another is no change.
   const merged = detectTokenDrift(baseline, [colors, { category: "typography", tokens: [...fontSizes.tokens, ...fontWeights.tokens] }]);
   assert.equal(merged.outputs.result, "false", merged.stdout);
+});
+
+test("action Detect token drift: a category with a line of :: in it is logged in the report, not run as a workflow command", () => {
+  const forged = { category: "colors\n::error::forged", tokens: [{ name: "x", value: "#000000" }] };
+  const r = detectTokenDrift(tokensJson([colors]), [colors, forged]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /\n::error::forged\*\*/);
+  assert.deepEqual(workflowCommands(r.stdout).filter((c) => c.includes("forged")), []);
 });
 
 test("action Detect token drift: a token baseline that is not tokens --json output fails with the command to recreate it", () => {

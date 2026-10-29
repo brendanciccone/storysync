@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { extractTokens, detectTokenSource, compareTokens, hasDrift, readTokenBaseline, baselineCommand, parseTokenSource, tokenColorToHex, lengthToPx, resolveTailwindCssRefs, TOKEN_SOURCES, baseDefaults, withoutRepeatedDefault } from "../tokens.js";
@@ -491,6 +491,29 @@ test("detectTokenSource: finds CSS custom properties", () => {
   try {
     const source = detectTokenSource(dir);
     assert.equal(source?.type, "css");
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: a directory linked to from inside itself is walked once, not once a link at each depth", () => {
+  // Ten links of src to itself were over 100,000 walks of it, each reading
+  // its CSS again: 7 seconds to detect, 29 to extract.
+  const dir = makeProject({ "src/styles.css": `:root { --color-primary: #3b82f6; }` });
+  try {
+    for (let i = 0; i < 10; i++) symlinkSync(".", join(dir, "src", `self${i}`));
+    const started = Date.now();
+    assert.equal(detectTokenSource(dir)?.type, "css");
+    assert.ok(Date.now() - started < 1000, `${Date.now() - started}ms`);
+  } finally { cleanup(dir); }
+});
+
+test("detectTokenSource: a directory a deep link reaches first is still walked from its own place", () => {
+  // src is walked before styles, and reaches styles/z through
+  // src/a/b/c/link at depth 4, too deep for its files: skipped as seen
+  // when styles was walked, the project's one stylesheet would be missed.
+  const dir = makeProject({ "styles/z/one/two/three/four/vars.css": `:root { --color-primary: #3b82f6; }`, "src/a/b/c/.keep": "" });
+  try {
+    symlinkSync(join(dir, "styles", "z"), join(dir, "src", "a", "b", "c", "link"));
+    assert.equal(detectTokenSource(dir)?.path, join(dir, "styles/z/one/two/three/four/vars.css"));
   } finally { cleanup(dir); }
 });
 
@@ -1421,6 +1444,20 @@ test("resolveTailwindCssRefs: a fallback holding parentheses is read whole, leav
   assert.equal(resolveTailwindCssRefs("var(--missing, var(--gone, rgb(1 2 3)))", vars), "rgb(1 2 3)");
   assert.equal(resolveTailwindCssRefs("0 0 0 var(--thin, calc(1px + 1px)) var(--line)", vars), "0 0 0 1px #cccccc");
   assert.equal(resolveTailwindCssRefs("var(--missing)", vars), "var(--missing)");
+});
+
+test("resolveTailwindCssRefs: a variable that names itself several times stops growing short of any token's length", () => {
+  // Each pass multiplied it by ten: 10^8 copies after eight, and the process ran out of memory.
+  const loop = new Map([["--a", Array(10).fill("var(--a)").join(" ")]]);
+  const started = Date.now();
+  const value = resolveTailwindCssRefs("var(--a)", loop);
+  assert.ok(Date.now() - started < 1000, `${Date.now() - started}ms`);
+  assert.ok(value.length <= 10_000 && value.includes("var(--a)"), value.slice(0, 100));
+  // Nor is one pass built whole past it: a thousand copies of a 1MB variable
+  // were a string longer than Node allows, and threw.
+  const big = new Map([["--big", "x".repeat(1_000_000)]]);
+  const many = Array(1000).fill("var(--big)").join(" ");
+  assert.equal(resolveTailwindCssRefs(many, big), many);
 });
 
 test("Tailwind: a var() with an empty fallback and nothing set stays as written, with its warning", () => {

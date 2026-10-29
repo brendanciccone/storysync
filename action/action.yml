@@ -407,6 +407,16 @@ runs:
         const output = (name, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, name + "<<STORYSYNC_EOF\n" + value + "\nSTORYSYNC_EOF\n");
         // Workflow commands end at a newline and read % as an escape.
         const escape = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+        // The report, logged with workflow commands off: it holds names from
+        // the project and its Storybook, and a line of one starting with ::
+        // would run as a command. The token that turns them back on is new
+        // each run, so nothing in the report can.
+        const logReport = (body) => {
+          const token = require("crypto").randomUUID();
+          console.log("::stop-commands::" + token);
+          console.log(body);
+          console.log("::" + token + "::");
+        };
         const quote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'");
         const wd = path.normalize(process.env.WORKING_DIRECTORY || ".").replace(/\/+$/, "") || ".";
         const where = wd === "." ? "the repository root" : wd;
@@ -428,10 +438,11 @@ runs:
         const collections = current.collections || [];
         // What tokens warned about, a var() that didn't resolve or a variable
         // it couldn't categorize, is logged whether or not anything drifted.
-        // One line each: a CSS value can span lines, and a line of it
-        // starting with :: would be read as a workflow command.
+        // One line each, logged with workflow commands off: a CSS value can
+        // span lines, and the runner reads a command from a line starting
+        // with ::, or from ##[ anywhere in one.
         const warnings = (Array.isArray(current.warnings) ? current.warnings : []).map(w => String(w).replace(/\s+/g, " ").trim());
-        for (const w of warnings) console.log("storysync tokens: " + w);
+        if (warnings.length) logReport(warnings.map(w => "storysync tokens: " + w).join("\n"));
 
         // The command that writes the baseline, as the action extracts tokens,
         // with the storysync it runs.
@@ -571,7 +582,7 @@ runs:
         }
 
         fs.writeFileSync("storysync-token-drift.md", body);
-        console.log(body);
+        logReport(body);
         SCRIPT
 
     - name: Map components
@@ -660,6 +671,16 @@ runs:
         const output = (name, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, name + "<<STORYSYNC_EOF\n" + value + "\nSTORYSYNC_EOF\n");
         // Workflow commands end at a newline and read % as an escape.
         const escape = (s) => s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+        // The report, logged with workflow commands off: it holds names from
+        // the project and its Storybook, and a line of one starting with ::
+        // would run as a command. The token that turns them back on is new
+        // each run, so nothing in the report can.
+        const logReport = (body) => {
+          const token = require("crypto").randomUUID();
+          console.log("::stop-commands::" + token);
+          console.log(body);
+          console.log("::" + token + "::");
+        };
         const quote = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'");
         const wd = path.normalize(process.env.WORKING_DIRECTORY || ".").replace(/\/+$/, "") || ".";
         const where = wd === "." ? "the repository root" : wd;
@@ -870,7 +891,7 @@ runs:
         body += "| Failed | " + baseline.summary.failed + " | " + current.summary.failed + " |\n";
 
         fs.writeFileSync("storysync-drift.md", body);
-        console.log(body);
+        logReport(body);
         SCRIPT
 
     # Also after a step that failed, such as Detect drift on a baseline that

@@ -28,7 +28,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, wr
 import { join, relative, resolve } from "node:path";
 import { callCode, fnv1a32Bytes } from "./checksum.js";
 import { alphaVariableName, colorOfClass, literalHex, parseAlphaVariable } from "./figma-bind.js";
-import { assertCompiles, assertWithinLimit, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
+import { assertCompiles, assertNoLinks, assertWithinLimit, loadTemplate, pageSlug, readPlan } from "./figma-code.js";
 import type { FigmaCodeOptions } from "./figma-code.js";
 import { lengthToPx, tokenColorToHex, withoutRepeatedDefault } from "./tokens.js";
 import type { TokenCategory, TokenExtractionResult, TokenValue } from "./tokens.js";
@@ -280,6 +280,7 @@ export function runFigmaTokens(opts: FigmaTokensOptions): { plan: TokensPlan; pl
   }
 
   const out = resolve(opts.out);
+  for (const rel of ["plan.json", "calls", "results", ...calls.map((c) => c.file)]) assertNoLinks(out, rel);
   for (const [dir, pattern] of Object.entries(PLAN_FILES)) {
     const at = join(out, dir);
     if (!existsSync(at) || !lstatSync(at).isDirectory()) continue;

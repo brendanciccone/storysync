@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseUploadResponse, runFigmaUpload } from "../figma-upload.js";
@@ -27,11 +27,11 @@ async function uploadServer(status = 200) {
   return { posts, url, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
-/** Avatar with a second image on its lg variant, built in the mock, its build result saved. */
-async function builtAvatar() {
+/** Avatar with a second image, of type `mime`, on its lg variant, built in the mock, its build result saved. */
+async function builtAvatar(mime = "image/png") {
   const fixture = copy(loadTreeFixture("avatar"));
   const tree = fixture.components[0].tree;
-  tree.assets.img["img:0000000000ff-0000"] = { ...tree.assets.img["img:513d06f54269-262b"], mime: "image/png" };
+  tree.assets.img["img:0000000000ff-0000"] = { ...tree.assets.img["img:513d06f54269-262b"], mime: mime as "image/png" };
   const lg = fixture.components[0].variants[2] as unknown as { treeDelta: { set: Record<string, object> } };
   lg.treeDelta.set["avatar-image"] = { ...lg.treeDelta.set["avatar-image"], img: "img:0000000000ff-0000" };
   const coded = await codeFor(fixture);
@@ -56,6 +56,44 @@ test("figma upload: posts each thumbnail's exact bytes with its type, in the ord
     ]);
     assert.deepEqual(server.posts.map((p) => [p.path, p.type]), [["/a", "image/jpeg"], ["/b", "image/png"]]);
     for (const post of server.posts) assert.ok(post.bytes.equals(bytes));
+  } finally {
+    await server.close();
+  }
+});
+
+test("figma upload: posts no file from outside the snap's assets, a link out of them included", async () => {
+  const { coded, plan } = await builtAvatar();
+  const server = await uploadServer();
+  try {
+    writeFileSync(join(coded.out, "results", "01.upload.json"), JSON.stringify({ uploads: [{ submitUrl: `${server.url}/a` }, { submitUrl: `${server.url}/b` }] }));
+    const image = join(coded.dir, "snaps", JPEG);
+    const secret = join(coded.dir, "secret.jpg");
+    writeFileSync(secret, treeFixtureAsset(JPEG));
+    rmSync(image);
+    symlinkSync(secret, image);
+    await assert.rejects(runFigmaUpload({ plan, seq: 1 }), /the snap's image img:513d06f54269-262b is .*, which is not in .*assets, where snap saves image thumbnails/);
+    assert.deepEqual(server.posts, []);
+    // Nor does a link in place of assets/ make where it leads the place images may come from.
+    const assets = join(coded.dir, "snaps", "assets");
+    const away = join(coded.dir, "away");
+    renameSync(assets, away);
+    rmSync(join(away, JPEG.slice("assets/".length)));
+    writeFileSync(join(away, JPEG.slice("assets/".length)), treeFixtureAsset(JPEG));
+    symlinkSync(away, assets);
+    await assert.rejects(runFigmaUpload({ plan, seq: 1 }), /snaps\/assets is a symbolic link, where snap saves image thumbnails in a directory of its own/);
+    assert.deepEqual(server.posts, []);
+  } finally {
+    await server.close();
+  }
+});
+
+test("figma upload: posts no image of a type other than the PNG or JPEG snap saves", async () => {
+  const { coded, plan } = await builtAvatar("text/plain");
+  const server = await uploadServer();
+  try {
+    writeFileSync(join(coded.out, "results", "01.upload.json"), JSON.stringify({ uploads: [{ submitUrl: `${server.url}/a` }, { submitUrl: `${server.url}/b` }] }));
+    await assert.rejects(runFigmaUpload({ plan, seq: 1 }), /the snap's image img:0000000000ff-0000 is a text\/plain, not the PNG or JPEG snap saves/);
+    assert.deepEqual(server.posts, []);
   } finally {
     await server.close();
   }

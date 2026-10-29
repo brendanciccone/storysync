@@ -1,7 +1,7 @@
 // Design token extraction from project source files.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { colorToHex } from "./color.js";
@@ -212,10 +212,11 @@ function findCSS(projectPath: string, test: (css: string, file: string) => boole
   const srcDir = join(projectPath, "src");
   const appDir = join(projectPath, "app");
   const stylesDir = join(projectPath, "styles");
+  const seen = new Map<string, number>();
 
   for (const dir of [srcDir, appDir, stylesDir, projectPath]) {
     if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
-    walkCSS(dir, results, test, 0);
+    walkCSS(dir, results, test, 0, seen);
   }
   return results;
 }
@@ -228,8 +229,20 @@ function findCSS(projectPath: string, test: (css: string, file: string) => boole
  */
 const SKIPPED_DIRS = new Set(["node_modules", "dist", ".next", "build", "storybook-static", "out", "coverage"]);
 
-function walkCSS(dir: string, results: string[], test: (css: string, file: string) => boolean, depth: number): void {
+/**
+ * Walks `dir` for findCSS. A directory is walked again only from nearer
+ * the top than it was (`seen` holds the depth each real path was walked
+ * from): a few links back up the tree were each walked as a directory of
+ * their own, at every depth, so they multiplied the walk. One reached
+ * first through a deeper link is walked again from its own place, so the
+ * depth limit leaves out no more of it than it would without the link.
+ */
+function walkCSS(dir: string, results: string[], test: (css: string, file: string) => boolean, depth: number, seen: Map<string, number>): void {
   if (depth > 5) return;
+  let real: string;
+  try { real = realpathSync(dir); } catch { return; }
+  if ((seen.get(real) ?? Infinity) <= depth) return;
+  seen.set(real, depth);
   let entries: string[];
   try { entries = readdirSync(dir); } catch { return; }
 
@@ -239,7 +252,7 @@ function walkCSS(dir: string, results: string[], test: (css: string, file: strin
     let stat;
     try { stat = statSync(full); } catch { continue; }
     if (stat.isDirectory()) {
-      walkCSS(full, results, test, depth + 1);
+      walkCSS(full, results, test, depth + 1, seen);
     } else if (entry.endsWith(".css") && !entry.endsWith(".module.css")) {
       try {
         if (test(readCss(full), full)) results.push(full);
@@ -1427,13 +1440,14 @@ function resolveRootVars(declared: Map<string, string>): Map<string, string> {
 
 /**
  * `value` with each var() in it replaced by what `replace` returns for its
- * name and fallback, or kept when that is undefined. A fallback runs to its
+ * name and fallback, or kept when that is undefined; null where it would
+ * run past `limit` characters. A fallback runs to its
  * var()'s own `)`, so one that holds parentheses, as `var(--a, rgb(0 0 0))`
  * and `var(--a, var(--b))` do, is read whole. A regex that ended it at the
  * first `)` left the second behind once `--a` resolved, so quary's
  * `var(--vscode-input-border, hsl(...))` came out as `#cecece)`, no color.
  */
-function replaceVars(value: string, replace: (name: string, fallback: string | undefined) => string | undefined): string {
+function replaceVars(value: string, replace: (name: string, fallback: string | undefined) => string | undefined, limit = Infinity): string | null {
   let out = "";
   let from = 0;
   const start = /var\(\s*(--[\w-]+)\s*/g;
@@ -1456,10 +1470,13 @@ function replaceVars(value: string, replace: (name: string, fallback: string | u
     if (replacement !== undefined) {
       out += value.slice(from, m.index) + replacement;
       from = i + 1;
+      // Past `limit`: null, before the rest is built.
+      if (out.length > limit) return null;
     }
     start.lastIndex = i + 1;
   }
-  return out + value.slice(from);
+  out += value.slice(from);
+  return out.length > limit ? null : out;
 }
 
 // Replace `var(--name)` and `var(--name, fallback)` inside a Tailwind token value.
@@ -1472,11 +1489,20 @@ export function resolveTailwindCssRefs(value: string, cssVars: Map<string, strin
   // An empty fallback, as in `var(--unset,)`, leaves the var() as written,
   // with its Unresolved warning, as earlier versions left it: replaced, it
   // made a token with no value and no warning.
+  // A pass that grows the value past MAX_RESOLVED_LENGTH stops it where it
+  // is: a variable that refers to itself, or one that names another several
+  // times, as `--a: var(--a) var(--a)`, doubles it each pass, and a few
+  // such references made gigabytes in eight.
   for (let depth = 0; depth < 8 && /var\(\s*--/.test(s); depth++) {
-    s = replaceVars(s, (name, fallback) => cssVars.get(name) ?? (fallback?.trim() || undefined));
+    const next = replaceVars(s, (name, fallback) => cssVars.get(name) ?? (fallback?.trim() || undefined), MAX_RESOLVED_LENGTH);
+    if (next === null) break;
+    s = next;
   }
   return s.trim();
 }
+
+/** The longest a token's value grows by resolving its var()s: a font stack or a layered shadow runs to a few hundred characters. */
+const MAX_RESOLVED_LENGTH = 10_000;
 
 interface ThemeBlocks {
   extend: string;
