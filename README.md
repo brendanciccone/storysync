@@ -9,7 +9,7 @@ Sync your design system from code to Figma, and diff Figma back against code, us
 
 ![Claude Code running /storysync-push and reporting 100% fidelity (174 of 174 properties), beside the pushed Button component set in Figma and the Button story in Storybook](assets/screenshot.webp)
 
-**Start here:** [What it does](#what-it-does) · [Install](#install) · [Your first push](#your-first-push) · [What a push costs](#what-a-push-costs) · [Check the result](#check-the-result) · [Find drift](#find-drift) · [What Figma can't do](#what-figma-cant-do)
+**Start here:** [What it does](#what-it-does) · [How it works](#how-it-works) · [Install](#install) · [Your first push](#your-first-push) · [What a push costs](#what-a-push-costs) · [Check the result](#check-the-result) · [Find drift](#find-drift) · [What Figma can't do](#what-figma-cant-do)
 
 **Reference:** [docs/reference.md](https://github.com/brendanciccone/storysync/blob/main/docs/reference.md) has every command and flag, how each step works, tokens, the GitHub Action and troubleshooting.
 
@@ -32,6 +32,31 @@ There are three workflows: **push** (code to Figma), **verify** (score what land
 | **GitHub Action** | Catch token and component drift in CI. |
 
 Why a skill file? Writing to Figma needs Figma's `use_figma` tool, which works only inside [supported MCP clients](https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Figma-MCP-server) such as Claude Code, Cursor and Codex. So the CLI does the extracting and the measuring and writes every Figma call, for tokens and components alike, and the skill tells your AI client to send those calls and run the commands around them. Storysync needs no Anthropic API key and makes no LLM calls of its own.
+
+## How it works
+
+Say your Storybook has a Badge with 20 variants (5 tones, 2 styles, 2 sizes), and your designers need the same 20 in Figma.
+
+1. **Run one command.** In Claude Code, run `/storysync-push <figma-file-key>`. The file key is the part of a Figma URL between `/design/` and the next `/`.
+2. **It measures each variant.** Storysync renders every variant in Storybook and records what the browser drew for each element: colors, padding, radius and type.
+3. **It builds the set in Figma.** You get one variant per combination, named by its props, such as `tone=success, variant=subtle, size=md`.
+4. **It checks every value.** It reads Figma back and compares it with the measurements:
+
+   ```text
+   Fidelity: 100.0% of elements (60 of 60 verified), 100.0% of properties (820/820)
+   20 verified, 0 drifted, 0 missing from Figma, across 20 variants
+   ```
+
+5. **Later, it finds drift.** Someone changes the success badge's fill in Figma. Run `/storysync-diff <figma-file-key>` and ask whether the sets still look like the code. It reads Figma, changes nothing, and names the variant, the property and both values:
+
+   ```text
+   ~ Feedback/Badge tone=success, variant=subtle, size=md › (root): fills measured ["#dcfce7"], Figma ["#e9d5ff"] (node 1:27)
+   19 verified, 1 drifted, 0 missing from Figma, across 20 variants
+   ```
+
+6. **Check it in CI.** Commit the snap and the readback a push saves (`.storysync/snaps/` and `.storysync/figma-readback.json`). `npx storysync verify --strict` in CI exits 1 when they disagree, such as when the code changes and a new snap is committed without a push. The [GitHub Action](https://github.com/brendanciccone/storysync/blob/main/docs/reference.md#github-action) catches components and tokens that changed in code since your committed baselines.
+
+Both outputs above are from a real push of that Badge into Figma. [Your first push](#your-first-push) has the setup.
 
 ## Before you start
 
