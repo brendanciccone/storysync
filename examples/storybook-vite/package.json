@@ -8,7 +8,10 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
-    ]
+    ],
+    "overrides": {
+      "@joshwooding/vite-plugin-react-docgen-typescript>glob": "^14.0.6"
+    }
   },
   "devDependencies": {
     "@fontsource/inter": "^5.0.0",
