@@ -20,7 +20,7 @@ Install it once with the command in [its README's Installation section](https://
 
 No tokens or config required. Free and open source.
 
-The repo has its own gate as well: `minimumReleaseAge` in `pnpm-workspace.yaml` (the root's and the example's) makes pnpm refuse any version under 7 days old, with or without Safe Chain, and Renovate waits the same 7 days before proposing one.
+The repo has its own gate as well: `minimumReleaseAge` in `pnpm-workspace.yaml` (the root's and the example's) makes pnpm refuse any version under 7 days old whenever it resolves dependencies (adding, updating or relocking a package), with or without Safe Chain. A frozen install of the existing lockfile doesn't check ages again, so the lockfile only stays clean because every change to it goes through that resolution, and Renovate waits the same 7 days before proposing one.
 
 ## Scripts
 
