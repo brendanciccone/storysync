@@ -20,6 +20,8 @@ Install it once with the command in [its README's Installation section](https://
 
 No tokens or config required. Free and open source.
 
+The repo has its own gate as well: `minimumReleaseAge` in `pnpm-workspace.yaml` (the root's and the example's) makes pnpm refuse any version under 7 days old, with or without Safe Chain, and Renovate waits the same 7 days before proposing one.
+
 ## Scripts
 
 - `pnpm build`: compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
