@@ -478,7 +478,7 @@ A font your project loads itself, such as Geist or Inter, is measured as it is. 
 
 **Strict modes.** `--strict` fails on anything that couldn't be measured, on a variant whose args snap couldn't check, on a capped component, and on a run that measured nothing. `--strict-warnings` also fails on warnings, such as a story that ignores its args, a closed trigger, a layout wrapper, or a prop whose values all measure the same. It's usually what you want in CI.
 
-**Browser.** snap needs Node 20 or later (for Playwright) and a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
+**Browser.** snap needs a Chromium-based browser. It looks for `STORYSYNC_BROWSER_PATH` or `CHROME_PATH`, then Chrome, Edge, a Playwright download, and common system paths. If it finds none, the error lists what it tried and the command to install one:
 
 ```bash
 npx playwright@<version> install chromium     # note: the full `playwright` package

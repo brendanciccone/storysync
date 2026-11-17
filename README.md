@@ -65,7 +65,7 @@ Both outputs above are from a real push of that Badge into Figma. [Your first pu
 - Storybook 10.1 or later with a Vite-based framework: `@storybook/react-vite`, `@storybook/nextjs-vite` or `@storybook/sveltekit`.
 - `@storybook/addon-mcp`, which serves MCP at `/mcp`. `storysync init` sets it up.
 - The Storybook dev server (`storybook dev`), not a static build.
-- Node.js 20 or later and a Chromium-based browser, for `snap`.
+- Node.js 22 or later and a Chromium-based browser, for `snap`.
 
 **For writing to Figma:**
 
@@ -73,7 +73,7 @@ Both outputs above are from a real push of that Badge into Figma. [Your first pu
 - A supported MCP client, which signs you in to Figma.
 - Figma limits MCP tool calls by plan and seat. See [Figma's rate limits](https://developers.figma.com/docs/figma-mcp-server/rate-limits-access/).
 
-**For tokens:** Node.js 18 or later, and nothing else. Token extraction reads only local files, so it needs no Storybook, MCP connection or sign-in.
+**For tokens:** Node.js 22 or later, and nothing else. Token extraction reads only local files, so it needs no Storybook, MCP connection or sign-in.
 
 ## Install
 

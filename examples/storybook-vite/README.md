@@ -79,4 +79,4 @@ To prove the score is real, recolor one Button's label in Figma by hand, then ha
 
 ## Requirements
 
-Node 20+ for `snap` (Playwright needs it; every other command works on Node 18), a Chromium-based browser, and Storybook 10.1+ with `@storybook/addon-mcp`.
+Node 22+, a Chromium-based browser, and Storybook 10.1+ with `@storybook/addon-mcp`.

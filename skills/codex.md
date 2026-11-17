@@ -9,7 +9,7 @@ Read components from Storybook MCP and recreate them in Figma MCP as a visually 
 
 ## Requirements
 
-- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 18+; `snap` needs Node 20+)
+- Storybook dev server running with `@storybook/addon-mcp` (Vite-based Storybook 10.1+, Node 22+)
 - Storybook MCP: `codex mcp add storybook --url http://localhost:6006/mcp`
 - Figma MCP: the Figma plugin (**Plugins** in the ChatGPT desktop app, which Figma's setup guide calls the Codex app, or `/plugins` in the CLI), or `codex mcp add figma --url https://mcp.figma.com/mcp`, which signs in to Figma as it adds the server (`codex mcp login figma` signs in again later)
 - Figma Full seat (Dev seats are read-only)
