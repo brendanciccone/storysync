@@ -1,0 +1,14 @@
+# The example is its own project with its own lockfile, not a package of the
+# root workspace. This file keeps it that way and holds its pnpm settings.
+
+# Refuse package versions younger than 7 days (10080 minutes), matching Renovate.
+minimumReleaseAge: 10080
+
+# Which dependencies may run install scripts. Replaces onlyBuiltDependencies and
+# ignoredBuiltDependencies, which pnpm 11 removes.
+allowBuilds:
+  esbuild: true
+
+overrides:
+  # GHSA-3g3m-2fjr-6pw4 (glob) and GHSA-g3hv-75wg-m249 (minimatch): @storybook/react-vite pins this plugin at 0.7.0, which asks for glob ^13 and through it minimatch 10. Remove when the plugin requires glob >= 14.0.4, or Storybook moves to plugin 0.9, which uses tinyglobby instead.
+  "@joshwooding/vite-plugin-react-docgen-typescript>glob": "^14.0.4"

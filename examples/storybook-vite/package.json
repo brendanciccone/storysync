@@ -2,16 +2,9 @@
   "name": "storysync-example",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "storybook": "storybook dev -p 6006 --no-open --ci"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "overrides": {
-      "@joshwooding/vite-plugin-react-docgen-typescript>glob": "^14.0.6"
-    }
   },
   "devDependencies": {
     "@fontsource/inter": "^5.0.0",
