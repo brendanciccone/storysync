@@ -1,0 +1,7 @@
+# Refuse package versions younger than 7 days (10080 minutes), matching Renovate.
+minimumReleaseAge: 10080
+
+# Which dependencies may run install scripts. Replaces onlyBuiltDependencies and
+# ignoredBuiltDependencies, which pnpm 11 removes. None of the dependencies has
+# one today; list any that gains one here, true or false.
+allowBuilds: {}
