@@ -24,14 +24,15 @@ No tokens or config required. Free and open source.
 
 - `pnpm build`: compile TypeScript to `dist/`, minify the Figma templates, and make the CLI executable
 - `pnpm dev`: incremental compile in watch mode
-- `pnpm lint`: type-check without emitting
+- `pnpm check`: type-check without emitting
 - `pnpm test`: build and run the node test runner suite
+- `pnpm verify`: `check`, then `test`; what CI runs, and it leaves the build in `dist/`
 - `pnpm acceptance`: end-to-end checks against the example: build first, and start its Storybook (`cd examples/storybook-vite && pnpm install && pnpm storybook`; the example has its own lockfile and is not a workspace package). It drives the real CLI, runs the skill's root-only and audit templates against simulated Figma nodes, and pushes the example's element-tree snap through `figma code` into the mock Figma the unit tests use, so it catches regressions the unit tests can't; it is not run in CI.
 
 ## Submitting changes
 
 - Keep commits focused and descriptive.
-- Run `pnpm lint` and `pnpm test` before opening a pull request.
+- Run `pnpm verify` before opening a pull request.
 - Follow the existing code style (TypeScript, ESM, no semi-bikeshedding).
 - Keep `skills/codex.md` byte-identical to `skills/claude-code.md` from `## Tokens` down. `skills/cursor.mdc` follows the same steps, but gives the root-only build and readback and the audit's reads in prose, without the plugin code the other two carry, and says so: a change to those templates is a change to its prose.
 

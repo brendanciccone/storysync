@@ -46,7 +46,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Type-check (including tests)
-        run: pnpm lint
+        run: pnpm run check
 
       # Compiles to dist/ and runs the suite. The CLI smoke tests exercise the
       # compiled dist/cli/index.js, so this covers the published artifact too.

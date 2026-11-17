@@ -17,8 +17,9 @@
     "build": "tsc && node scripts/build-templates.mjs && node scripts/bin-executable.mjs",
     "dev": "tsc --watch",
     "start": "node dist/cli/index.js",
-    "lint": "tsc --noEmit",
+    "check": "tsc --noEmit",
     "test": "pnpm clean && pnpm build && node --test dist/cli/__tests__/*.test.js",
+    "verify": "pnpm run check && pnpm test",
     "prepublishOnly": "pnpm clean && pnpm build && node --test dist/cli/__tests__/*.test.js",
     "clean": "rm -rf dist",
     "acceptance": "node scripts/acceptance.mjs"
