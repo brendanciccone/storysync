@@ -20,9 +20,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# local env files
-.env*.local
-.env
+# Local environment and secrets
+.env*
+.dev.vars*
 
 # python, for scripts/figma-stand-ins.py
 __pycache__/
@@ -37,8 +37,11 @@ __pycache__/
 # Its contents rather than the directory, so a file in it can be let back in.
 **/.storysync/*
 
-# example project dependencies
-examples/*/node_modules/
-
 # the baseline CI runs the drift-check action against
 !examples/storybook-vite/.storysync/baseline.json
+
+# Cloudflare local state
+.wrangler/
+
+# iCloud conflict copies
+* [0-9].*

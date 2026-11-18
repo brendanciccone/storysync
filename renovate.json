@@ -1,17 +1,89 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": [
+    "config:recommended",
+    ":pinAllExceptPeerDependencies",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "timezone": "America/New_York",
+  "schedule": [
+    "* * 1-3 * *"
+  ],
   "minimumReleaseAge": "7 days",
   "internalChecksFilter": "strict",
-  "vulnerabilityAlerts": {
-    "minimumReleaseAge": "0 days",
-    "labels": ["security"]
-  },
+  "platformAutomerge": false,
+  "labels": [
+    "dependencies"
+  ],
   "packageRules": [
     {
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "groupName": "non-major dependencies",
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": [
+        "pin",
+        "pinDigest"
+      ],
+      "automerge": false
+    },
+    {
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "matchPackageNames": [
+        "wrangler",
+        "miniflare",
+        "/^@cloudflare\\//"
+      ],
+      "groupName": "Cloudflare toolchain",
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "matchPackageNames": [
+        "next",
+        "eslint-config-next",
+        "/^@opennextjs\\//"
+      ],
+      "groupName": "Next.js toolchain",
+      "automerge": false
+    },
+    {
       "description": "Inter stays at 5.0.18, Inter 3.19, the Inter Figma sets text in: 5.0.20 and later ship Inter 4, which sets text up to 1% wider or narrower. See cli/fonts.ts.",
-      "matchPackageNames": ["@fontsource-variable/inter"],
+      "matchPackageNames": [
+        "@fontsource-variable/inter"
+      ],
       "enabled": false
+    },
+    {
+      "matchDepTypes": [
+        "dependencies"
+      ],
+      "rangeStrategy": "bump"
     }
-  ]
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "* * 1-3 * *"
+    ],
+    "minimumReleaseAgeBehaviour": "timestamp-optional",
+    "automerge": true
+  },
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "minimumReleaseAge": "7 days",
+    "automerge": false
+  }
 }

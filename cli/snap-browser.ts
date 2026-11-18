@@ -80,7 +80,7 @@ async function loadChromium(): Promise<typeof import("playwright-core")["chromiu
     throw new Error(
       `storysync snap needs Node ${MINIMUM_NODE_MAJOR} or newer (running ${process.versions.node}), ` +
         "because it renders stories with playwright.\n" +
-        "Every other storysync command still works on Node 18.",
+        "storysync supports Node 22 or newer.",
     );
   }
   const { chromium } = await import("playwright-core");
